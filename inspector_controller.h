@@ -3,7 +3,7 @@
 #include <QColor>
 #include <QString>
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 
 class EditorWindow;
 

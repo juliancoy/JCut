@@ -1,5 +1,6 @@
 #include "mask_tab.h"
 #include "editor_effect_presets.h"
+#include "editor_shared_media.h"
 #include "editor_tab_edit_effects.h"
 #include "mask_sidecar.h"
 #include "mask_fuzzy_remove.h"

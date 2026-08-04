@@ -1,7 +1,7 @@
 #include "inspector_pane.h"
 #include "inspector_pane_tab_helpers.h"
 #include "editor_effect_presets.h"
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "grading_histogram_widget.h"
 
 #include <QAbstractButton>

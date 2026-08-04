@@ -12,7 +12,7 @@
 #include <QTimer>
 #include <functional>
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 
 class VideoKeyframeTab : public KeyframeTabBase
 {

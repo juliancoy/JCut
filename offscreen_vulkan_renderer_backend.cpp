@@ -809,7 +809,8 @@ QImage OffscreenVulkanRenderer::renderFrame(
             ? layerGeometry.bounds.intersected(outputRect)
             : outputRect;
     QRectF tilingMaskBounds;
-    if (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile &&
+    if ((foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile ||
+         foregroundEffectClip.effectPreset == ClipEffectPreset::RecursiveZoomTile) &&
         foregroundEffectClip.tilingUseMaskBounds && layer.maskBuffer) {
       const QRectF normalizedMaskBounds =
           normalizedMaskContentBounds(
@@ -848,8 +849,13 @@ QImage OffscreenVulkanRenderer::renderFrame(
                     .mapRect(PreviewViewTransform::localRectForNormalizedRect(
                         normalizedMaskDomain, layerGeometry.localRect))
                     .intersected(outputRect);
+      const QRectF generatedEffectDomain =
+          foregroundEffectClip.effectPreset == ClipEffectPreset::RecursiveZoomTile &&
+                  foregroundEffectClip.tilingUseMaskBounds
+              ? maskDomain
+              : outputRect;
       applyGeneratedEffectMaskDomain(
-          effectPlan, maskDomain, outputRect, true, normalizedMaskDomain);
+          effectPlan, generatedEffectDomain, outputRect, true, normalizedMaskDomain);
     }
     layer.effectPlan = effectPlan;
     const PlaybackFrameCrossfade frameCrossfade =

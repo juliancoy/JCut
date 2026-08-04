@@ -1,6 +1,7 @@
 #include "editor_transform_keyframe_ops.h"
 
 #include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
 
 #include <QtGlobal>
 

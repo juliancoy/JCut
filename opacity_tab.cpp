@@ -1,6 +1,7 @@
 #include "opacity_tab.h"
 
-#include "editor_shared.h"
+#include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
 #include "editor_title_opacity_keyframe_ops.h"
 #include "keyframe_table_shared.h"
 

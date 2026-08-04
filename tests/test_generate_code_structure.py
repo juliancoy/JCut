@@ -73,6 +73,34 @@ class GenerateCodeStructureTest(unittest.TestCase):
         self.assertEqual(ownership["layer"], "L3")
         self.assertEqual(violations, [])
 
+    def test_ownership_rule_rejects_forbidden_umbrella_include(self) -> None:
+        manifest = {
+            "schema": generator.OWNERSHIP_SCHEMA,
+            "rules": [{
+                "owner": "ui",
+                "layer": "L4",
+                "priority": 10,
+                "patterns": ["ui/*"],
+                "forbidden_includes": ["editor_shared.h"],
+            }],
+        }
+        ownership, resolution_violations = generator.resolve_declared_ownership(
+            "ui/panel.cpp", manifest
+        )
+        self.assertEqual(resolution_violations, [])
+        self.assertEqual(
+            generator.forbidden_include_violations(
+                ["QWidget", "../editor_shared.h"], ownership
+            ),
+            ["forbidden_include:editor_shared.h"],
+        )
+        self.assertEqual(
+            generator.forbidden_include_violations(
+                ["editor_shared_core.h"], ownership
+            ),
+            [],
+        )
+
     def test_dependency_graph_resolves_architecture_and_reachability(self) -> None:
         def record(
             path: str,

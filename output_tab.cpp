@@ -1,5 +1,6 @@
 #include "output_tab.h"
 #include "debug_controls.h"
+#include "output_export_range_limit.h"
 #include "render_runtime_controls.h"
 
 #include <QDir>
@@ -96,6 +97,13 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
                            "them into the final video. Disable for one "
                            "continuous export without chunk checkpoints."));
     }
+    if (m_widgets.exportFirstThirtySecondsCheckBox) {
+        m_widgets.exportFirstThirtySecondsCheckBox->setText(
+            QStringLiteral("Export first 30 seconds only"));
+        m_widgets.exportFirstThirtySecondsCheckBox->setToolTip(
+            QStringLiteral("Limit this export to the first 30 seconds of final output. "
+                           "Timeline export ranges are not modified."));
+    }
     if (m_widgets.segmentPrewarmAutotuneCheckBox) {
         m_widgets.segmentPrewarmAutotuneCheckBox->setText(
             QStringLiteral("Auto-tune segment prewarming"));
@@ -161,6 +169,10 @@ void OutputTab::wire()
     if (m_widgets.incrementalRenderCheckBox) {
         connect(m_widgets.incrementalRenderCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onIncrementalRenderToggled);
+    }
+    if (m_widgets.exportFirstThirtySecondsCheckBox) {
+        connect(m_widgets.exportFirstThirtySecondsCheckBox, &QCheckBox::toggled,
+                this, &OutputTab::onExportFirstThirtySecondsToggled);
     }
     if (m_widgets.segmentPrewarmAutotuneCheckBox) {
         connect(m_widgets.segmentPrewarmAutotuneCheckBox, &QCheckBox::toggled,
@@ -538,21 +550,30 @@ void OutputTab::renderFromInspector()
             request.imageSequenceFormat = "jpeg";
         }
     }
-    const QVector<ExportRangeSegment> exportRanges = m_deps.effectivePlaybackRanges
+    QVector<ExportRangeSegment> exportRanges = m_deps.effectivePlaybackRanges
         ? m_deps.effectivePlaybackRanges()
         : QVector<ExportRangeSegment>{};
+    if (exportRanges.isEmpty()) {
+        const int64_t startFrame =
+            m_deps.exportStartFrame ? m_deps.exportStartFrame() : 0;
+        const int64_t endFrame =
+            m_deps.exportEndFrame ? m_deps.exportEndFrame() : startFrame;
+        exportRanges.push_back(ExportRangeSegment{
+            qMin(startFrame, endFrame), qMax(startFrame, endFrame)});
+    }
+    if (m_widgets.exportFirstThirtySecondsCheckBox &&
+        m_widgets.exportFirstThirtySecondsCheckBox->isChecked()) {
+        exportRanges = limitExportRangesToOutputSeconds(
+            exportRanges, outputSpeed, 30);
+    }
     request.exportRangeCount = static_cast<std::size_t>(exportRanges.size());
     request.outputMode = request.createVideoFromImageSequence
         ? jcut::render::RenderOutputMode::EncodedFileAndImageSequence
         : jcut::render::RenderOutputMode::EncodedFile;
-    request.exportStartFrame = exportRanges.isEmpty()
-        ? (m_deps.exportStartFrame ? m_deps.exportStartFrame() : 0)
-        : exportRanges.constFirst().startFrame;
-    request.exportEndFrame = exportRanges.isEmpty()
-        ? (m_deps.exportEndFrame ? m_deps.exportEndFrame() : 0)
-        : exportRanges.constLast().endFrame;
+    request.exportStartFrame = exportRanges.constFirst().startFrame;
+    request.exportEndFrame = exportRanges.constLast().endFrame;
 
-    m_deps.renderTimeline(request);
+    m_deps.renderTimeline(request, exportRanges);
 }
 
 void OutputTab::onOutputWidthChanged(int value)
@@ -619,6 +640,14 @@ void OutputTab::onRenderUseProxiesToggled(bool checked)
 }
 
 void OutputTab::onIncrementalRenderToggled(bool checked)
+{
+    Q_UNUSED(checked);
+    if (m_updating) return;
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onExportFirstThirtySecondsToggled(bool checked)
 {
     Q_UNUSED(checked);
     if (m_updating) return;

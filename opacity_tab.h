@@ -10,7 +10,7 @@
 #include <QPushButton>
 #include <QTimer>
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 
 class OpacityTab : public KeyframeTabBase
 {

@@ -807,6 +807,9 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("incrementalExport")] =
         m_incrementalRenderCheckBox &&
         m_incrementalRenderCheckBox->isChecked();
+    root[QStringLiteral("exportFirstThirtySeconds")] =
+        m_exportFirstThirtySecondsCheckBox &&
+        m_exportFirstThirtySecondsCheckBox->isChecked();
     root[QStringLiteral("masterOutputAudioDelayMs")] =
         m_masterOutputAudioDelayMsSpin
         ? m_masterOutputAudioDelayMsSpin->value()

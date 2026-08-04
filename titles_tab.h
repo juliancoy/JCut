@@ -2,7 +2,7 @@
 
 #include "keyframe_tab_base.h"
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 
 #include <QCheckBox>
 #include <QComboBox>

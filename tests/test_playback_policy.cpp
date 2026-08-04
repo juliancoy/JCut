@@ -2,6 +2,7 @@
 
 #include "../editor_shared.h"
 #include "../media_pipeline_shared.h"
+#include "../output_export_range_limit.h"
 #include "../playback_clock_coordinator.h"
 #include "../playback_timing_context.h"
 #include "../render_runtime_controls.h"
@@ -56,6 +57,7 @@ private slots:
     void testDiscontinuousRangePrefetchStartsBeforeCrossfade();
     void testExportDecodePrefetchIncludesOrdinaryVideo();
     void testRenderSegmentDecodeLookaheadIsRuntimeMutableAndBounded();
+    void testOutputDurationLimitPreservesRangesAndPlaybackSpeed();
     void testFrameCrossfadeMapsOutgoingTailToIncomingHead();
     void testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap();
     void testActivePlaybackRuntimeConfigRealignsStreams();
@@ -77,6 +79,36 @@ void TestPlaybackPolicy::testClockSourceRoundTrip() {
              PlaybackClockSource::Auto);
     QCOMPARE(playbackClockSourceFromString(QStringLiteral("unknown")),
              PlaybackClockSource::Auto);
+}
+
+void TestPlaybackPolicy::testOutputDurationLimitPreservesRangesAndPlaybackSpeed()
+{
+    const QVector<ExportRangeSegment> ranges{
+        ExportRangeSegment{100, 699},
+        ExportRangeSegment{900, 1499},
+    };
+
+    const QVector<ExportRangeSegment> normalSpeed =
+        limitExportRangesToOutputSeconds(ranges, 1.0, 30);
+    QCOMPARE(normalSpeed.size(), 2);
+    QCOMPARE(normalSpeed.at(0).startFrame, int64_t{100});
+    QCOMPARE(normalSpeed.at(0).endFrame, int64_t{699});
+    QCOMPARE(normalSpeed.at(1).startFrame, int64_t{900});
+    QCOMPARE(normalSpeed.at(1).endFrame, int64_t{1199});
+
+    const QVector<ExportRangeSegment> halfSpeed =
+        limitExportRangesToOutputSeconds(ranges, 0.5, 30);
+    QCOMPARE(halfSpeed.size(), 1);
+    QCOMPARE(halfSpeed.constFirst().startFrame, int64_t{100});
+    QCOMPARE(halfSpeed.constFirst().endFrame, int64_t{549});
+
+    const QVector<ExportRangeSegment> doubleSpeed =
+        limitExportRangesToOutputSeconds(ranges, 2.0, 30);
+    QCOMPARE(doubleSpeed.size(), ranges.size());
+    QCOMPARE(doubleSpeed.at(0).startFrame, ranges.at(0).startFrame);
+    QCOMPARE(doubleSpeed.at(0).endFrame, ranges.at(0).endFrame);
+    QCOMPARE(doubleSpeed.at(1).startFrame, ranges.at(1).startFrame);
+    QCOMPARE(doubleSpeed.at(1).endFrame, ranges.at(1).endFrame);
 }
 
 void TestPlaybackPolicy::testAudioWarpRoundTrip() {

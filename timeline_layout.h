@@ -1,6 +1,6 @@
 #pragma once
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include <QPoint>
 #include <QRect>
 

@@ -232,6 +232,8 @@ void EditorWindow::bindInspectorWidgets()
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     const auto outputRenderControls = m_inspectorPane->outputRenderControls();
     m_incrementalRenderCheckBox = outputRenderControls.incrementalRender;
+    m_exportFirstThirtySecondsCheckBox =
+        outputRenderControls.exportFirstThirtySeconds;
     m_segmentPrewarmAutotuneCheckBox =
         outputRenderControls.segmentPrewarmAutotune;
     m_instagramSafeAreaGuidesCheckBox = outputRenderControls.instagramSafeAreaGuides;

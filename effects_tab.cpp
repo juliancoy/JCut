@@ -1,6 +1,7 @@
 #include "effects_tab.h"
 #include "editor_effect_presets.h"
 #include "editor_shared_effects.h"
+#include "editor_shared_media.h"
 #include "editor_tab_edit_effects.h"
 #include "keyframe_table_shared.h"
 #include <QEvent>
@@ -546,9 +547,10 @@ QString presetSpecificHelpText(ClipEffectPreset preset)
     case ClipEffectPreset::Tessellation:
     case ClipEffectPreset::HexagonalPrism:
         return QStringLiteral("Cell mirror controls. Cells across sets grid density, rotation speed animates the geometry, output grain size controls source sampling, and geometry amount shapes the cells.");
+    case ClipEffectPreset::RecursiveZoomTile:
+        return QStringLiteral("Object recursive tile controls. Effect zoom is a continuous object-domain zoom; whole numbers resolve to exact repeated mask-box tiles. Use Mask Bounding Box to choose the object tile domain.");
     case ClipEffectPreset::Droste:
     case ClipEffectPreset::InfiniteMirror:
-    case ClipEffectPreset::RecursiveZoomTile:
     case ClipEffectPreset::RecursiveZoomTunnel:
     case ClipEffectPreset::RecursiveZoomMirrorBox:
     case ClipEffectPreset::RecursiveZoomSpiral:
@@ -670,6 +672,8 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
     const bool difference = preset == ClipEffectPreset::DifferenceMatte;
     const bool echo = preset == ClipEffectPreset::TemporalEcho;
     const bool tiling = preset == ClipEffectPreset::SourceTile;
+    const bool objectRecursiveTile =
+        preset == ClipEffectPreset::RecursiveZoomTile;
     const bool maskDomain = maskClip || tiling || generatedMaskDomainPreset(preset);
     const bool directionalEcho = preset == ClipEffectPreset::DirectionalFrameEcho;
     const bool stepRepeatFill = sourceMosaicPreset(preset);
@@ -705,6 +709,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                            : neon ? QStringLiteral("Glow radius")
                                   : speakerMask ? QStringLiteral("Dilation radius")
                                                 : sectorEffect ? QStringLiteral("Mirror sectors")
+                                                : objectRecursiveTile ? QStringLiteral("Tile density")
                                                 : recursionEffect ? QStringLiteral("Recursion density")
                                                 : cellEffect ? QStringLiteral("Cells across")
                                                 : stepRepeatFill ? QStringLiteral("Tile density")
@@ -713,6 +718,7 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
     setFormFieldLabel(widgets.effectSpeedSpin,
                       neon ? QStringLiteral("Hue speed")
                            : speakerMask ? QStringLiteral("Color cycle speed")
+                                        : objectRecursiveTile ? QStringLiteral("Tile drift")
                                         : recursionEffect ? QStringLiteral("Drift speed")
                                         : mirrorGeometry ? QStringLiteral("Rotation speed")
                                          : QStringLiteral("Speed"));
@@ -720,11 +726,13 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                       edge ? QStringLiteral("Edge strength")
                            : neon ? QStringLiteral("Glow intensity")
                                   : speakerMask ? QStringLiteral("Opacity")
+                                                : objectRecursiveTile ? QStringLiteral("Object zoom")
                                                 : recursionEffect ? QStringLiteral("Effect zoom")
                                                 : mirrorGeometry ? QStringLiteral("Source grain size")
                                                 : QStringLiteral("Scale"));
     setFormFieldLabel(widgets.tilingSpacingSpin,
                       speakerMask ? QStringLiteral("Color spacing")
+                                  : objectRecursiveTile ? QStringLiteral("Tile recursion spacing")
                                   : recursionEffect ? QStringLiteral("Recursion spacing")
                                   : mirrorGeometry ? QStringLiteral("Geometry amount")
                                                    : QStringLiteral("Spacing"));
@@ -733,25 +741,33 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
             widgets.effectRowsSpin->setToolTip(
                 sectorEffect
                     ? QStringLiteral("Number of mirrored angular sectors.")
+                    : objectRecursiveTile
+                          ? QStringLiteral("Number of object-domain recursive tile repeats.")
                     : recursionEffect
                           ? QStringLiteral("Density of nested recursive bands.")
                           : QStringLiteral("Number of repeated mirror cells across the output."));
         }
         if (widgets.effectScaleSpin) {
             widgets.effectScaleSpin->setToolTip(
-                recursionEffect
+                objectRecursiveTile
+                    ? QStringLiteral("Continuous object-domain zoom. Whole numbers resolve to exact repeated mask-box tiles; keyframe this for professional recursive zoom moves.")
+                    : recursionEffect
                     ? QStringLiteral("Continuous recursive zoom. Keyframe this value; whole numbers resolve back to the original source image.")
                     : QStringLiteral("Size of the sampled source grain. Higher values produce larger image features."));
         }
         if (widgets.effectSpeedSpin) {
             widgets.effectSpeedSpin->setToolTip(
-                recursionEffect
+                objectRecursiveTile
+                    ? QStringLiteral("Independent tile drift in object space. This does not depend on transport or preview zoom.")
+                    : recursionEffect
                     ? QStringLiteral("Independent drift/rotation rate for the recursive geometry. This does not drive zoom.")
                     : QStringLiteral("Rotation rate. Negative values reverse direction; zero holds the geometry still."));
         }
         if (widgets.tilingSpacingSpin) {
             widgets.tilingSpacingSpin->setToolTip(
-                recursionEffect
+                objectRecursiveTile
+                    ? QStringLiteral("Spacing between recursive object tile levels.")
+                    : recursionEffect
                     ? QStringLiteral("Spacing and twist between recursive levels.")
                     : QStringLiteral("Strength of the radial or cell geometry."));
         }

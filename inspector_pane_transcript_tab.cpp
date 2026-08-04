@@ -1,7 +1,7 @@
 #include "inspector_pane.h"
 #include "inspector_pane_tab_helpers.h"
 #include "audio_engine.h"
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "playback_timing_context.h"
 
 #include <QCheckBox>

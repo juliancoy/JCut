@@ -6,6 +6,7 @@
 #include "debug_controls.h"
 #include "editor_shared_media.h"
 #include "editor_shared_timing.h"
+#include "editor_shared_transcript.h"
 #include "timeline_clip_title.h"
 #include "waveform_service.h"
 

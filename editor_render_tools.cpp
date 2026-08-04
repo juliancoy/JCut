@@ -578,7 +578,9 @@ void EditorWindow::renderFromOutputInspector()
     }
 }
 
-void EditorWindow::renderTimelineFromOutputRequestCore(const jcut::render::RenderRequestCore& request)
+void EditorWindow::renderTimelineFromOutputRequestCore(
+    const jcut::render::RenderRequestCore& request,
+    const QVector<ExportRangeSegment>& exportRanges)
 {
     if (!m_timeline) {
         return;
@@ -603,7 +605,6 @@ void EditorWindow::renderTimelineFromOutputRequestCore(const jcut::render::Rende
         timelineData.renderSyncMarkers.push_back(marker);
     }
 
-    const QVector<ExportRangeSegment> exportRanges = effectivePlaybackRanges();
     timelineData.exportRanges.reserve(static_cast<std::size_t>(exportRanges.size()));
     for (const ExportRangeSegment& range : exportRanges) {
         timelineData.exportRanges.push_back(range);

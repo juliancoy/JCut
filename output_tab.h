@@ -13,7 +13,7 @@
 #include <functional>
 #include <QVector>
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "render_contract_types.h"
 
 class OutputTab : public QObject
@@ -49,6 +49,7 @@ public:
         QSpinBox* historyMaxEntriesSpin = nullptr;
         QSpinBox* historyMaxMegabytesSpin = nullptr;
         QCheckBox* incrementalRenderCheckBox = nullptr;
+        QCheckBox* exportFirstThirtySecondsCheckBox = nullptr;
         QCheckBox* segmentPrewarmAutotuneCheckBox = nullptr;
         QCheckBox* instagramSafeAreaGuidesCheckBox = nullptr;
         QCheckBox* alignmentGridGuidesCheckBox = nullptr;
@@ -73,7 +74,8 @@ public:
         std::function<void(int64_t, int64_t)> setExportRange;
         std::function<void(const QSize&)> setOutputSize;
         std::function<void()> stopPlayback;
-        std::function<void(const jcut::render::RenderRequestCore&)> renderTimeline;
+        std::function<void(const jcut::render::RenderRequestCore&,
+                           const QVector<ExportRangeSegment>&)> renderTimeline;
         std::function<QString()> lastRenderOutputPath;
         std::function<void(const QString&)> setLastRenderOutputPath;
         std::function<int()> autosaveIntervalMinutes;
@@ -105,6 +107,7 @@ private slots:
     void onOutputFormatChanged(int index);
     void onRenderUseProxiesToggled(bool checked);
     void onIncrementalRenderToggled(bool checked);
+    void onExportFirstThirtySecondsToggled(bool checked);
     void onSegmentPrewarmAutotuneToggled(bool checked);
     void onMasterOutputAudioDelayMsChanged(int value);
     void onMasterOutputSubtitleOffsetMsChanged(int value);

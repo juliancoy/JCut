@@ -1,6 +1,6 @@
 #pragma once
 
-#include "editor_shared.h"
+#include "editor_shared_transcript.h"
 #include "cpu_overlay_render_backend.h"
 #include "preview_interaction_state.h"
 

@@ -113,6 +113,39 @@ jcut::core::RectF toCoreRect(const QRectF& rect) {
   return {rect.x(), rect.y(), rect.width(), rect.height()};
 }
 
+jcut::imgui_preview::OverlayTrackState toImGuiOverlayTrackState(
+    jcut::facedetections::ContinuityTrackState state) {
+  switch (state) {
+  case jcut::facedetections::ContinuityTrackState::Confirmed:
+    return jcut::imgui_preview::OverlayTrackState::Confirmed;
+  case jcut::facedetections::ContinuityTrackState::Tentative:
+    return jcut::imgui_preview::OverlayTrackState::Tentative;
+  case jcut::facedetections::ContinuityTrackState::Lost:
+    return jcut::imgui_preview::OverlayTrackState::Lost;
+  case jcut::facedetections::ContinuityTrackState::Removed:
+  default:
+    return jcut::imgui_preview::OverlayTrackState::Removed;
+  }
+}
+
+jcut::imgui_preview::DetectionOverlay toImGuiOverlayDetection(
+    const jcut::facedetections::Detection& detection) {
+  return {toCoreRect(detection.box)};
+}
+
+jcut::imgui_preview::TrackOverlay toImGuiOverlayTrack(
+    const jcut::facedetections::ContinuityTrack& track) {
+  return {
+      track.id,
+      toCoreRect(track.box),
+      track.firstFrame,
+      track.lastFrame,
+      track.hits,
+      track.misses,
+      toImGuiOverlayTrackState(track.state),
+  };
+}
+
 }  // namespace
 
 int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
@@ -650,10 +683,20 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
                         .arg(frameNumber)
                         .arg(previewDetections.size())
                         .arg(liveTrackCount(previewTracks))));
+    std::vector<jcut::imgui_preview::TrackOverlay> overlayTracks;
+    overlayTracks.reserve(previewTracks.size());
+    for (const Track &track : previewTracks) {
+      overlayTracks.push_back(toImGuiOverlayTrack(track));
+    }
+    std::vector<jcut::imgui_preview::DetectionOverlay> overlayDetections;
+    overlayDetections.reserve(previewDetections.size());
+    for (const Detection &detection : previewDetections) {
+      overlayDetections.push_back(toImGuiOverlayDetection(detection));
+    }
     const bool presented = livePreviewWindow->presentFrame(
         frame, frameNumber,
-        std::span<const jcut::facedetections::ContinuityTrack>(previewTracks.constData(), previewTracks.size()),
-        std::span<const jcut::facedetections::Detection>(previewDetections.constData(), previewDetections.size()),
+        std::span<const jcut::imgui_preview::TrackOverlay>(overlayTracks.data(), overlayTracks.size()),
+        std::span<const jcut::imgui_preview::DetectionOverlay>(overlayDetections.data(), overlayDetections.size()),
         toCoreRect(currentRoiRect(frame.size)), previewDetections.size());
     return presented;
   };

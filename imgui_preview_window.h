@@ -12,10 +12,30 @@ namespace render_detail {
 struct OffscreenVulkanFrame;
 }
 
-namespace jcut::facedetections {
-struct ContinuityTrack;
-struct Detection;
-}
+namespace jcut::imgui_preview {
+
+enum class OverlayTrackState {
+    Tentative,
+    Confirmed,
+    Lost,
+    Removed
+};
+
+struct DetectionOverlay {
+    jcut::core::RectF box;
+};
+
+struct TrackOverlay {
+    int id = -1;
+    jcut::core::RectF box;
+    int firstFrame = -1;
+    int lastFrame = -1;
+    int hits = 0;
+    int misses = 0;
+    OverlayTrackState state = OverlayTrackState::Tentative;
+};
+
+} // namespace jcut::imgui_preview
 
 class ImGuiPreviewWindow final {
 public:
@@ -98,8 +118,8 @@ public:
     void pumpEvents();
     bool presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                       int64_t frameNumber,
-                      std::span<const jcut::facedetections::ContinuityTrack> tracks,
-                      std::span<const jcut::facedetections::Detection> detections,
+                      std::span<const jcut::imgui_preview::TrackOverlay> tracks,
+                      std::span<const jcut::imgui_preview::DetectionOverlay> detections,
                       const jcut::core::RectF& roiRect,
                       int detectionCount);
     bool presentRenderMonitorFrame(const render_detail::OffscreenVulkanFrame& frame,

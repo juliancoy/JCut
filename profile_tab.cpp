@@ -3,7 +3,7 @@
 #include "decoder_benchmark_utils.h"
 #include "decoder_context.h"
 #include "frame_handle.h"
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "debug_controls.h"
 
 #include <QElapsedTimer>

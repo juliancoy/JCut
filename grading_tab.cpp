@@ -2,7 +2,10 @@
 #include "clip_serialization.h"
 #include "decoder_context.h"
 #include "editor_auto_oppose_core.h"
-#include "editor_shared.h"
+#include "editor_shared_effects.h"
+#include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
+#include "editor_shared_render_sync.h"
 #include "grading_histogram_widget.h"
 #include "keyframe_table_shared.h"
 #include <QMenu>

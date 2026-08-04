@@ -17,7 +17,7 @@
 #include <QVector>
 #include <functional>
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 
 class QImage;
 class GradingHistogramWidget;

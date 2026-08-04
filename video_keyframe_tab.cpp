@@ -1,6 +1,7 @@
 #include "video_keyframe_tab.h"
 #include "clip_serialization.h"
-#include "editor_shared.h"
+#include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
 #include "editor_transform_keyframe_ops.h"
 #include "keyframe_table_shared.h"
 

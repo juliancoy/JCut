@@ -5,7 +5,7 @@
 #include "frame_handle.h"
 #include "playback_timing_context.h"
 #include "preview_surface.h"
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "render_vulkan_shared.h"
 
 #include <QColor>

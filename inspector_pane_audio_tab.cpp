@@ -2,7 +2,7 @@
 
 #include "preview_surface.h"
 #include "editor_playback_types.h"
-#include "editor_shared.h"
+#include "editor_shared_render_sync.h"
 
 #include <QCheckBox>
 #include <QComboBox>

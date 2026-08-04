@@ -1,5 +1,7 @@
 #include "editor_effect_presets.h"
 
+#include "editor_shared_media.h"
+#include "editor_shared_transcript.h"
 #include "speaker_title_core.h"
 #include "timeline_fps.h"
 

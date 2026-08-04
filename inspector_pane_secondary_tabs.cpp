@@ -7,7 +7,7 @@
 
 #include "background_fill_effect.h"
 #include "debug_controls.h"
-#include "editor_shared.h"
+#include "editor_shared_media.h"
 #include "preview_surface.h"
 
 #include <QAbstractItemView>
@@ -143,6 +143,11 @@ QWidget *InspectorPane::buildOutputTab()
     m_incrementalRenderCheckBox->setChecked(false);
     m_incrementalRenderCheckBox->setToolTip(
         QStringLiteral("Render resumable encoded chunks and assemble them into the final video. Disable for one continuous export without chunk checkpoints."));
+    m_exportFirstThirtySecondsCheckBox =
+        new QCheckBox(QStringLiteral("Export first 30 seconds only"), page);
+    m_exportFirstThirtySecondsCheckBox->setChecked(false);
+    m_exportFirstThirtySecondsCheckBox->setToolTip(
+        QStringLiteral("Limit this export to the first 30 seconds of final output without changing the timeline export range."));
     m_segmentPrewarmAutotuneCheckBox =
         new QCheckBox(QStringLiteral("Auto-tune segment prewarming"), page);
     m_segmentPrewarmAutotuneCheckBox->setToolTip(
@@ -244,6 +249,7 @@ QWidget *InspectorPane::buildOutputTab()
     settingsSection.body->addLayout(form);
     settingsSection.body->addWidget(m_renderUseProxiesCheckBox);
     settingsSection.body->addWidget(m_incrementalRenderCheckBox);
+    settingsSection.body->addWidget(m_exportFirstThirtySecondsCheckBox);
     settingsSection.body->addWidget(m_segmentPrewarmAutotuneCheckBox);
     settingsSection.body->addWidget(m_instagramSafeAreaGuidesCheckBox);
     settingsSection.body->addWidget(m_alignmentGridGuidesCheckBox);

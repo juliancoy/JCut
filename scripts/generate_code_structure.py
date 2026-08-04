@@ -365,8 +365,24 @@ def resolve_declared_ownership(
         "declared_owner": winner.get("owner"),
         "layer": winner.get("layer"),
         "declared_target": winner.get("declared_target"),
+        "forbidden_includes": sorted(set(winner.get("forbidden_includes", []))),
         "matched_rule_priority": priority,
     }, violations
+
+
+def forbidden_include_violations(
+    dependencies: Iterable[str],
+    ownership: dict[str, Any] | None,
+) -> list[str]:
+    if ownership is None:
+        return []
+    forbidden = set(ownership.get("forbidden_includes", []))
+    return sorted({
+        f"forbidden_include:{blocked}"
+        for blocked in forbidden
+        if any(dependency == blocked or dependency.endswith(f"/{blocked}")
+               for dependency in dependencies)
+    })
 
 
 def build_targets_from_ninja(root: Path, ninja_path: Path | None) -> dict[str, list[str]]:
@@ -1000,6 +1016,9 @@ def analyze(
         relative_path = relative.as_posix()
         ownership, ownership_violations = resolve_declared_ownership(
             relative_path, ownership_manifest
+        )
+        ownership_violations.extend(
+            forbidden_include_violations(dependencies, ownership)
         )
         actual_targets = build_targets.get(relative_path, [])
         production_targets = production_build_targets(actual_targets)

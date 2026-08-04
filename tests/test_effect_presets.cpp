@@ -108,6 +108,7 @@ private slots:
     void alternatingMotionBackgroundCoversOutputWithMovingRows();
     void sourceTilingPresetCoversOutputWithGrid();
     void sourceTilingPresetCanConstrainLayoutToMaskBounds();
+    void recursiveZoomTileUsesMaskBoundsAsRepeatDomain();
     void maskContentBoundsCanExcludeConfiguredOutsidePixelPercentage();
     void sourceTilingPresetSupportsGeometricPatterns();
     void orbitPresetProducesRequestedCopiesAroundCenter();
@@ -3285,6 +3286,50 @@ void TestEffectPresets::sourceTilingPresetCanConstrainLayoutToMaskBounds()
     QVERIFY(unconstrained.usesGeneratedDraws());
     QVERIFY(unconstrained.generatedDraws.constFirst().outputRect.width() >
             constrained.generatedDraws.constFirst().outputRect.width());
+}
+
+void TestEffectPresets::recursiveZoomTileUsesMaskBoundsAsRepeatDomain()
+{
+    TimelineClip clip;
+    clip.clipRole = ClipRole::EffectSynth;
+    clip.effectPreset = ClipEffectPreset::RecursiveZoomTile;
+    clip.effectRows = 4;
+    clip.effectSpeed = 0.0;
+    clip.effectScale = 1.0;
+    clip.tilingSpacing = 1.0;
+    clip.tilingUseMaskBounds = true;
+
+    const QRectF output(0.0, 0.0, 1000.0, 500.0);
+    const QRectF maskBounds(250.0, 100.0, 500.0, 300.0);
+    render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(1000, 500), 0.0, 0.0, {}, maskBounds);
+    QVERIFY(plan.usesGeneratedDraws());
+    QCOMPARE(plan.generatedDraws.size(), 1);
+    QCOMPARE(plan.generatedDraws.constFirst().outputRect, output);
+
+    render_detail::applyGeneratedEffectMaskDomain(
+        plan, maskBounds, output, true, QRectF(0.25, 0.20, 0.50, 0.60));
+
+    const auto& pass = plan.generatedDraws.constFirst();
+    QCOMPARE(pass.shaderMode, render_detail::kVulkanEffectModeRecursiveZoomTile);
+    QCOMPARE(pass.outputRect, output);
+    QCOMPARE(pass.effectDomain[0], 0.25f);
+    QCOMPARE(pass.effectDomain[1], 0.20f);
+    QCOMPARE(pass.effectDomain[2], 0.50f);
+    QCOMPARE(pass.effectDomain[3], -0.60f);
+    QCOMPARE(pass.effectMaskDomain[0], 0.25f);
+    QCOMPARE(pass.effectMaskDomain[1], 0.20f);
+    QCOMPARE(pass.effectMaskDomain[2], 0.50f);
+    QCOMPARE(pass.effectMaskDomain[3], 0.60f);
+
+    QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+    QVERIFY(shader.open(QIODevice::ReadOnly));
+    const QString shaderSource = QString::fromUtf8(shader.readAll());
+    QVERIFY(shaderSource.contains(QStringLiteral("vec4 objectRecursiveZoomTileSample(vec2 uv)")));
+    QVERIFY(shaderSource.contains(QStringLiteral("vec2 exactDomainUv = fract(domainUv);")));
+    QVERIFY(shaderSource.contains(QStringLiteral("return objectRecursiveZoomTileSample(uv);")));
+    QVERIFY(shaderSource.contains(QStringLiteral("generatedEffectMaskDomainUv(childDomainUv)")));
 }
 
 void TestEffectPresets::maskContentBoundsCanExcludeConfiguredOutsidePixelPercentage()

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "frame_handle.h"
 #include "render.h"
 #include "render_runtime.h"
@@ -259,7 +259,9 @@ private:
     void refreshOutputInspector();
     void applyOutputRangeFromInspector();
     void renderFromOutputInspector();
-    void renderTimelineFromOutputRequestCore(const jcut::render::RenderRequestCore& request);
+    void renderTimelineFromOutputRequestCore(
+        const jcut::render::RenderRequestCore& request,
+        const QVector<ExportRangeSegment>& exportRanges);
     RenderRequest buildRenderRequestFromOutputControls() const;
     void persistExportRequestDefaults(const RenderRequest& request);
     struct RenderProgressDialogControls {
@@ -610,6 +612,7 @@ private:
     QSpinBox *m_masterOutputAudioDelayMsSpin = nullptr;
     QSpinBox *m_masterOutputSubtitleOffsetMsSpin = nullptr;
     QCheckBox *m_incrementalRenderCheckBox = nullptr;
+    QCheckBox *m_exportFirstThirtySecondsCheckBox = nullptr;
     QCheckBox *m_segmentPrewarmAutotuneCheckBox = nullptr;
     QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
     QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;

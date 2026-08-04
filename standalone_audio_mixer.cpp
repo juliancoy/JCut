@@ -451,6 +451,19 @@ jcut::audio::DynamicsSettingsCore audioDynamicsForClip(
     return jcut::audio::normalizedDynamicsSettingsCore(clip.audioDynamics);
 }
 
+jcut::audio::DynamicsSettingsCore effectiveAudioDynamicsForClip(
+    const jcut::EditorDocumentCore& document,
+    const jcut::EditorClip& clip)
+{
+    jcut::audio::DynamicsSettingsCore dynamics =
+        jcut::audio::normalizedDynamicsSettingsCore(document.audioDynamics);
+    if (clip.audioDynamicsSet) {
+        dynamics = jcut::audio::normalizedDynamicsSettingsCore(
+            clip.audioDynamics);
+    }
+    return dynamics;
+}
+
 void prepareTranscriptNormalization(
     const jcut::EditorDocumentCore& document,
     const jcut::EditorClip& clip,
@@ -782,8 +795,10 @@ bool decodeDocumentAudio(const EditorDocumentCore& document,
                 kSampleRate,
                 clipDynamics);
         }
+        const jcut::audio::DynamicsSettingsCore normalizeDynamics =
+            effectiveAudioDynamicsForClip(document, clip);
         prepareTranscriptNormalization(
-            document, clip, clipDynamics, rootDirectory, &decoded);
+            document, clip, normalizeDynamics, rootDirectory, &decoded);
         cacheOut->emplace(clip.id, std::move(decoded));
     }
     return true;

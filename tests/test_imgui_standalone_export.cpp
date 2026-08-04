@@ -959,11 +959,11 @@ void TestImGuiStandaloneExport::sharedHarmonicIsolationAndTreatmentRoundTrip()
         restoredCore->audioTreatment,
         jcut::EditorAudioTreatment::HarmonicSpeechIsolation);
 
-    const QString shell = readSourceFile(
-        QStringLiteral("jcut_imgui_main.cpp"));
+    const QString projectTab = readSourceFile(
+        QStringLiteral("jcut_imgui_inspector_tabs_project.h"));
     QVERIFY2(
-        shell.contains(QStringLiteral("\"Harmonic Speech Isolation\"")) &&
-            shell.contains(QStringLiteral("SetAudioTreatmentCommand")),
+        projectTab.contains(QStringLiteral("\"Harmonic Speech Isolation\"")) &&
+            projectTab.contains(QStringLiteral("SetAudioTreatmentCommand")),
         "ImGui must bind the persisted treatment to the runtime command");
 }
 
@@ -1018,14 +1018,14 @@ sharedAudioDynamicsMatchesQtProcessingAndRoundTrips()
     QVERIFY(restoredCore.has_value());
     QVERIFY(restoredCore->audioDynamics == document.audioDynamics);
 
-    const QString shell = readSourceFile(
-        QStringLiteral("jcut_imgui_main.cpp"));
+    const QString projectTab = readSourceFile(
+        QStringLiteral("jcut_imgui_inspector_tabs_project.h"));
     QVERIFY2(
-        shell.contains(QStringLiteral("\"Master Dynamics\"")) &&
-            shell.contains(QStringLiteral("SetAudioDynamicsCommand")) &&
-            shell.contains(QStringLiteral("\"Compressor\"")) &&
-            shell.contains(QStringLiteral("\"Limiter\"")) &&
-            shell.contains(QStringLiteral("\"Stereo to Mono\"")),
+        projectTab.contains(QStringLiteral("\"Master Dynamics\"")) &&
+            projectTab.contains(QStringLiteral("SetAudioDynamicsCommand")) &&
+            projectTab.contains(QStringLiteral("\"Compressor\"")) &&
+            projectTab.contains(QStringLiteral("\"Limiter\"")) &&
+            projectTab.contains(QStringLiteral("\"Stereo to Mono\"")),
         "ImGui must bind functional master dynamics to the undoable runtime command");
 }
 

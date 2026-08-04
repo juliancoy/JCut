@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "editor_shared_media.h"
 
 int TimelineWidget::trackCount() const {
     int maxTrack = -1;

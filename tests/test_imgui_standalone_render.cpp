@@ -1360,6 +1360,34 @@ void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
 void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract()
 {
     const QString shell = readSourceFile(QStringLiteral("jcut_imgui_main.cpp"));
+    const QString textureWorkflows =
+        readSourceFile(QStringLiteral("jcut_imgui_texture_workflows.h"));
+    const QString timelinePanel =
+        readSourceFile(QStringLiteral("jcut_imgui_timeline_panel.h"));
+    const QString timelineWorkflows =
+        readSourceFile(QStringLiteral("jcut_imgui_timeline_workflows.h"));
+    const QString outputTab =
+        readSourceFile(QStringLiteral("jcut_imgui_inspector_tabs_output.h"));
+    const QString previewPanel =
+        readSourceFile(QStringLiteral("jcut_imgui_preview_panel.h"));
+    const QString editTab =
+        readSourceFile(QStringLiteral("jcut_imgui_inspector_tabs_edit.h"));
+    const QString visualTab =
+        readSourceFile(QStringLiteral("jcut_imgui_inspector_tabs_visual.h"));
+    const QString transcriptTab =
+        readSourceFile(QStringLiteral("jcut_imgui_inspector_tab_transcript.h"));
+    const QString keyboardWorkflow =
+        readSourceFile(QStringLiteral("jcut_imgui_keyboard_workflow.h"));
+    const QString menuPanel =
+        readSourceFile(QStringLiteral("jcut_imgui_menu_panel.h"));
+    const QString mediaPanel =
+        readSourceFile(QStringLiteral("jcut_imgui_media_panel.h"));
+    const QString projectWorkflows =
+        readSourceFile(QStringLiteral("jcut_imgui_project_workflows.h"));
+    const QString imguiPreviewWindow =
+        readSourceFile(QStringLiteral("imgui_preview_window.cpp"));
+    const QString imguiPreviewWindowHeader =
+        readSourceFile(QStringLiteral("imgui_preview_window.h"));
     const QString preview = readSourceFile(QStringLiteral("standalone_preview_renderer.cpp"));
     const QString previewHeader = readSourceFile(QStringLiteral("standalone_preview_renderer.h"));
     const QString audioRuntime = readSourceFile(QStringLiteral("imgui_audio_runtime.cpp"));
@@ -1382,6 +1410,20 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
     const QString legacyFrameHandoff =
         readSourceFile(QStringLiteral("vulkan_detector_frame_handoff.cpp"));
     QVERIFY2(!shell.isEmpty(), "jcut_imgui_main.cpp must be readable");
+    QVERIFY2(!textureWorkflows.isEmpty(), "jcut_imgui_texture_workflows.h must be readable");
+    QVERIFY2(!timelinePanel.isEmpty(), "jcut_imgui_timeline_panel.h must be readable");
+    QVERIFY2(!timelineWorkflows.isEmpty(), "jcut_imgui_timeline_workflows.h must be readable");
+    QVERIFY2(!outputTab.isEmpty(), "jcut_imgui_inspector_tabs_output.h must be readable");
+    QVERIFY2(!previewPanel.isEmpty(), "jcut_imgui_preview_panel.h must be readable");
+    QVERIFY2(!editTab.isEmpty(), "jcut_imgui_inspector_tabs_edit.h must be readable");
+    QVERIFY2(!visualTab.isEmpty(), "jcut_imgui_inspector_tabs_visual.h must be readable");
+    QVERIFY2(!transcriptTab.isEmpty(), "jcut_imgui_inspector_tab_transcript.h must be readable");
+    QVERIFY2(!keyboardWorkflow.isEmpty(), "jcut_imgui_keyboard_workflow.h must be readable");
+    QVERIFY2(!menuPanel.isEmpty(), "jcut_imgui_menu_panel.h must be readable");
+    QVERIFY2(!mediaPanel.isEmpty(), "jcut_imgui_media_panel.h must be readable");
+    QVERIFY2(!projectWorkflows.isEmpty(), "jcut_imgui_project_workflows.h must be readable");
+    QVERIFY2(!imguiPreviewWindow.isEmpty(), "imgui_preview_window.cpp must be readable");
+    QVERIFY2(!imguiPreviewWindowHeader.isEmpty(), "imgui_preview_window.h must be readable");
     QVERIFY2(!preview.isEmpty(), "standalone_preview_renderer.cpp must be readable");
     QVERIFY2(!previewHeader.isEmpty(), "standalone_preview_renderer.h must be readable");
     QVERIFY2(!audioRuntime.isEmpty(), "imgui_audio_runtime.cpp must be readable");
@@ -1396,9 +1438,36 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
     QVERIFY2(!frameImportCoreHeader.isEmpty(), "vulkan_external_frame_import_core.h must be readable");
     QVERIFY2(!legacyFrameHandoff.isEmpty(), "vulkan_detector_frame_handoff.cpp must be readable");
 
-    QVERIFY2(shell.contains(QStringLiteral("bindPreviewFrame(previewResult.vulkanFrame")),
+    const QString imguiSources = shell +
+        textureWorkflows +
+        timelinePanel +
+        timelineWorkflows +
+        outputTab +
+        previewPanel +
+        editTab +
+        visualTab +
+        transcriptTab +
+        keyboardWorkflow +
+        menuPanel +
+        mediaPanel +
+        projectWorkflows +
+        imguiPreviewWindow +
+        imguiPreviewWindowHeader;
+    QVERIFY2(!imguiSources.contains(QStringLiteral("#include <Q")) &&
+                 !imguiSources.contains(QStringLiteral("#include \"facedetections_tracking.h\"")) &&
+                 !imguiSources.contains(QStringLiteral("QString")) &&
+                 !imguiSources.contains(QStringLiteral("QRectF")) &&
+                 !imguiSources.contains(QStringLiteral("QImage")) &&
+                 !imguiSources.contains(QStringLiteral("QVector<")),
+             "ImGui source must keep its public/shared boundary Qt-free; Qt adapters must convert before calling it");
+    QVERIFY2(imguiPreviewWindowHeader.contains(QStringLiteral("DetectionOverlay")) &&
+                 imguiPreviewWindowHeader.contains(QStringLiteral("TrackOverlay")) &&
+                 imguiPreviewWindowHeader.contains(QStringLiteral("core::RectF")),
+             "ImGui preview overlays must use Qt-free DTOs instead of face-tracking structs backed by QRectF");
+
+    QVERIFY2(textureWorkflows.contains(QStringLiteral("bindPreviewFrame(previewResult.vulkanFrame")),
              "ImGui preview must try importing offscreen Vulkan frames before CPU upload");
-    QVERIFY2(shell.contains(QStringLiteral("uploadPreviewImage(previewResult.image")),
+    QVERIFY2(textureWorkflows.contains(QStringLiteral("uploadPreviewImage(previewResult.image")),
              "ImGui preview must retain CPU upload fallback for devices without external-frame import");
     QVERIFY2(
         timelineRenderer.contains(
@@ -1409,67 +1478,70 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                 QStringLiteral("renderHardwareOverlayLayer")) &&
             previewHeader.contains(
                 QStringLiteral("hardwareOverlayImage")) &&
-            shell.contains(
+            textureWorkflows.contains(
                 QStringLiteral("previewOverlayTexture")) &&
-            shell.contains(
+            textureWorkflows.contains(
                 QStringLiteral(
                     "previewResult.hardwareOverlayImage")),
         "hardware-direct preview must keep transcript rasterization "
         "separate and composite its overlay as a Vulkan texture");
-    QVERIFY2(shell.contains(QStringLiteral("previewCpuFallbackPreferred")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("previewCpuFallbackPreferred")),
              "ImGui preview must adaptively switch to CPU fallback after zero-copy import fails");
-    QVERIFY2(shell.contains(QStringLiteral("editorTrackMediaPresenceCore")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("editorTrackMediaPresenceCore")),
              "ImGui track controls must consume the shared media-presence policy");
-    QVERIFY2(shell.contains(QStringLiteral("!trackPresence.hasVisual")) &&
-                 shell.contains(QStringLiteral("!trackPresence.hasAudio")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("!trackPresence.hasVisual")) &&
+                 imguiSources.contains(QStringLiteral("!trackPresence.hasAudio")),
              "ImGui visual and audio track controls must disable when their media is absent");
-    QVERIFY2(shell.contains(QStringLiteral("hoveredTrackVisualToggleId")) &&
-                 shell.contains(QStringLiteral("hoveredTrackAudioToggleId")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(timelinePanel.contains(QStringLiteral("hoveredTrackVisualToggleId")) &&
+                 timelinePanel.contains(QStringLiteral("hoveredTrackAudioToggleId")) &&
+                 timelinePanel.contains(QStringLiteral(
                      "(std::clamp(trackIt->visualMode, 0, 2) + 1) % 3")) &&
-                 shell.contains(QStringLiteral("!trackIt->audioEnabled")),
+                 timelinePanel.contains(QStringLiteral("!trackIt->audioEnabled")),
              "timeline track headers must expose Qt-compatible visual-mode cycling and audio toggling");
     QVERIFY2(
-        shell.contains(QStringLiteral("\"TimelineViewport\"")) &&
-            shell.contains(QStringLiteral("requiredCanvasHeight")) &&
-            shell.contains(QStringLiteral(
+        timelinePanel.contains(QStringLiteral("\"TimelineViewport\"")) &&
+            timelinePanel.contains(QStringLiteral("requiredCanvasHeight")) &&
+            timelinePanel.contains(QStringLiteral(
                 "std::max(viewportAvail.y, requiredCanvasHeight)")),
         "the timeline canvas must scroll inside a dedicated viewport when "
         "its track rows exceed the visible panel height");
     QVERIFY2(
-        !shell.contains(QStringLiteral(
+        !imguiSources.contains(QStringLiteral(
             "ImGui::Selectable(track.label.c_str(), track.selected)")) &&
-            !shell.contains(QStringLiteral(
+            !imguiSources.contains(QStringLiteral(
                 "ImGui::Selectable(clip.label.c_str(), clip.selected)")),
         "timeline selection must use the canvas hit-testing path instead of "
         "appending duplicate selectable rows with label-derived ImGui IDs");
-    QVERIFY2(shell.contains(QStringLiteral("readTextFileTail")) &&
-                 shell.contains(QStringLiteral("64U * 1024U")) &&
-                 shell.contains(QStringLiteral("Refresh Artifact")) &&
-                 shell.contains(QStringLiteral("##JobsArtifactText")),
+    const QString projectTab =
+        readSourceFile(QStringLiteral("jcut_imgui_inspector_tabs_project.h"));
+    QVERIFY2(!projectTab.isEmpty(), "jcut_imgui_inspector_tabs_project.h must be readable");
+    QVERIFY2(imguiSources.contains(QStringLiteral("readTextFileTail")) &&
+                 projectTab.contains(QStringLiteral("64U * 1024U")) &&
+                 projectTab.contains(QStringLiteral("Refresh Artifact")) &&
+                 projectTab.contains(QStringLiteral("##JobsArtifactText")),
              "Jobs must provide bounded, refreshable in-app manifest and log inspection");
-    QVERIFY2(shell.contains(QStringLiteral("previewPipelineStages")) &&
-                 shell.contains(QStringLiteral("PipelineGraph")) &&
-                 shell.contains(QStringLiteral("PipelineStageFacts")) &&
-                 shell.contains(QStringLiteral("Retry Zero Copy")),
+    QVERIFY2(timelineWorkflows.contains(QStringLiteral("previewPipelineStages")) &&
+                 outputTab.contains(QStringLiteral("PipelineGraph")) &&
+                 outputTab.contains(QStringLiteral("PipelineStageFacts")) &&
+                 outputTab.contains(QStringLiteral("Retry Zero Copy")),
              "Pipeline must expose a selectable live stage graph, stage facts, refresh, and zero-copy retry");
-    QVERIFY2(shell.contains(QStringLiteral("transportSpeeds")) &&
-                 shell.contains(QStringLiteral("0.1f, 0.25f")) &&
-                 shell.contains(QStringLiteral("2.0f, 3.0f")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(previewPanel.contains(QStringLiteral("transportSpeeds")) &&
+                 previewPanel.contains(QStringLiteral("0.1f, 0.25f")) &&
+                 previewPanel.contains(QStringLiteral("2.0f, 3.0f")) &&
+                 previewPanel.contains(QStringLiteral(
                      "SetPlaybackLoopEnabledCommand")) &&
-                 shell.contains(QStringLiteral(
+                 previewPanel.contains(QStringLiteral(
                      "SetPreviewViewModeCommand")) &&
-                 shell.contains(QStringLiteral(
+                 previewPanel.contains(QStringLiteral(
                      "SetTransportAudioCommand")) &&
-                 shell.contains(QStringLiteral(
+                 previewPanel.contains(QStringLiteral(
                      "SeekToFrameCommand{transportEndFrame}")),
              "transport must expose Qt's exact speed presets, durable loop/view/audio controls, and start/end navigation");
-    QVERIFY2(!shell.contains(QStringLiteral("audio disabled in Qt-free ImGui shell")),
+    QVERIFY2(!imguiSources.contains(QStringLiteral("audio disabled in Qt-free ImGui shell")),
              "ImGui audio must not be hard-disabled as a shell policy");
-    QVERIFY2(shell.contains(QStringLiteral("#include \"imgui_audio_runtime.h\"")) &&
-                 !shell.contains(QStringLiteral("#include \"audio_engine.h\"")) &&
-                 !shell.contains(QStringLiteral("QVector<")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("#include \"imgui_audio_runtime.h\"")) &&
+                 !imguiSources.contains(QStringLiteral("#include \"audio_engine.h\"")) &&
+                 !imguiSources.contains(QStringLiteral("QVector<")),
              "the ImGui shell must consume audio through the Qt-free facade");
     QVERIFY2(audioRuntime.contains(QStringLiteral("#include \"RtAudio.h\"")) &&
                  audioRuntime.contains(QStringLiteral("standalone_audio_mixer.h")) &&
@@ -1480,7 +1552,7 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                      "output[index] *= volume")) &&
                  audioRuntime.contains(QStringLiteral(
                      "status.recentWaveform")) &&
-                 shell.contains(QStringLiteral(
+                 previewPanel.contains(QStringLiteral(
                      "audioStatus.recentWaveform")) &&
                  audioRuntime.contains(QStringLiteral("normalizedPlaybackSpeed")) &&
                  audioRuntime.contains(QStringLiteral("{\"fadeSamples\", clip.fadeSamples}")) &&
@@ -1494,8 +1566,8 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  audioRuntime.contains(QStringLiteral("replace_extension(\".wav\")")) &&
                  audioRuntime.contains(QStringLiteral("probeStandaloneMedia")),
              "source availability polling must cover replacements and derived WAV sidecars");
-    QVERIFY2(shell.contains(QStringLiteral("holdForAudioWarmup")) &&
-                 shell.contains(QStringLiteral("preTickAudioStatus.buffering")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("holdForAudioWarmup")) &&
+                 imguiSources.contains(QStringLiteral("preTickAudioStatus.buffering")),
              "transport must remain at the requested frame while audio warms asynchronously");
     QVERIFY2(audioRuntime.contains(QStringLiteral("m_decodeFuture.valid()")) &&
                  audioRuntime.contains(QStringLiteral("!m_cacheReady")) &&
@@ -1504,227 +1576,227 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  !audioRuntime.contains(QStringLiteral(
                      "continuing playback without warmed audio")),
              "pending Qt-free decode must remain gated until its cache is ready");
-    QVERIFY2(shell.contains(QStringLiteral("probeStandaloneMedia")) &&
-                 shell.contains(QStringLiteral("mediaInfo.hasAudio")) &&
-                 shell.contains(QStringLiteral("probeUnknownAudioPresence")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("probeStandaloneMedia")) &&
+                 imguiSources.contains(QStringLiteral("mediaInfo.hasAudio")) &&
+                 imguiSources.contains(QStringLiteral("probeUnknownAudioPresence")),
              "ImGui imports and legacy loads must persist probed stream metadata instead of assuming every video has audio");
     QVERIFY2(shell.contains(QStringLiteral("#include \"imgui_vulkan_frame_importer.h\"")) &&
                  !shell.contains(QStringLiteral("#include \"vulkan_detector_frame_handoff.h\"")),
              "the ImGui shell must consume Vulkan frames through the neutral importer facade");
     QVERIFY2(
-        shell.contains(QStringLiteral("#include \"prompt_mask_job_core.h\"")) &&
-            shell.contains(QStringLiteral("Run Prompt Mask Job")) &&
-            shell.contains(QStringLiteral("MaterializeMaskMatteCommand")) &&
-            shell.contains(QStringLiteral("Cancel Prompt Mask")),
+        imguiSources.contains(QStringLiteral("#include \"prompt_mask_job_core.h\"")) &&
+            editTab.contains(QStringLiteral("Run Prompt Mask Job")) &&
+            editTab.contains(QStringLiteral("MaterializeMaskMatteCommand")) &&
+            projectTab.contains(QStringLiteral("Cancel Prompt Mask")),
         "the Masks and Jobs tabs must launch, materialize, and cancel the shared prompt-mask workflow");
     QVERIFY2(
-        shell.contains(QStringLiteral("#include \"transcription_job_core.h\"")) &&
-            shell.contains(QStringLiteral("startTranscriptionJob")) &&
-            shell.contains(QStringLiteral("Transcription stdin")) &&
-            shell.contains(QStringLiteral("Cancel Transcription")) &&
-            shell.contains(QStringLiteral("Transcript Manifest")),
+        imguiSources.contains(QStringLiteral("#include \"transcription_job_core.h\"")) &&
+            transcriptTab.contains(QStringLiteral("startTranscriptionJob")) &&
+            projectTab.contains(QStringLiteral("Transcription stdin")) &&
+            projectTab.contains(QStringLiteral("Cancel Transcription")) &&
+            projectTab.contains(QStringLiteral("Transcript Manifest")),
         "Transcript and Jobs must launch, communicate with, cancel, and inspect the shared WhisperX workflow");
     QVERIFY2(
-        shell.contains(QStringLiteral("#include \"birefnet_job_core.h\"")) &&
-            shell.contains(QStringLiteral("Run BiRefNet Job")) &&
-            shell.contains(QStringLiteral("BiRefNetJobControllerCore")) &&
-            shell.contains(QStringLiteral("Cancel BiRefNet")) &&
-            shell.contains(QStringLiteral("BiRefNet Progress")) &&
-            shell.contains(QStringLiteral("BiRefNet Alpha")) &&
-            shell.contains(QStringLiteral(
+        imguiSources.contains(QStringLiteral("#include \"birefnet_job_core.h\"")) &&
+            editTab.contains(QStringLiteral("Run BiRefNet Job")) &&
+            imguiSources.contains(QStringLiteral("BiRefNetJobControllerCore")) &&
+            projectTab.contains(QStringLiteral("Cancel BiRefNet")) &&
+            projectTab.contains(QStringLiteral("BiRefNet Progress")) &&
+            editTab.contains(QStringLiteral("BiRefNet Alpha")) &&
+            textureWorkflows.contains(QStringLiteral(
                 "refreshBiRefNetLivePreviewTexture")) &&
-            shell.contains(QStringLiteral(
+            textureWorkflows.contains(QStringLiteral(
                 "uploadAuxiliaryImage")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "birefnetLivePreviewTextureId")) &&
-            shell.contains(QStringLiteral(
+            editTab.contains(QStringLiteral(
                 "ImGui::Image")),
         "Masks and Jobs must configure, launch, render live progress, materialize, cancel, and inspect the shared BiRefNet workflow");
-    QVERIFY2(shell.contains(QStringLiteral("CopySelectedClipsCommand")) &&
-                 shell.contains(QStringLiteral("CutSelectedClipsCommand")) &&
-                 shell.contains(QStringLiteral("PasteClipsCommand")) &&
-                 shell.contains(QStringLiteral("DuplicateSelectedClipsCommand")) &&
-                 shell.contains(QStringLiteral("TimelineClipContext")),
+    QVERIFY2(keyboardWorkflow.contains(QStringLiteral("CopySelectedClipsCommand")) &&
+                 keyboardWorkflow.contains(QStringLiteral("CutSelectedClipsCommand")) &&
+                 menuPanel.contains(QStringLiteral("PasteClipsCommand")) &&
+                 menuPanel.contains(QStringLiteral("DuplicateSelectedClipsCommand")) &&
+                 timelinePanel.contains(QStringLiteral("TimelineClipContext")),
              "the ImGui shell must expose the neutral clipboard commands through shortcuts, menus, and timeline context actions");
-    QVERIFY2(shell.contains(QStringLiteral("kProjectMediaDragPayload")) &&
-                 shell.contains(QStringLiteral("kFilesystemMediaDragPayload")) &&
-                 shell.contains(QStringLiteral("BeginDragDropSource")) &&
-                 shell.contains(QStringLiteral("SetDragDropPayload")) &&
-                 shell.contains(QStringLiteral("BeginDragDropTarget")) &&
-                 shell.contains(QStringLiteral("AcceptDragDropPayload")) &&
-                 shell.contains(QStringLiteral("InsertClipFromMediaCommand")) &&
-                 shell.contains(QStringLiteral("addClipCommandForPath")) &&
-                 shell.contains(QStringLiteral("timelineTrackDropTarget")) &&
-                 shell.contains(QStringLiteral("firstNonConflictingTrackIndex")) &&
-                 shell.contains(QStringLiteral("AddTrackCommand")) &&
-                 shell.contains(QStringLiteral("ReorderTrackCommand")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("kProjectMediaDragPayload")) &&
+                 imguiSources.contains(QStringLiteral("kFilesystemMediaDragPayload")) &&
+                 mediaPanel.contains(QStringLiteral("BeginDragDropSource")) &&
+                 mediaPanel.contains(QStringLiteral("SetDragDropPayload")) &&
+                 timelinePanel.contains(QStringLiteral("BeginDragDropTarget")) &&
+                 timelinePanel.contains(QStringLiteral("AcceptDragDropPayload")) &&
+                 timelinePanel.contains(QStringLiteral("InsertClipFromMediaCommand")) &&
+                 timelineWorkflows.contains(QStringLiteral("addClipCommandForPath")) &&
+                 timelineWorkflows.contains(QStringLiteral("timelineTrackDropTarget")) &&
+                 timelineWorkflows.contains(QStringLiteral("firstNonConflictingTrackIndex")) &&
+                 projectTab.contains(QStringLiteral("AddTrackCommand")) &&
+                 imguiSources.contains(QStringLiteral("ReorderTrackCommand")),
              "project and filesystem media must reuse neutral insertion commands through a real timeline drag/drop target with gap creation and conflict routing");
-    QVERIFY2(shell.contains(QStringLiteral("isImageSequenceDirectory")) &&
-                 shell.contains(QStringLiteral("isImportableMediaPath")) &&
-                 shell.contains(QStringLiteral("isDir && !isSequence")) &&
-                 shell.contains(QStringLiteral("[sequence]")) &&
-                 shell.contains(QStringLiteral("resolvedMediaDurationFrames")) &&
+    QVERIFY2(imguiSources.contains(QStringLiteral("isImageSequenceDirectory")) &&
+                 imguiSources.contains(QStringLiteral("isImportableMediaPath")) &&
+                 mediaPanel.contains(QStringLiteral("isDir && !isSequence")) &&
+                 mediaPanel.contains(QStringLiteral("[sequence]")) &&
+                 imguiSources.contains(QStringLiteral("resolvedMediaDurationFrames")) &&
                  qtMedia.contains(QStringLiteral("probeImageSequenceDirectory")) &&
                  timelineRenderer.contains(QStringLiteral("m_sequenceFramePaths")) &&
                  timelineRenderer.contains(QStringLiteral("m_sequenceFrameSource")) &&
                  sequenceCore.contains(QStringLiteral("numberedFiles * 2")),
              "Qt and ImGui media paths must share neutral image-sequence detection while ordinary directories still navigate and standalone rendering decodes ordered sequence frames");
-    QVERIFY2(shell.contains(QStringLiteral("RemoveMediaCommand")) &&
-                 shell.contains(QStringLiteral("ProjectMediaContext")) &&
-                 shell.contains(QStringLiteral("Remove from Project")),
+    QVERIFY2(mediaPanel.contains(QStringLiteral("RemoveMediaCommand")) &&
+                 mediaPanel.contains(QStringLiteral("ProjectMediaContext")) &&
+                 mediaPanel.contains(QStringLiteral("Remove from Project")),
              "project media removal must use the neutral guarded command from an explicit context action");
-    QVERIFY2(shell.contains(QStringLiteral("SplitSelectedClipsCommand")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(timelinePanel.contains(QStringLiteral("SplitSelectedClipsCommand")) &&
+                 timelinePanel.contains(QStringLiteral(
                      "jcut::SplitClipCommand{\n                    hoveredClipId")) &&
-                 shell.contains(QStringLiteral(
+                 timelinePanel.contains(QStringLiteral(
                      "jcut::SelectClipCommand{hoveredClipId}")) &&
-                 shell.contains(QStringLiteral("TimelineToolMode::Razor")) &&
-                 shell.contains(QStringLiteral("snapTimelineMoveStart")) &&
-                 shell.contains(QStringLiteral("timelineSnapIndicatorFrame")),
+                 timelinePanel.contains(QStringLiteral("TimelineToolMode::Razor")) &&
+                 timelineWorkflows.contains(QStringLiteral("snapTimelineMoveStart")) &&
+                 timelinePanel.contains(QStringLiteral("timelineSnapIndicatorFrame")),
              "the ImGui timeline must cut only the clicked clip while retaining explicit selected-group splitting and visible boundary snapping");
-    QVERIFY2(shell.contains(QStringLiteral("RemoveClipKeyframeCommand")) &&
-                 shell.contains(QStringLiteral("EditorKeyframeChannel::Grading")) &&
-                 shell.contains(QStringLiteral("EditorKeyframeChannel::Opacity")) &&
-                 shell.contains(QStringLiteral("EditorKeyframeChannel::Transform")) &&
-                 shell.contains(QStringLiteral("Set Hold")) &&
-                 shell.contains(QStringLiteral("Set Linear")),
+    QVERIFY2(visualTab.contains(QStringLiteral("RemoveClipKeyframeCommand")) &&
+                 visualTab.contains(QStringLiteral("EditorKeyframeChannel::Grading")) &&
+                 visualTab.contains(QStringLiteral("EditorKeyframeChannel::Opacity")) &&
+                 editTab.contains(QStringLiteral("EditorKeyframeChannel::Transform")) &&
+                 visualTab.contains(QStringLiteral("Set Hold")) &&
+                 editTab.contains(QStringLiteral("Set Linear")),
              "grading, opacity, and transform tables must expose undoable keyframe removal and interpolation editing");
-    QVERIFY2(shell.contains(QStringLiteral("InspectorKeyframeDraft")) &&
-                 shell.contains(QStringLiteral("drawKeyframeDraftEditor")) &&
-                 shell.contains(QStringLiteral("commitKeyframeDraft")) &&
-                 shell.contains(QStringLiteral("draft.originalFrame != keyframe->frame")) &&
-                 shell.contains(QStringLiteral("UpsertCommand{clipId, *keyframe}")) &&
-                 shell.contains(QStringLiteral("Grade Opacity")) &&
-                 shell.contains(QStringLiteral("Lift RGB")) &&
-                 shell.contains(QStringLiteral("Gamma RGB")) &&
-                 shell.contains(QStringLiteral("Gain RGB")) &&
-                 shell.contains(QStringLiteral("&draft->shadowsR")) &&
-                 shell.contains(QStringLiteral("&draft->midtonesG")) &&
-                 shell.contains(QStringLiteral("&draft->highlightsB")) &&
-                 shell.contains(QStringLiteral("ImGuiDataType_Double")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("InspectorKeyframeDraft")) &&
+                 imguiSources.contains(QStringLiteral("drawKeyframeDraftEditor")) &&
+                 imguiSources.contains(QStringLiteral("commitKeyframeDraft")) &&
+                 imguiSources.contains(QStringLiteral("draft.originalFrame != keyframe->frame")) &&
+                 imguiSources.contains(QStringLiteral("UpsertCommand{clipId, *keyframe}")) &&
+                 visualTab.contains(QStringLiteral("Grade Opacity")) &&
+                 visualTab.contains(QStringLiteral("Lift RGB")) &&
+                 visualTab.contains(QStringLiteral("Gamma RGB")) &&
+                 visualTab.contains(QStringLiteral("Gain RGB")) &&
+                 visualTab.contains(QStringLiteral("&draft->shadowsR")) &&
+                 visualTab.contains(QStringLiteral("&draft->midtonesG")) &&
+                 visualTab.contains(QStringLiteral("&draft->highlightsB")) &&
+                 visualTab.contains(QStringLiteral("ImGuiDataType_Double")) &&
+                 visualTab.contains(QStringLiteral(
                      "evaluateEditorClipGradingAtLocalFrame")) &&
-                 shell.contains(QStringLiteral("Key Opacity")) &&
-                 shell.contains(QStringLiteral("Transform Title")) &&
-                 shell.contains(QStringLiteral("Load/Edit")) &&
-                 shell.contains(QStringLiteral("New At Playhead")),
+                 visualTab.contains(QStringLiteral("Key Opacity")) &&
+                 editTab.contains(QStringLiteral("Transform Title")) &&
+                 editTab.contains(QStringLiteral("Load/Edit")) &&
+                 imguiSources.contains(QStringLiteral("New At Playhead")),
              "grade, opacity, and transform must share a full neutral keyframe draft editor with atomic scoped frame replacement, including Qt-range Lift/Gamma/Gain RGB editing");
-    QVERIFY2(shell.contains(QStringLiteral("editor_grading_core.h")) &&
-                 shell.contains(QStringLiteral("Three-point lock")) &&
-                 shell.contains(QStringLiteral("Curve smoothing")) &&
-                 shell.contains(QStringLiteral("CurvePointTable")) &&
-                 shell.contains(QStringLiteral("##X")) &&
-                 shell.contains(QStringLiteral("##Y")) &&
-                 shell.contains(QStringLiteral("Add point")) &&
-                 shell.contains(QStringLiteral("Remove")) &&
-                 shell.contains(QStringLiteral("Reset channel")) &&
-                 shell.contains(QStringLiteral("Fixed X")) &&
-                 shell.contains(QStringLiteral("kCurveXMinimum = 0.0")) &&
-                 shell.contains(QStringLiteral("kCurveXMaximum = 1.0")) &&
-                 shell.contains(QStringLiteral("kCurveYMinimum = -1.0")) &&
-                 shell.contains(QStringLiteral("kCurveYMaximum = 2.0")) &&
-                 shell.contains(QStringLiteral("CurveCanvas")) &&
-                 shell.contains(QStringLiteral("canvasToPoint")) &&
-                 shell.contains(QStringLiteral("nearestPoint")) &&
-                 shell.contains(QStringLiteral("ImGuiMouseButton_Right")) &&
-                 shell.contains(QStringLiteral("sampleEditorGradingCurveAt")) &&
-                 shell.contains(QStringLiteral("sanitizeEditorGradingCurve")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("editor_grading_core.h")) &&
+                 imguiSources.contains(QStringLiteral("Three-point lock")) &&
+                 imguiSources.contains(QStringLiteral("Curve smoothing")) &&
+                 imguiSources.contains(QStringLiteral("CurvePointTable")) &&
+                 imguiSources.contains(QStringLiteral("##X")) &&
+                 imguiSources.contains(QStringLiteral("##Y")) &&
+                 imguiSources.contains(QStringLiteral("Add point")) &&
+                 imguiSources.contains(QStringLiteral("Remove")) &&
+                 imguiSources.contains(QStringLiteral("Reset channel")) &&
+                 imguiSources.contains(QStringLiteral("Fixed X")) &&
+                 imguiSources.contains(QStringLiteral("kCurveXMinimum = 0.0")) &&
+                 imguiSources.contains(QStringLiteral("kCurveXMaximum = 1.0")) &&
+                 imguiSources.contains(QStringLiteral("kCurveYMinimum = -1.0")) &&
+                 imguiSources.contains(QStringLiteral("kCurveYMaximum = 2.0")) &&
+                 imguiSources.contains(QStringLiteral("CurveCanvas")) &&
+                 imguiSources.contains(QStringLiteral("canvasToPoint")) &&
+                 imguiSources.contains(QStringLiteral("nearestPoint")) &&
+                 imguiSources.contains(QStringLiteral("ImGuiMouseButton_Right")) &&
+                 imguiSources.contains(QStringLiteral("sampleEditorGradingCurveAt")) &&
+                 imguiSources.contains(QStringLiteral("sanitizeEditorGradingCurve")) &&
+                 imguiSources.contains(QStringLiteral(
                      "synchronizeEditorThreePointGradingCurves")) &&
-                 shell.contains(QStringLiteral("Normalize curves")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral("Normalize curves")) &&
+                 imguiSources.contains(QStringLiteral(
                      "normalizeEditorGradingCurves(*draft)")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "&draft->curvePointsR")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "&draft->curvePointsG")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "&draft->curvePointsB")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "&draft->curvePointsLuma")) &&
-                 shell.contains(QStringLiteral("applyLockedTone")),
+                 imguiSources.contains(QStringLiteral("applyLockedTone")),
              "the Grade draft must expose bounded direct-manipulation canvases and numeric RGB/Luma point tables, feed locked curves back into tones, normalize through the shared helper, and keep Luma independently editable");
-    QVERIFY2(shell.contains(QStringLiteral("startAutoOpposeJob")) &&
-                 shell.contains(QStringLiteral("pollAutoOpposeJob")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("startAutoOpposeJob")) &&
+                 imguiSources.contains(QStringLiteral("pollAutoOpposeJob")) &&
+                 imguiSources.contains(QStringLiteral(
                      "StandaloneMediaFrameDecoder")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "detectEditorOpposeGradeEvents")) &&
-                 shell.contains(QStringLiteral("Auto Oppose Settings")) &&
-                 !shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral("Auto Oppose Settings")) &&
+                 !imguiSources.contains(QStringLiteral(
                      "Auto Oppose (Qt workflow)")),
              "Grade Auto Oppose must run the shared decoded-frame analysis workflow rather than expose a disabled Qt-only placeholder");
-    QVERIFY2(!shell.contains(QStringLiteral("Curve lock: %s | smoothing: %s")),
+    QVERIFY2(!imguiSources.contains(QStringLiteral("Curve lock: %s | smoothing: %s")),
              "editable curve controls must replace the old read-only curve status text");
-    QVERIFY2(shell.contains(QStringLiteral("Scale to Fill Preview")) &&
-                 shell.contains(QStringLiteral("scaleClipToFillPreview")) &&
-                 shell.contains(QStringLiteral("jcut::SetClipTransformCommand")) &&
-                 shell.contains(QStringLiteral("mediaInfo.frameSize")) &&
+    QVERIFY2(imguiSources.contains(QStringLiteral("Scale to Fill Preview")) &&
+                 imguiSources.contains(QStringLiteral("scaleClipToFillPreview")) &&
+                 imguiSources.contains(QStringLiteral("jcut::SetClipTransformCommand")) &&
+                 imguiSources.contains(QStringLiteral("mediaInfo.frameSize")) &&
                  qtEditorPane.contains(QStringLiteral("jcut::scaleToFillFactor")) &&
                  qtMedia.contains(QStringLiteral("QImageReader(filePath).size()")) &&
                  scaleToFill.contains(QStringLiteral("scaleToFillFactor")) &&
                  timelineRenderer.contains(QStringLiteral("result.frameSize")),
              "Qt and ImGui scale-to-fill actions must share neutral aspect math and the undoable transform command while standalone probes expose source dimensions");
-    QVERIFY2(shell.contains(QStringLiteral("RenderSyncMarkerDraft")) &&
-                 shell.contains(QStringLiteral("renderSyncMarkerForClipAtFrame")) &&
-                 shell.contains(QStringLiteral("requestRenderSyncMarkerCount")) &&
-                 shell.contains(QStringLiteral("Duplicate Frames For Clip...")) &&
-                 shell.contains(QStringLiteral("Skip Frames For Clip...")) &&
-                 shell.contains(QStringLiteral("Clear At Playhead")) &&
-                 shell.contains(QStringLiteral("Render Sync Count")) &&
-                 shell.contains(QStringLiteral("kEditorRenderSyncMinCount")) &&
-                 shell.contains(QStringLiteral("kEditorRenderSyncMaxCount")) &&
-                 shell.contains(QStringLiteral("AddRenderSyncMarkerCommand")) &&
-                 shell.contains(QStringLiteral("RemoveRenderSyncMarkerCommand")) &&
-                 shell.contains(QStringLiteral("editorRenderSyncOwnerClipId")) &&
-                 shell.contains(QStringLiteral("hoveredRenderSyncMarker")) &&
-                 shell.contains(QStringLiteral("TimelineSyncMarkerContext")) &&
-                 shell.contains(QStringLiteral("clipPersistentId")) &&
-                 shell.contains(QStringLiteral("documentGeneration")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("RenderSyncMarkerDraft")) &&
+                 imguiSources.contains(QStringLiteral("renderSyncMarkerForClipAtFrame")) &&
+                 imguiSources.contains(QStringLiteral("requestRenderSyncMarkerCount")) &&
+                 imguiSources.contains(QStringLiteral("Duplicate Frames For Clip...")) &&
+                 imguiSources.contains(QStringLiteral("Skip Frames For Clip...")) &&
+                 imguiSources.contains(QStringLiteral("Clear At Playhead")) &&
+                 imguiSources.contains(QStringLiteral("Render Sync Count")) &&
+                 imguiSources.contains(QStringLiteral("kEditorRenderSyncMinCount")) &&
+                 imguiSources.contains(QStringLiteral("kEditorRenderSyncMaxCount")) &&
+                 imguiSources.contains(QStringLiteral("AddRenderSyncMarkerCommand")) &&
+                 imguiSources.contains(QStringLiteral("RemoveRenderSyncMarkerCommand")) &&
+                 imguiSources.contains(QStringLiteral("editorRenderSyncOwnerClipId")) &&
+                 imguiSources.contains(QStringLiteral("hoveredRenderSyncMarker")) &&
+                 imguiSources.contains(QStringLiteral("TimelineSyncMarkerContext")) &&
+                 imguiSources.contains(QStringLiteral("clipPersistentId")) &&
+                 imguiSources.contains(QStringLiteral("documentGeneration")),
              "the timeline must reuse neutral render-sync commands with Qt count bounds, canonical ownership, visible marker hit-testing, scoped removal, and reload-safe modal identity");
-    QVERIFY2(shell.contains(QStringLiteral("Reset Grading")) &&
-                 shell.contains(QStringLiteral("ResetClipGradingCommand")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("Reset Grading")) &&
+                 imguiSources.contains(QStringLiteral("ResetClipGradingCommand")),
              "the timeline context menu must route grading reset through one undoable neutral command");
-    QVERIFY2(shell.contains(QStringLiteral("Copy Clip Name")) &&
-                 shell.contains(QStringLiteral("Copy title")) &&
-                 shell.contains(QStringLiteral("ImGui::SetClipboardText")) &&
-                 shell.contains(QStringLiteral("requestedInspectorTab")) &&
-                 shell.contains(QStringLiteral("Grading...")) &&
-                 shell.contains(QStringLiteral("refreshClipMetadata")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("Copy Clip Name")) &&
+                 imguiSources.contains(QStringLiteral("Copy title")) &&
+                 imguiSources.contains(QStringLiteral("ImGui::SetClipboardText")) &&
+                 imguiSources.contains(QStringLiteral("requestedInspectorTab")) &&
+                 imguiSources.contains(QStringLiteral("Grading...")) &&
+                 imguiSources.contains(QStringLiteral("refreshClipMetadata")) &&
+                 imguiSources.contains(QStringLiteral(
                      "RefreshClipMetadataCommand")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "mediaInfo.sourceDurationFrames")) &&
-                 shell.contains(QStringLiteral("Generated Clips")) &&
-                 shell.contains(QStringLiteral("Run SAM 3...")) &&
-                 shell.contains(QStringLiteral("Run BiRefNet...")) &&
-                 shell.contains(QStringLiteral("\"Transcribe\"")) &&
-                 shell.contains(QStringLiteral("Open Transcript Tools")) &&
-                 shell.contains(QStringLiteral("Open Proxy Controls")) &&
-                 shell.contains(QStringLiteral("FaceDetections")) &&
-                 shell.contains(QStringLiteral("Properties")),
+                 imguiSources.contains(QStringLiteral("Generated Clips")) &&
+                 imguiSources.contains(QStringLiteral("Run SAM 3...")) &&
+                 imguiSources.contains(QStringLiteral("Run BiRefNet...")) &&
+                 imguiSources.contains(QStringLiteral("\"Transcribe\"")) &&
+                 imguiSources.contains(QStringLiteral("Open Transcript Tools")) &&
+                 imguiSources.contains(QStringLiteral("Open Proxy Controls")) &&
+                 imguiSources.contains(QStringLiteral("FaceDetections")) &&
+                 imguiSources.contains(QStringLiteral("Properties")),
              "the timeline context menu must provide clipboard actions, real transcription/BiRefNet routing, and direct access to grading, sync, mask, speaker/face, proxy, job, and properties workflows");
     QVERIFY2(
-        shell.contains(QStringLiteral("Split Selected At Playhead")) &&
-            shell.contains(QStringLiteral("SplitSelectedClipsCommand")) &&
-            shell.contains(QStringLiteral("selectedClipsCanSplitAtFrame")) &&
-            shell.contains(QStringLiteral("WantTextInput")) &&
-            shell.contains(QStringLiteral("IsAnyItemActive")) &&
-            shell.contains(QStringLiteral("InspectorDeleteTargetKind")) &&
-            shell.contains(QStringLiteral("markInspectorDeleteTargetForLastItem")) &&
-            shell.contains(QStringLiteral("markSyncDeleteTargetForLastItem")) &&
-            shell.contains(QStringLiteral("markTranscriptDeleteTargetForLastItem")) &&
-            shell.contains(QStringLiteral("transcriptDeletePopupRequested")) &&
-            shell.contains(QStringLiteral("focusedUiFrame + 1 ==")) &&
-            shell.contains(QStringLiteral("rowBackspacePressed")) &&
-            shell.contains(QStringLiteral("EditExportRangesCommand")) &&
-            shell.contains(QStringLiteral("ExportRangeEdit::SplitAtPlayhead")) &&
-            shell.contains(QStringLiteral("\"Create Title\"")) &&
-            shell.contains(QStringLiteral("Lock Transform To Source")) &&
-            shell.contains(QStringLiteral("SetClipSourceTransformLockedCommand")) &&
-            shell.contains(QStringLiteral("Lock Selected")) &&
-            shell.contains(QStringLiteral("Unlock Selected")) &&
-            shell.contains(QStringLiteral("SetSelectedClipsLockedCommand")),
+        imguiSources.contains(QStringLiteral("Split Selected At Playhead")) &&
+            imguiSources.contains(QStringLiteral("SplitSelectedClipsCommand")) &&
+            imguiSources.contains(QStringLiteral("selectedClipsCanSplitAtFrame")) &&
+            imguiSources.contains(QStringLiteral("WantTextInput")) &&
+            imguiSources.contains(QStringLiteral("IsAnyItemActive")) &&
+            imguiSources.contains(QStringLiteral("InspectorDeleteTargetKind")) &&
+            imguiSources.contains(QStringLiteral("markInspectorDeleteTargetForLastItem")) &&
+            imguiSources.contains(QStringLiteral("markSyncDeleteTargetForLastItem")) &&
+            imguiSources.contains(QStringLiteral("markTranscriptDeleteTargetForLastItem")) &&
+            imguiSources.contains(QStringLiteral("transcriptDeletePopupRequested")) &&
+            imguiSources.contains(QStringLiteral("focusedUiFrame + 1 ==")) &&
+            imguiSources.contains(QStringLiteral("rowBackspacePressed")) &&
+            imguiSources.contains(QStringLiteral("EditExportRangesCommand")) &&
+            imguiSources.contains(QStringLiteral("ExportRangeEdit::SplitAtPlayhead")) &&
+            imguiSources.contains(QStringLiteral("\"Create Title\"")) &&
+            imguiSources.contains(QStringLiteral("Lock Transform To Source")) &&
+            imguiSources.contains(QStringLiteral("SetClipSourceTransformLockedCommand")) &&
+            imguiSources.contains(QStringLiteral("Lock Selected")) &&
+            imguiSources.contains(QStringLiteral("Unlock Selected")) &&
+            imguiSources.contains(QStringLiteral("SetSelectedClipsLockedCommand")),
         "keyboard and clip-context actions must preserve multi-selection, "
         "suppress globals for editable widgets, and route focused keyframe "
         "or sync-row Delete/Backspace through generation-scoped neutral "
@@ -1738,140 +1810,140 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
         "standalone preview/export must use the neutral cycle-safe source "
         "transform evaluator and keep inherited transforms off the direct "
         "hardware bypass");
-    QVERIFY2(shell.contains(QStringLiteral("jcut::EditorTitleKeyframe titleDraft")) &&
-                 shell.contains(QStringLiteral("hydrateTitleDraft")) &&
-                 shell.contains(QStringLiteral("&shellState->titleDraft.text")) &&
-                 !shell.contains(QStringLiteral("titleDraftText")) &&
-                 shell.contains(QStringLiteral("Title Opacity")) &&
-                 shell.contains(QStringLiteral("Font Family")) &&
-                 shell.contains(QStringLiteral("editHexRgbColor(\"Title Color\"")) &&
-                 shell.contains(QStringLiteral("Linear Interpolation")) &&
-                 shell.contains(QStringLiteral("UpsertTitleKeyframeCommand")) &&
-                 shell.contains(QStringLiteral("RemoveTitleKeyframeCommand")) &&
-                 shell.contains(QStringLiteral("title-frame-")) &&
-                 shell.contains(QStringLiteral("SmallButton(\"Load\")")) &&
-                 shell.contains(QStringLiteral("previewTitleDragActive")) &&
-                 shell.contains(QStringLiteral("evaluateEditorClipTitleAtLocalFrame")) &&
-                 shell.contains(QStringLiteral("io.MouseDelta.x * outputWidth")) &&
-                 shell.contains(QStringLiteral("beginRuntimeHistoryTransaction(shellState)")) &&
-                 shell.contains(QStringLiteral("endRuntimeHistoryTransaction(shellState)")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("jcut::EditorTitleKeyframe titleDraft")) &&
+                 imguiSources.contains(QStringLiteral("hydrateTitleDraft")) &&
+                 imguiSources.contains(QStringLiteral("&shellState->titleDraft.text")) &&
+                 !imguiSources.contains(QStringLiteral("titleDraftText")) &&
+                 imguiSources.contains(QStringLiteral("Title Opacity")) &&
+                 imguiSources.contains(QStringLiteral("Font Family")) &&
+                 imguiSources.contains(QStringLiteral("editHexRgbColor(\"Title Color\"")) &&
+                 imguiSources.contains(QStringLiteral("Linear Interpolation")) &&
+                 imguiSources.contains(QStringLiteral("UpsertTitleKeyframeCommand")) &&
+                 imguiSources.contains(QStringLiteral("RemoveTitleKeyframeCommand")) &&
+                 imguiSources.contains(QStringLiteral("title-frame-")) &&
+                 imguiSources.contains(QStringLiteral("SmallButton(\"Load\")")) &&
+                 imguiSources.contains(QStringLiteral("previewTitleDragActive")) &&
+                 imguiSources.contains(QStringLiteral("evaluateEditorClipTitleAtLocalFrame")) &&
+                 imguiSources.contains(QStringLiteral("io.MouseDelta.x * outputWidth")) &&
+                 imguiSources.contains(QStringLiteral("beginRuntimeHistoryTransaction(shellState)")) &&
+                 imguiSources.contains(QStringLiteral("endRuntimeHistoryTransaction(shellState)")),
              "titles must expose every neutral field, row load/seek/removal, and direct output-space preview dragging as one undoable transaction");
     QVERIFY2(
-        shell.contains(QStringLiteral("PreviewTransformDragMode::Rotate")) &&
-            shell.contains(QStringLiteral("transformRotationHandleCenter")) &&
-            shell.contains(QStringLiteral("rotationForPointerDrag")) &&
-            shell.contains(QStringLiteral("io.KeyShift ? 15.0 : 0.0")) &&
-            shell.contains(QStringLiteral("CommitPreviewTransformCommand")),
+        imguiSources.contains(QStringLiteral("PreviewTransformDragMode::Rotate")) &&
+            imguiSources.contains(QStringLiteral("transformRotationHandleCenter")) &&
+            imguiSources.contains(QStringLiteral("rotationForPointerDrag")) &&
+            imguiSources.contains(QStringLiteral("io.KeyShift ? 15.0 : 0.0")) &&
+            imguiSources.contains(QStringLiteral("CommitPreviewTransformCommand")),
         "Program-monitor rotation must reuse wrap-safe neutral angle math, "
         "Shift snapping, and the coalesced preview-transform command");
     QVERIFY2(
-        shell.contains(QStringLiteral(
+        imguiSources.contains(QStringLiteral(
             "Automatic Speaker Framing")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "SetClipSpeakerFramingCommand")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "UpsertSpeakerFramingEnabledKeyframeCommand")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "UpsertSpeakerFramingKeyframeCommand")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "UpsertSpeakerFramingTargetKeyframeCommand")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "SpeakerFramingEnabled")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "SpeakerFramingTarget")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "Center Smoothing Frames")) &&
-            shell.contains(QStringLiteral(
+            imguiSources.contains(QStringLiteral(
                 "Manual Stream ID")),
         "the Transform inspector must bind complete neutral speaker-framing "
         "settings and all three keyframe channels through undoable runtime "
         "commands");
-    QVERIFY2(shell.contains(QStringLiteral("parseHexRgbColor")) &&
-                 shell.contains(QStringLiteral("formatHexRgbColor")) &&
-                 shell.contains(QStringLiteral("editHexRgbColor")) &&
-                 shell.contains(QStringLiteral("Manual Placement")) &&
-                 shell.contains(QStringLiteral("Center X")) &&
-                 shell.contains(QStringLiteral("Center Y")) &&
-                 shell.contains(QStringLiteral("Font Family")) &&
-                 shell.contains(QStringLiteral("Font Size")) &&
-                 shell.contains(QStringLiteral("ImGui::Checkbox(\"Bold\", &overlay.bold)")) &&
-                 shell.contains(QStringLiteral("ImGui::Checkbox(\"Italic\", &overlay.italic)")) &&
-                 shell.contains(QStringLiteral("Show Shadow")) &&
-                 shell.contains(QStringLiteral("Text Color")) &&
-                 shell.contains(QStringLiteral("Background Color")) &&
-                 shell.contains(QStringLiteral("Highlight Color")) &&
-                 shell.contains(QStringLiteral("Highlight Text Color")) &&
-                 shell.contains(QStringLiteral("SetClipTranscriptOverlayCommand")) &&
-                 !shell.contains(QStringLiteral("#include <QColor>")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("parseHexRgbColor")) &&
+                 imguiSources.contains(QStringLiteral("formatHexRgbColor")) &&
+                 imguiSources.contains(QStringLiteral("editHexRgbColor")) &&
+                 imguiSources.contains(QStringLiteral("Manual Placement")) &&
+                 imguiSources.contains(QStringLiteral("Center X")) &&
+                 imguiSources.contains(QStringLiteral("Center Y")) &&
+                 imguiSources.contains(QStringLiteral("Font Family")) &&
+                 imguiSources.contains(QStringLiteral("Font Size")) &&
+                 imguiSources.contains(QStringLiteral("ImGui::Checkbox(\"Bold\", &overlay.bold)")) &&
+                 imguiSources.contains(QStringLiteral("ImGui::Checkbox(\"Italic\", &overlay.italic)")) &&
+                 imguiSources.contains(QStringLiteral("Show Shadow")) &&
+                 imguiSources.contains(QStringLiteral("Text Color")) &&
+                 imguiSources.contains(QStringLiteral("Background Color")) &&
+                 imguiSources.contains(QStringLiteral("Highlight Color")) &&
+                 imguiSources.contains(QStringLiteral("Highlight Text Color")) &&
+                 imguiSources.contains(QStringLiteral("SetClipTranscriptOverlayCommand")) &&
+                 !imguiSources.contains(QStringLiteral("#include <QColor>")),
              "the transcript inspector must expose every neutral overlay style and placement field through Qt-free color helpers and the shared runtime command");
-    QVERIFY2(shell.contains(QStringLiteral("drawFrameSeekCell")) &&
-                 shell.contains(QStringLiteral("currentClip->startFrame) + keyframe.frame")) &&
-                 shell.contains(QStringLiteral("jcut::SeekToFrameCommand")) &&
-                 shell.contains(QStringLiteral("SmallButton(\"Seek\")")) &&
-                 shell.contains(QStringLiteral("RemoveRenderSyncMarkerCommand")) &&
-                 shell.contains(QStringLiteral("replaceRenderSyncMarker")) &&
-                 shell.contains(QStringLiteral("##operation")),
+    QVERIFY2(imguiSources.contains(QStringLiteral("drawFrameSeekCell")) &&
+                 imguiSources.contains(QStringLiteral("currentClip->startFrame) + keyframe.frame")) &&
+                 imguiSources.contains(QStringLiteral("jcut::SeekToFrameCommand")) &&
+                 imguiSources.contains(QStringLiteral("SmallButton(\"Seek\")")) &&
+                 imguiSources.contains(QStringLiteral("RemoveRenderSyncMarkerCommand")) &&
+                 imguiSources.contains(QStringLiteral("replaceRenderSyncMarker")) &&
+                 imguiSources.contains(QStringLiteral("##operation")),
              "keyframe and sync tables must reuse neutral seeking and expose atomic marker frame/count/action editing plus scoped removal");
-    QVERIFY2(shell.contains(QStringLiteral("kTrackVisualModeLabels")) &&
-                 shell.contains(QStringLiteral("Force Opaque")) &&
-                 shell.contains(QStringLiteral("SetTrackPropertiesCommand")) &&
-                 shell.contains(QStringLiteral("##trackLabel")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("kTrackVisualModeLabels")) &&
+                 imguiSources.contains(QStringLiteral("Force Opaque")) &&
+                 imguiSources.contains(QStringLiteral("SetTrackPropertiesCommand")) &&
+                 imguiSources.contains(QStringLiteral("##trackLabel")) &&
+                 imguiSources.contains(QStringLiteral(
                      "ImGui::InputText(\"##trackLabel\", &trackLabel)")) &&
-                 shell.contains(QStringLiteral("##trackHeight")) &&
-                 shell.contains(QStringLiteral("kEditorTrackMinHeight")) &&
-                 shell.contains(QStringLiteral("kEditorTrackMaxHeight")) &&
-                 shell.contains(QStringLiteral("##audioEnabled")) &&
-                 shell.contains(QStringLiteral("##audioGain")) &&
-                 shell.contains(QStringLiteral("##audioMuted")) &&
-                 shell.contains(QStringLiteral("##audioSolo")) &&
-                 shell.contains(QStringLiteral("SetTrackStateCommand trackState")) &&
-                 shell.contains(QStringLiteral("trackState.visualMode = visualMode")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral("##trackHeight")) &&
+                 imguiSources.contains(QStringLiteral("kEditorTrackMinHeight")) &&
+                 imguiSources.contains(QStringLiteral("kEditorTrackMaxHeight")) &&
+                 imguiSources.contains(QStringLiteral("##audioEnabled")) &&
+                 imguiSources.contains(QStringLiteral("##audioGain")) &&
+                 imguiSources.contains(QStringLiteral("##audioMuted")) &&
+                 imguiSources.contains(QStringLiteral("##audioSolo")) &&
+                 imguiSources.contains(QStringLiteral("SetTrackStateCommand trackState")) &&
+                 imguiSources.contains(QStringLiteral("trackState.visualMode = visualMode")) &&
+                 imguiSources.contains(QStringLiteral(
                      "trackState.gradingPreviewEnabled = gradingPreviewEnabled")) &&
-                 shell.contains(QStringLiteral("trackState.audioMuted = audioMuted")) &&
-                 shell.contains(QStringLiteral("trackState.audioSolo = audioSolo")),
+                 imguiSources.contains(QStringLiteral("trackState.audioMuted = audioMuted")) &&
+                 imguiSources.contains(QStringLiteral("trackState.audioSolo = audioSolo")),
              "the Tracks inspector must preserve peer state while exposing label/height, all three visual modes, and audio enable/gain/mute/solo controls");
-    QVERIFY2(shell.contains(QStringLiteral("trackCrossfadeSeconds = 0.5f")) &&
-                 shell.contains(QStringLiteral("trackCrossfadeMoveClips = false")) &&
-                 shell.contains(QStringLiteral("Crossfade (seconds)")) &&
-                 shell.contains(QStringLiteral("Move clips to overlap")) &&
-                 shell.contains(QStringLiteral("Crossfade Consecutive Clips")) &&
-                 shell.contains(QStringLiteral("crossfadeClipCount < 2")) &&
-                 shell.contains(QStringLiteral("CrossfadeTrackCommand")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("trackCrossfadeSeconds = 0.5f")) &&
+                 imguiSources.contains(QStringLiteral("trackCrossfadeMoveClips = false")) &&
+                 imguiSources.contains(QStringLiteral("Crossfade (seconds)")) &&
+                 imguiSources.contains(QStringLiteral("Move clips to overlap")) &&
+                 imguiSources.contains(QStringLiteral("Crossfade Consecutive Clips")) &&
+                 imguiSources.contains(QStringLiteral("crossfadeClipCount < 2")) &&
+                 imguiSources.contains(QStringLiteral("CrossfadeTrackCommand")) &&
+                 imguiSources.contains(QStringLiteral(
                      "jcut::isGeneratedEditorChildTrack(*crossfadeTrack)")),
              "the Tracks inspector must dispatch the neutral track crossfade command with Qt-matching duration and overlap controls while excluding derived lanes");
-    QVERIFY2(shell.contains(QStringLiteral("kGeneratedTrackLabelPrefix")) &&
-                 shell.contains(QStringLiteral("kGeneratedTrackLaneColor")) &&
-                 shell.contains(QStringLiteral("kGeneratedTrackClipColor")) &&
-                 shell.contains(QStringLiteral("kGeneratedTrackSelectedClipColor")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("kGeneratedTrackLabelPrefix")) &&
+                 imguiSources.contains(QStringLiteral("kGeneratedTrackLaneColor")) &&
+                 imguiSources.contains(QStringLiteral("kGeneratedTrackClipColor")) &&
+                 imguiSources.contains(QStringLiteral("kGeneratedTrackSelectedClipColor")) &&
+                 imguiSources.contains(QStringLiteral(
                      "jcut::isGeneratedEditorChildTrack(track)")),
              "generated child rows and clips must have an indented, subdued timeline treatment");
-    QVERIFY2(shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral(
                  "jcut::isGeneratedEditorChildTrack(\n"
                  "            snapshot.tracks[static_cast<std::size_t>(row)])")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "inserting a normal lane before the child")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "requestedInsertionIndex});")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "candidate.selected &&")) &&
-                 shell.contains(QStringLiteral("targetTrackIndex = -1")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral("targetTrackIndex = -1")) &&
+                 imguiSources.contains(QStringLiteral(
                      "!jcut::isGeneratedEditorChildTrack(snapshot.tracks[")),
              "media drops must atomically insert a normal row at a generated-row boundary, conflict routing must reject child lanes, and clip moves must not target them");
-    QVERIFY2(shell.contains(QStringLiteral("generatedTrackIdentity")) &&
-                 shell.contains(QStringLiteral("track.parentClipId")) &&
-                 shell.contains(QStringLiteral("track.childClipId")) &&
-                 shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral("generatedTrackIdentity")) &&
+                 imguiSources.contains(QStringLiteral("track.parentClipId")) &&
+                 imguiSources.contains(QStringLiteral("track.childClipId")) &&
+                 imguiSources.contains(QStringLiteral(
                      "ImGui::TextUnformatted(track.label.c_str())")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "adjacentOrdinaryTrackIndex")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "generatedChildTrack || !trackPresence.hasAudio")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "ImGui::BeginDisabled(audioControlsDisabled);")),
              "the Tracks inspector must expose read-only child identity, disable derived-row ordering/audio controls, and keep selection, height, and visual state outside those disabled scopes");
     const auto tracksTableOffset =
@@ -1902,33 +1974,33 @@ void TestImGuiStandaloneRender::testPreviewKeepsZeroCopyWithCpuFallbackContract(
                  visualModeOffset > reorderDisabledOffset &&
                  audioDisabledOffset > visualModeOffset,
              "child-row selection and height must remain enabled, visual mode must remain editable, and only reorder/audio controls may enter disabled scopes");
-    QVERIFY2(shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral(
                  "ImGui::Checkbox(\"##gradingPreviewEnabled\"")) &&
                  shell.indexOf(QStringLiteral(
                      "ImGui::Checkbox(\"##gradingPreviewEnabled\""),
                      visualModeOffset) < audioDisabledOffset,
              "generated child rows must retain an independently editable grading-preview state outside the disabled audio scope");
-    QVERIFY2(shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral(
                  "int adjacentOrdinaryTrackIndex")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "track.id, previousOrdinaryTrack")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "track.id, nextOrdinaryTrack")),
              "ordinary track reorder controls must skip derived child rows in either direction");
-    QVERIFY2(shell.contains(QStringLiteral(
+    QVERIFY2(imguiSources.contains(QStringLiteral(
                  "clip.selected && !clip.locked && !maskMatteClip")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "clip.locked || maskMatteClip")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "canonicalEditorClipRole(clip.clipRole) == \"mask_matte\"")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "hoveredClipId != 0 && !hoveredClipIsMaskMatte")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "TimelineToolMode::Razor &&\n                !hoveredClipIsMaskMatte")) &&
-                 shell.contains(QStringLiteral(
+                 imguiSources.contains(QStringLiteral(
                      "const int maximumTrackHeight = generatedChildTrack")),
              "derived matte clips must not advertise direct drag/razor affordances and child height editing must use the runtime's 56px bound");
-    QVERIFY2(shell.contains(
+    QVERIFY2(imguiSources.contains(
                  QStringLiteral("{\"mp4\", \"mov\", \"mkv\", \"webm\"}")),
              "the ImGui output format selector must expose the shared WebM backend");
     QVERIFY2(!previewHeader.contains(QStringLiteral("#include \"render_internal.h\"")) &&

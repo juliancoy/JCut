@@ -1,6 +1,5 @@
 #include "imgui_preview_window.h"
 
-#include "facedetections_tracking.h"
 #include "external/imgui/imgui.h"
 #include "external/imgui/backends/imgui_impl_glfw.h"
 #include "external/imgui/backends/imgui_impl_vulkan.h"
@@ -13,9 +12,6 @@
 #define GLFW_INCLUDE_NONE
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
-
-#include <QRectF>
-#include <QString>
 
 #include <algorithm>
 #include <atomic>
@@ -32,9 +28,19 @@ namespace {
 constexpr uint32_t kMinImageCount = 2;
 constexpr std::uint64_t kMonitorSwapchainWaitTimeoutNs = 16'000'000ull;
 
-QRectF toQRectF(const jcut::core::RectF& rect)
+bool validNonEmptyRect(const jcut::core::RectF& rect)
 {
-    return QRectF(rect.x, rect.y, rect.width, rect.height);
+    return rect.valid() && rect.width > 0.0 && rect.height > 0.0;
+}
+
+double rectRight(const jcut::core::RectF& rect)
+{
+    return rect.x + rect.width;
+}
+
+double rectBottom(const jcut::core::RectF& rect)
+{
+    return rect.y + rect.height;
 }
 
 ImVec2 fitImageIntoRegion(jcut::core::SizeI imageSize, const ImVec2& avail)
@@ -1363,8 +1369,8 @@ void ImGuiPreviewWindow::pumpEvents()
 
 bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                                       int64_t frameNumber,
-                                      std::span<const jcut::facedetections::ContinuityTrack> tracks,
-                                      std::span<const jcut::facedetections::Detection> detections,
+                                      std::span<const jcut::imgui_preview::TrackOverlay> tracks,
+                                      std::span<const jcut::imgui_preview::DetectionOverlay> detections,
                                       const jcut::core::RectF& roiRect,
                                       int detectionCount)
 {
@@ -1584,43 +1590,42 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     const int alpha = static_cast<int>(std::round(255.0f * m_impl->overlayOpacity));
     const ImU32 roiColor = IM_COL32(255, 170, 51, alpha);
     const ImU32 detColor = IM_COL32(168, 85, 247, alpha);
-    const QRectF qtRoiRect = toQRectF(roiRect);
-    auto trackColor = [alpha](jcut::facedetections::ContinuityTrackState state) {
-        if (state == jcut::facedetections::ContinuityTrackState::Removed) {
+    auto trackColor = [alpha](jcut::imgui_preview::OverlayTrackState state) {
+        if (state == jcut::imgui_preview::OverlayTrackState::Removed) {
             return IM_COL32(160, 160, 160, std::min(alpha, 220));
         }
         return IM_COL32(168, 85, 247, alpha);
     };
-    auto trackStateLabel = [](jcut::facedetections::ContinuityTrackState state) -> const char* {
+    auto trackStateLabel = [](jcut::imgui_preview::OverlayTrackState state) -> const char* {
         switch (state) {
-        case jcut::facedetections::ContinuityTrackState::Confirmed:
+        case jcut::imgui_preview::OverlayTrackState::Confirmed:
             return "Confirmed";
-        case jcut::facedetections::ContinuityTrackState::Tentative:
+        case jcut::imgui_preview::OverlayTrackState::Tentative:
             return "Tentative";
-        case jcut::facedetections::ContinuityTrackState::Lost:
+        case jcut::imgui_preview::OverlayTrackState::Lost:
             return "Lost";
-        case jcut::facedetections::ContinuityTrackState::Removed:
+        case jcut::imgui_preview::OverlayTrackState::Removed:
         default:
             return "Removed";
         }
     };
-    if (m_impl->showRoi && qtRoiRect.isValid() && !qtRoiRect.isEmpty()) {
-        const ImVec2 roiMin(imagePos.x + static_cast<float>(qtRoiRect.left()) * scaleX,
-                            imagePos.y + static_cast<float>(qtRoiRect.top()) * scaleY);
-        const ImVec2 roiMax(imagePos.x + static_cast<float>(qtRoiRect.right()) * scaleX,
-                            imagePos.y + static_cast<float>(qtRoiRect.bottom()) * scaleY);
+    if (m_impl->showRoi && validNonEmptyRect(roiRect)) {
+        const ImVec2 roiMin(imagePos.x + static_cast<float>(roiRect.x) * scaleX,
+                            imagePos.y + static_cast<float>(roiRect.y) * scaleY);
+        const ImVec2 roiMax(imagePos.x + static_cast<float>(rectRight(roiRect)) * scaleX,
+                            imagePos.y + static_cast<float>(rectBottom(roiRect)) * scaleY);
         drawList->AddRect(roiMin, roiMax, roiColor, 0.0f, 0, 2.0f);
     }
     if (m_impl->showDetections) {
-        for (const jcut::facedetections::Detection& detection : detections) {
-            const QRectF& box = detection.box;
-            if (!box.isValid() || box.isEmpty()) {
+        for (const jcut::imgui_preview::DetectionOverlay& detection : detections) {
+            const jcut::core::RectF& box = detection.box;
+            if (!validNonEmptyRect(box)) {
                 continue;
             }
-            const ImVec2 boxMin(imagePos.x + static_cast<float>(box.left()) * scaleX,
-                                imagePos.y + static_cast<float>(box.top()) * scaleY);
-            const ImVec2 boxMax(imagePos.x + static_cast<float>(box.right()) * scaleX,
-                                imagePos.y + static_cast<float>(box.bottom()) * scaleY);
+            const ImVec2 boxMin(imagePos.x + static_cast<float>(box.x) * scaleX,
+                                imagePos.y + static_cast<float>(box.y) * scaleY);
+            const ImVec2 boxMax(imagePos.x + static_cast<float>(rectRight(box)) * scaleX,
+                                imagePos.y + static_cast<float>(rectBottom(box)) * scaleY);
             drawList->AddRect(boxMin, boxMax, detColor, 0.0f, 0, m_impl->detectionLineThickness);
         }
     }
@@ -1628,36 +1633,35 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     int confirmedCount = 0;
     int tentativeCount = 0;
     int lostCount = 0;
-    for (const jcut::facedetections::ContinuityTrack& track : tracks) {
-        if (track.state == jcut::facedetections::ContinuityTrackState::Removed ||
-            !track.box.isValid() ||
-            track.box.isEmpty()) {
+    for (const jcut::imgui_preview::TrackOverlay& track : tracks) {
+        if (track.state == jcut::imgui_preview::OverlayTrackState::Removed ||
+            !validNonEmptyRect(track.box)) {
             continue;
         }
-        if ((track.state == jcut::facedetections::ContinuityTrackState::Confirmed && !m_impl->showConfirmedTracks) ||
-            (track.state == jcut::facedetections::ContinuityTrackState::Tentative && !m_impl->showTentativeTracks) ||
-            (track.state == jcut::facedetections::ContinuityTrackState::Lost && !m_impl->showLostTracks)) {
+        if ((track.state == jcut::imgui_preview::OverlayTrackState::Confirmed && !m_impl->showConfirmedTracks) ||
+            (track.state == jcut::imgui_preview::OverlayTrackState::Tentative && !m_impl->showTentativeTracks) ||
+            (track.state == jcut::imgui_preview::OverlayTrackState::Lost && !m_impl->showLostTracks)) {
             continue;
         }
         switch (track.state) {
-        case jcut::facedetections::ContinuityTrackState::Confirmed:
+        case jcut::imgui_preview::OverlayTrackState::Confirmed:
             ++confirmedCount;
             break;
-        case jcut::facedetections::ContinuityTrackState::Tentative:
+        case jcut::imgui_preview::OverlayTrackState::Tentative:
             ++tentativeCount;
             break;
-        case jcut::facedetections::ContinuityTrackState::Lost:
+        case jcut::imgui_preview::OverlayTrackState::Lost:
             ++lostCount;
             break;
-        case jcut::facedetections::ContinuityTrackState::Removed:
+        case jcut::imgui_preview::OverlayTrackState::Removed:
             break;
         }
         const ImU32 color = trackColor(track.state);
         if (m_impl->showTracks) {
-            const ImVec2 boxMin(imagePos.x + static_cast<float>(track.box.left()) * scaleX,
-                                imagePos.y + static_cast<float>(track.box.top()) * scaleY);
-            const ImVec2 boxMax(imagePos.x + static_cast<float>(track.box.right()) * scaleX,
-                                imagePos.y + static_cast<float>(track.box.bottom()) * scaleY);
+            const ImVec2 boxMin(imagePos.x + static_cast<float>(track.box.x) * scaleX,
+                                imagePos.y + static_cast<float>(track.box.y) * scaleY);
+            const ImVec2 boxMax(imagePos.x + static_cast<float>(rectRight(track.box)) * scaleX,
+                                imagePos.y + static_cast<float>(rectBottom(track.box)) * scaleY);
             drawList->AddRect(boxMin, boxMax, color, 0.0f, 0, m_impl->trackLineThickness);
             if (m_impl->showTrackLabels) {
                 const std::string labelText =
@@ -1703,8 +1707,8 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         ImGui::Separator();
         ImGui::TextUnformatted("Active Tracks");
         ImGui::BeginChild("Track Rows", ImVec2(0.0f, 0.0f), false);
-        for (const jcut::facedetections::ContinuityTrack& track : tracks) {
-            if (track.state == jcut::facedetections::ContinuityTrackState::Removed) {
+        for (const jcut::imgui_preview::TrackOverlay& track : tracks) {
+            if (track.state == jcut::imgui_preview::OverlayTrackState::Removed) {
                 continue;
             }
             const ImU32 color = trackColor(track.state);
@@ -1717,10 +1721,10 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
                                 track.hits,
                                 track.misses);
             ImGui::TextDisabled("box %.0f, %.0f  %.0fx%.0f",
-                                std::round(track.box.x()),
-                                std::round(track.box.y()),
-                                std::round(track.box.width()),
-                                std::round(track.box.height()));
+                                std::round(track.box.x),
+                                std::round(track.box.y),
+                                std::round(track.box.width),
+                                std::round(track.box.height));
             ImGui::Separator();
         }
         ImGui::EndChild();

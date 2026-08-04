@@ -1,7 +1,7 @@
 #include "inspector_pane.h"
 #include "audio_engine.h"
 #include "editor_effect_presets.h"
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 #include "playback_timing_context.h"
 #include "debug_controls.h"
 #include "grading_histogram_widget.h"

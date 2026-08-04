@@ -793,9 +793,10 @@ void applyGeneratedEffectMaskDomain(VulkanEffectPipelinePlan& plan,
         outputRect.height() <= 0.0) {
         return;
     }
+    const QRectF requestedDomain = domainRect.normalized().intersected(outputRect);
     const QRectF boundedDomain = applyMaskMatte
         ? outputRect
-        : domainRect.normalized().intersected(outputRect);
+        : requestedDomain;
     if (boundedDomain.isEmpty()) {
         return;
     }
@@ -828,15 +829,55 @@ void applyGeneratedEffectMaskDomain(VulkanEffectPipelinePlan& plan,
         qBound<qreal>(0.0001, boundedMaskDomain.width(), 1.0));
     const float maskHeight = static_cast<float>(
         qBound<qreal>(0.0001, boundedMaskDomain.height(), 1.0));
+    const QRectF requestedMaskDomain =
+        maskDomain.normalized().intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+    const float requestedMaskX = static_cast<float>(
+        qBound<qreal>(0.0, requestedMaskDomain.left(), 1.0));
+    const float requestedMaskY = static_cast<float>(
+        qBound<qreal>(0.0, requestedMaskDomain.top(), 1.0));
+    const float requestedMaskWidth = static_cast<float>(
+        qBound<qreal>(0.0001, requestedMaskDomain.width(), 1.0));
+    const float requestedMaskHeight = static_cast<float>(
+        qBound<qreal>(0.0001, requestedMaskDomain.height(), 1.0));
+    const bool hasRequestedSubDomain =
+        !requestedDomain.isEmpty() &&
+        (std::abs(requestedDomain.left() - outputRect.left()) > 0.001 ||
+         std::abs(requestedDomain.top() - outputRect.top()) > 0.001 ||
+         std::abs(requestedDomain.width() - outputRect.width()) > 0.001 ||
+         std::abs(requestedDomain.height() - outputRect.height()) > 0.001);
+    const float requestedX = static_cast<float>(
+        qBound<qreal>(0.0,
+                      (requestedDomain.left() - outputRect.left()) /
+                          outputRect.width(),
+                      1.0));
+    const float requestedY = static_cast<float>(
+        qBound<qreal>(0.0,
+                      (requestedDomain.top() - outputRect.top()) /
+                          outputRect.height(),
+                      1.0));
+    const float requestedWidth = static_cast<float>(
+        qBound<qreal>(0.0001,
+                      requestedDomain.width() / outputRect.width(),
+                      1.0));
+    const float requestedHeight = static_cast<float>(
+        qBound<qreal>(0.0001,
+                      requestedDomain.height() / outputRect.height(),
+                      1.0));
     for (VulkanEffectPipelinePlan::DrawPass& pass : plan.generatedDraws) {
-        pass.effectDomain[0] = x;
-        pass.effectDomain[1] = y;
-        pass.effectDomain[2] = width;
-        pass.effectDomain[3] = applyMaskMatte ? -height : height;
-        pass.effectMaskDomain[0] = maskX;
-        pass.effectMaskDomain[1] = maskY;
-        pass.effectMaskDomain[2] = maskWidth;
-        pass.effectMaskDomain[3] = maskHeight;
+        const bool recursiveTileMaskBounds =
+            applyMaskMatte &&
+            pass.shaderMode == kVulkanEffectModeRecursiveZoomTile &&
+            hasRequestedSubDomain;
+        pass.effectDomain[0] = recursiveTileMaskBounds ? requestedX : x;
+        pass.effectDomain[1] = recursiveTileMaskBounds ? requestedY : y;
+        pass.effectDomain[2] = recursiveTileMaskBounds ? requestedWidth : width;
+        const float domainHeight =
+            recursiveTileMaskBounds ? requestedHeight : height;
+        pass.effectDomain[3] = applyMaskMatte ? -domainHeight : domainHeight;
+        pass.effectMaskDomain[0] = recursiveTileMaskBounds ? requestedMaskX : maskX;
+        pass.effectMaskDomain[1] = recursiveTileMaskBounds ? requestedMaskY : maskY;
+        pass.effectMaskDomain[2] = recursiveTileMaskBounds ? requestedMaskWidth : maskWidth;
+        pass.effectMaskDomain[3] = recursiveTileMaskBounds ? requestedMaskHeight : maskHeight;
     }
 }
 

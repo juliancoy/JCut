@@ -13,7 +13,7 @@
 #include <QWidget>
 #include <functional>
 
-#include "editor_shared.h"
+#include "editor_shared_core.h"
 
 class EffectsTab : public QObject
 {

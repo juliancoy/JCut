@@ -158,6 +158,11 @@ vec2 generatedEffectMaskUv(vec2 screenUv) {
     return frame.effectMaskDomain.xy + domainUv * maskSize;
 }
 
+vec2 generatedEffectMaskDomainUv(vec2 domainUv) {
+    vec2 maskSize = max(abs(frame.effectMaskDomain.zw), vec2(0.0001));
+    return frame.effectMaskDomain.xy + domainUv * maskSize;
+}
+
 float periodicOriginalWeight(float phase) {
     float wrapped = fract(phase);
     float edgeDistance = min(wrapped, 1.0 - wrapped);
@@ -668,7 +673,49 @@ vec2 recursiveZoomVariantUv(vec2 uv,
     return fract(centered * scale + vec2(0.5));
 }
 
+vec4 objectRecursiveZoomTileSample(vec2 uv) {
+    vec2 domainUv = generatedEffectDomainUv(uv);
+    float density = clamp(frame.effectParams.y, 1.0, 96.0);
+    float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
+    float recursionBase = clamp(1.65 + density * 0.025 + spacing * 0.22,
+                                2.0,
+                                6.0);
+    float continuousZoom = max(frame.effectParams.x, 0.0);
+    float zoomPhase = fract(continuousZoom);
+    float motionPhase = frame.effectParams.z * 0.012;
+    float childScale = pow(recursionBase, zoomPhase);
+    float parentScale = childScale * recursionBase;
+    vec2 drift = vec2(motionPhase * 0.13 * spacing,
+                      motionPhase * 0.07 * spacing);
+    vec2 exactDomainUv = fract(domainUv);
+    vec2 childDomainUv = fract((domainUv - vec2(0.5)) * childScale +
+                               vec2(0.5) + drift);
+    vec2 parentDomainUv = fract((domainUv - vec2(0.5)) * parentScale +
+                                vec2(0.5) + drift);
+    vec2 exactSourceUv = generatedEffectDomainSourceUv(exactDomainUv);
+    vec2 childSourceUv = generatedEffectDomainSourceUv(childDomainUv);
+    vec2 parentSourceUv = generatedEffectDomainSourceUv(parentDomainUv);
+    vec4 exact = texture(u_texture, textureInteriorClamp(exactSourceUv));
+    vec4 child = texture(u_texture, textureInteriorClamp(childSourceUv));
+    vec4 parent = texture(u_texture, textureInteriorClamp(parentSourceUv));
+    if (generatedEffectAppliesMaskMatte()) {
+        exact.a *= treatedMaskValue(textureInteriorClamp(
+            generatedEffectMaskDomainUv(exactDomainUv)));
+        child.a *= treatedMaskValue(textureInteriorClamp(
+            generatedEffectMaskDomainUv(childDomainUv)));
+        parent.a *= treatedMaskValue(textureInteriorClamp(
+            generatedEffectMaskDomainUv(parentDomainUv)));
+    }
+    float replace = smoothstep(0.36, 0.92, zoomPhase);
+    vec4 recursive = mix(child, parent, replace);
+    return mix(recursive, exact, periodicOriginalWeight(continuousZoom));
+}
+
 vec4 recursiveZoomVariantSample(vec2 uv, int mode) {
+    if (mode == 30) {
+        return objectRecursiveZoomTileSample(uv);
+    }
+
     vec2 domainUv = generatedEffectDomainUv(uv);
     float density = clamp(frame.effectParams.y, 1.0, 96.0);
     float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
@@ -693,15 +740,19 @@ vec4 recursiveZoomVariantSample(vec2 uv, int mode) {
     float tileLayerScale = exactTileMode
         ? childScale * recursionBase
         : childScale / recursionBase;
-    vec2 childUv = generatedEffectDomainSourceUv(
-        recursiveZoomVariantUv(domainUv, childScale, continuousZoom, motionPhase, mode));
-    vec2 parentUv = generatedEffectDomainSourceUv(
-        recursiveZoomVariantUv(domainUv, tileLayerScale, continuousZoom - 1.0, motionPhase, mode));
+    vec2 childDomainUv =
+        recursiveZoomVariantUv(domainUv, childScale, continuousZoom, motionPhase, mode);
+    vec2 parentDomainUv =
+        recursiveZoomVariantUv(domainUv, tileLayerScale, continuousZoom - 1.0, motionPhase, mode);
+    vec2 childUv = generatedEffectDomainSourceUv(childDomainUv);
+    vec2 parentUv = generatedEffectDomainSourceUv(parentDomainUv);
     vec4 child = texture(u_texture, textureInteriorClamp(childUv));
     vec4 parent = texture(u_texture, textureInteriorClamp(parentUv));
     if (generatedEffectAppliesMaskMatte()) {
-        child.a *= treatedMaskValue(textureInteriorClamp(childUv));
-        parent.a *= treatedMaskValue(textureInteriorClamp(parentUv));
+        child.a *= treatedMaskValue(textureInteriorClamp(
+            generatedEffectMaskDomainUv(childDomainUv)));
+        parent.a *= treatedMaskValue(textureInteriorClamp(
+            generatedEffectMaskDomainUv(parentDomainUv)));
     }
     float replace = smoothstep(0.36, 0.92, zoomPhase);
     vec4 recursive = mix(child, parent, replace);
@@ -710,7 +761,7 @@ vec4 recursiveZoomVariantSample(vec2 uv, int mode) {
         textureInteriorClamp(generatedEffectDomainSourceUv(domainUv)));
     if (generatedEffectAppliesMaskMatte()) {
         original.a *= treatedMaskValue(
-            textureInteriorClamp(generatedEffectDomainSourceUv(domainUv)));
+            textureInteriorClamp(generatedEffectMaskDomainUv(domainUv)));
     }
     return mix(recursive, original, periodicOriginalWeight(continuousZoom));
 }
@@ -750,7 +801,8 @@ void main() {
         pc.u_shadows.a > 2.5 && pc.u_shadows.a < 3.5;
     float resolvedMaskValue = 1.0;
     if (earlyMaskOverlay || earlyMaskOnly) {
-        resolvedMaskValue = treatedMaskValue(v_texCoord);
+        vec2 maskUv = v_texCoord;
+        resolvedMaskValue = treatedMaskValue(maskUv);
         if (resolvedMaskValue <= 0.0) {
             discard;
         }

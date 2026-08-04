@@ -1072,6 +1072,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool incrementalExport =
         root.value(QStringLiteral("incrementalExport")).toBool(false);
+    const bool exportFirstThirtySeconds =
+        root.value(QStringLiteral("exportFirstThirtySeconds")).toBool(false);
     const int masterOutputAudioDelayMs =
         jcut::audio::normalizedMasterOutputAudioDelayMs(
             root.value(QStringLiteral("masterOutputAudioDelayMs"))
@@ -1694,6 +1696,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_incrementalRenderCheckBox) {
         QSignalBlocker block(m_incrementalRenderCheckBox);
         m_incrementalRenderCheckBox->setChecked(incrementalExport);
+    }
+    if (m_exportFirstThirtySecondsCheckBox) {
+        QSignalBlocker block(m_exportFirstThirtySecondsCheckBox);
+        m_exportFirstThirtySecondsCheckBox->setChecked(
+            exportFirstThirtySeconds);
     }
     if (m_masterOutputAudioDelayMsSpin) {
         QSignalBlocker block(m_masterOutputAudioDelayMsSpin);

@@ -1261,7 +1261,8 @@ void EditorWindow::createOutputTab()
             m_autosaveIntervalMinutesSpin, m_autosaveMaxBackupsSpin,
             m_inspectorPane ? m_inspectorPane->historyMaxEntriesSpin() : nullptr,
             m_inspectorPane ? m_inspectorPane->historyMaxMegabytesSpin() : nullptr,
-            m_incrementalRenderCheckBox, m_segmentPrewarmAutotuneCheckBox,
+            m_incrementalRenderCheckBox, m_exportFirstThirtySecondsCheckBox,
+            m_segmentPrewarmAutotuneCheckBox,
             m_instagramSafeAreaGuidesCheckBox,
             m_alignmentGridGuidesCheckBox, m_createImageSequenceCheckBox, m_imageSequenceFormatCombo,
             m_renderCachePathLabel, m_clearRenderCacheButton,
@@ -1278,8 +1279,9 @@ void EditorWindow::createOutputTab()
             [this](int64_t startFrame, int64_t endFrame) { if (m_timeline) m_timeline->setExportRange(startFrame, endFrame); },
             [this](const QSize& size) { if (m_preview) m_preview->setOutputSize(size); },
             [this]() { setPlaybackActive(false); },
-            [this](const jcut::render::RenderRequestCore& request) {
-                renderTimelineFromOutputRequestCore(request);
+            [this](const jcut::render::RenderRequestCore& request,
+                   const QVector<ExportRangeSegment>& exportRanges) {
+                renderTimelineFromOutputRequestCore(request, exportRanges);
             },
             [this]() { return m_lastRenderOutputPath; },
             [this](const QString& path) {

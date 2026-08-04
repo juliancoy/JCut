@@ -1,4 +1,5 @@
 #include "properties_tab.h"
+#include "editor_shared_media.h"
 
 #include <QDir>
 #include <QSignalBlocker>

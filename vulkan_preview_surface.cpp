@@ -2261,7 +2261,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     ? renderGeometry.bounds.intersected(renderOutputRect)
                     : renderOutputRect;
             QRectF tilingMaskBounds;
-            if (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile &&
+            if ((foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile ||
+                 foregroundEffectClip.effectPreset == ClipEffectPreset::RecursiveZoomTile) &&
                 foregroundEffectClip.tilingUseMaskBounds && status.maskBuffer) {
                 const QRectF normalizedMaskBounds =
                     render_detail::normalizedMaskContentBounds(
@@ -2307,9 +2308,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                                   normalizedMaskDomain,
                                   renderGeometry.localRect))
                               .intersected(renderOutputRect);
+                const QRectF generatedEffectDomain =
+                    foregroundEffectClip.effectPreset == ClipEffectPreset::RecursiveZoomTile &&
+                            foregroundEffectClip.tilingUseMaskBounds
+                        ? maskDomain
+                        : renderOutputRect;
                 render_detail::applyGeneratedEffectMaskDomain(
                     status.effectPlan,
-                    maskDomain,
+                    generatedEffectDomain,
                     renderOutputRect,
                     true,
                     normalizedMaskDomain);
@@ -2573,7 +2579,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                                   renderOutputRect)
                             : renderOutputRect;
                     QRectF tilingMaskBounds;
-                    if (matteEffectClip.effectPreset == ClipEffectPreset::SourceTile &&
+                    if ((matteEffectClip.effectPreset == ClipEffectPreset::SourceTile ||
+                         matteEffectClip.effectPreset == ClipEffectPreset::RecursiveZoomTile) &&
                         matteEffectClip.tilingUseMaskBounds &&
                         markerStatus.maskBuffer) {
                         const QRectF normalizedMaskBounds =
@@ -2623,9 +2630,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                                           normalizedMaskDomain,
                                           renderGeometry.localRect))
                                       .intersected(renderOutputRect);
+                        const QRectF generatedEffectDomain =
+                            matteEffectClip.effectPreset == ClipEffectPreset::RecursiveZoomTile &&
+                                    matteEffectClip.tilingUseMaskBounds
+                                ? maskDomain
+                                : renderOutputRect;
                         render_detail::applyGeneratedEffectMaskDomain(
                             markerStatus.effectPlan,
-                            maskDomain,
+                            generatedEffectDomain,
                             renderOutputRect,
                             true,
                             normalizedMaskDomain);

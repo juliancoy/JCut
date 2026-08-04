@@ -35,6 +35,7 @@ public:
 
     struct OutputRenderControls {
         QCheckBox *incrementalRender = nullptr;
+        QCheckBox *exportFirstThirtySeconds = nullptr;
         QCheckBox *segmentPrewarmAutotune = nullptr;
         QCheckBox *instagramSafeAreaGuides = nullptr;
         QCheckBox *alignmentGridGuides = nullptr;
@@ -550,6 +551,7 @@ public:
     OutputRenderControls outputRenderControls() const
     {
         return {m_incrementalRenderCheckBox,
+                m_exportFirstThirtySecondsCheckBox,
                 m_segmentPrewarmAutotuneCheckBox,
                 m_instagramSafeAreaGuidesCheckBox,
                 m_alignmentGridGuidesCheckBox,
@@ -1132,6 +1134,7 @@ private:
     QSpinBox *m_masterOutputAudioDelayMsSpin = nullptr;
     QSpinBox *m_masterOutputSubtitleOffsetMsSpin = nullptr;
     QCheckBox *m_incrementalRenderCheckBox = nullptr;
+    QCheckBox *m_exportFirstThirtySecondsCheckBox = nullptr;
     QCheckBox *m_segmentPrewarmAutotuneCheckBox = nullptr;
     QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
     QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;

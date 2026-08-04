@@ -122,6 +122,7 @@
       "layer": "L1/L4",
       "priority": 60,
       "declared_target": "editor_core",
+      "forbidden_includes": ["editor_shared.h"],
       "patterns": ["editor*", "inspector*", "*_tab.*", "*_tab_*.cpp", "timeline_widget*", "timeline_layout.*", "timeline_renderer.*", "timeline_container.*", "preview_*", "project_*", "projects.*", "track_sidebar.*", "transport_icons.*", "explorer_pane.*"]
     },
     {
