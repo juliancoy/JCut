@@ -209,6 +209,8 @@ bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& 
 
 } // namespace
 
+inline constexpr std::size_t kGpuExportPreviewSlotCount = 3;
+
 class DirectVulkanPreviewRenderer final {
 public:
     DirectVulkanPreviewRenderer(DirectVulkanPreviewWindow* owner,
@@ -306,13 +308,16 @@ private:
     QSize m_compositeSize;
     VkFormat m_compositeColorFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_compositeDepthFormat = VK_FORMAT_UNDEFINED;
-    std::array<GpuExportPreviewSlot, 2> m_gpuExportPreviewSlots;
+    std::array<GpuExportPreviewSlot, kGpuExportPreviewSlotCount>
+        m_gpuExportPreviewSlots;
     int m_gpuExportPreviewCurrentSlot = -1;
     std::shared_ptr<render_detail::OffscreenVulkanFrameConsumptionState>
         m_pendingGpuExportPreviewConsumptionState;
     quint64 m_pendingGpuExportPreviewGeneration = 0;
     int m_pendingGpuExportPreviewSlot = -1;
     std::uint64_t m_pendingGpuExportPreviewProducerSessionId = 0;
+    std::uint64_t m_gpuExportPreviewProducerSessionId = 0;
+    std::uint64_t m_lastAcceptedGpuExportPreviewSequence = 0;
     PFN_vkImportSemaphoreFdKHR m_importSemaphoreFd = nullptr;
 };
 
@@ -422,7 +427,8 @@ public:
     void setGpuExportPreviewFrame(
         const render_detail::OffscreenVulkanFrame& frame)
     {
-        if (!frame.valid || frame.bufferIndex >= 2) {
+        if (!frame.valid ||
+            frame.bufferIndex >= kGpuExportPreviewSlotCount) {
             if (frame.readySemaphoreFd >= 0) {
                 ::close(frame.readySemaphoreFd);
             }
@@ -813,8 +819,8 @@ protected:
                         const TimelineClip* selectedClip = clipForId(m_state, m_state->selectedClipId);
                         if (selectedClip) {
                             transient.dragOriginTranscriptTranslation =
-                                QPointF(selectedClip->transcriptOverlay.translationX,
-                                        selectedClip->transcriptOverlay.translationY);
+                                QPointF(selectedClip->transcriptOverlay.placement.translationX,
+                                        selectedClip->transcriptOverlay.placement.translationY);
                             transient.transcriptSizeOverride =
                                 QSizeF(selectedClip->transcriptOverlay.boxWidth,
                                        selectedClip->transcriptOverlay.boxHeight);

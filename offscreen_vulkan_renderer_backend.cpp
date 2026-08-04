@@ -329,6 +329,7 @@ private:
   bool m_yuv420pPlanesPrimed = false;
   bool m_commandBufferOpenForConversion = false;
   std::uint64_t m_producerSessionId = 0;
+  std::uint64_t m_previewPresentationSequence = 0;
 };
 
 OffscreenVulkanRenderer::OffscreenVulkanRenderer()

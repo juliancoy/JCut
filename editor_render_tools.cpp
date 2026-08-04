@@ -37,6 +37,7 @@
 #include <array>
 #include <cmath>
 #include <optional>
+#include <vector>
 
 #ifdef Q_OS_LINUX
 #include <pthread.h>
@@ -1436,12 +1437,23 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
     struct ProgressDispatchState {
         std::mutex mutex;
         std::optional<RenderProgress> latestProgress;
+        std::vector<RenderProgress> pendingGpuPreviews;
         bool updateQueued = false;
+        bool gpuPreviewUpdateQueued = false;
         std::function<bool(const RenderProgress&)> handler;
+        std::function<void(const render_detail::OffscreenVulkanFrame&)>
+            discardGpuPreview;
     };
     const auto progressDispatch =
         std::make_shared<ProgressDispatchState>();
     progressDispatch->handler = handleProgress;
+    progressDispatch->discardGpuPreview =
+        [imguiRenderMonitorPtr](
+            const render_detail::OffscreenVulkanFrame& frame) {
+            if (imguiRenderMonitorPtr) {
+                imguiRenderMonitorPtr->discardRenderMonitorFrame(frame);
+            }
+        };
 
     QFutureWatcher<RenderResult> renderWatcher;
     QEventLoop renderEventLoop;
@@ -1476,14 +1488,47 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
                         return continueRendering;
                     }
                     if (progress.gpuPreviewFrame.valid) {
-                        QMetaObject::invokeMethod(
-                            this,
-                            [progressDispatch, progress]() {
-                                if (progressDispatch->handler) {
-                                    progressDispatch->handler(progress);
-                                }
-                            },
-                            Qt::QueuedConnection);
+                        bool postGpuPreviewUpdate = false;
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                progressDispatch->mutex);
+                            progressDispatch->pendingGpuPreviews.push_back(
+                                progress);
+                            if (!progressDispatch->gpuPreviewUpdateQueued) {
+                                progressDispatch->gpuPreviewUpdateQueued = true;
+                                postGpuPreviewUpdate = true;
+                            }
+                        }
+                        if (postGpuPreviewUpdate) {
+                            QMetaObject::invokeMethod(
+                                this,
+                                [progressDispatch]() {
+                                    std::vector<RenderProgress> pending;
+                                    {
+                                        std::lock_guard<std::mutex> lock(
+                                            progressDispatch->mutex);
+                                        pending.swap(
+                                            progressDispatch->pendingGpuPreviews);
+                                        progressDispatch->gpuPreviewUpdateQueued =
+                                            false;
+                                    }
+                                    if (pending.empty()) {
+                                        return;
+                                    }
+                                    for (std::size_t i = 0;
+                                         i + 1 < pending.size(); ++i) {
+                                        if (progressDispatch->discardGpuPreview) {
+                                            progressDispatch->discardGpuPreview(
+                                                pending[i].gpuPreviewFrame);
+                                        }
+                                    }
+                                    if (progressDispatch->handler) {
+                                        progressDispatch->handler(
+                                            pending.back());
+                                    }
+                                },
+                                Qt::QueuedConnection);
+                        }
                         return !renderCancelled ||
                             !renderCancelled->load(
                                 std::memory_order_relaxed);
@@ -1525,7 +1570,20 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
         }));
     renderEventLoop.exec();
     const RenderResult result = renderWatcher.result();
+    std::vector<RenderProgress> unconsumedGpuPreviews;
+    {
+        std::lock_guard<std::mutex> lock(progressDispatch->mutex);
+        unconsumedGpuPreviews.swap(
+            progressDispatch->pendingGpuPreviews);
+        progressDispatch->gpuPreviewUpdateQueued = false;
+    }
+    for (const RenderProgress& pending : unconsumedGpuPreviews) {
+        if (progressDispatch->discardGpuPreview) {
+            progressDispatch->discardGpuPreview(pending.gpuPreviewFrame);
+        }
+    }
     progressDispatch->handler = {};
+    progressDispatch->discardGpuPreview = {};
     {
         std::lock_guard<std::mutex> lock(progressDispatch->mutex);
         progressDispatch->latestProgress.reset();

@@ -193,8 +193,8 @@ TimelineClip clipWithTransientTranscriptOverride(const PreviewInteractionState* 
     }
 
     TimelineClip effective = clip;
-    effective.transcriptOverlay.translationX = state->transient.transcriptTranslationOverride.x();
-    effective.transcriptOverlay.translationY = state->transient.transcriptTranslationOverride.y();
+    effective.transcriptOverlay.placement.translationX = state->transient.transcriptTranslationOverride.x();
+    effective.transcriptOverlay.placement.translationY = state->transient.transcriptTranslationOverride.y();
     effective.transcriptOverlay.useManualPlacement = true;
     if (state->transient.transcriptSizeOverride.width() > 0.0) {
         effective.transcriptOverlay.boxWidth = state->transient.transcriptSizeOverride.width();

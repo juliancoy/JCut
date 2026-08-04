@@ -373,6 +373,7 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                     for (const EditorTransformKeyframe& existing : clip->transformKeyframes) {
                         if (existing.frame > localFrame) {
                             keyframe.linearInterpolation = existing.linearInterpolation;
+                            keyframe.interpolationMode = existing.interpolationMode;
                             break;
                         }
                     }

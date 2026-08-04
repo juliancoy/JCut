@@ -1374,6 +1374,98 @@ double normalizedEditorOpacity(double opacity)
     return std::clamp(opacity, 0.0, 1.0);
 }
 
+std::string normalizedEditorTransformInterpolationMode(const std::string& mode,
+                                                       bool linearInterpolation)
+{
+    std::string normalized;
+    normalized.reserve(mode.size());
+    for (char ch : mode) {
+        normalized.push_back(ch == ' ' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    if (!linearInterpolation || normalized == "step" || normalized == "hold") {
+        return "step";
+    }
+    if (normalized == "perspective_linear" ||
+        normalized == "perspective" ||
+        normalized == "parallax_linear" ||
+        normalized == "depth_linear") {
+        return "perspective_linear";
+    }
+    return "linear";
+}
+
+bool editorTransformUsesPerspectiveDepth(const jcut::EditorTransformKeyframe& keyframe)
+{
+    return normalizedEditorTransformInterpolationMode(
+               keyframe.interpolationMode, keyframe.linearInterpolation) ==
+        "perspective_linear";
+}
+
+double safeEditorPerspectiveScaleMagnitude(double scale)
+{
+    return std::max(0.0001, std::abs(normalizedScale(scale)));
+}
+
+double editorPerspectiveLinearScale(double previous, double current, double amount)
+{
+    const double previousDepth = 1.0 / safeEditorPerspectiveScaleMagnitude(previous);
+    const double currentDepth = 1.0 / safeEditorPerspectiveScaleMagnitude(current);
+    const double depth = std::max(
+        0.0001,
+        previousDepth + ((currentDepth - previousDepth) * amount));
+    const double sign = ((amount < 0.5 ? previous : current) < 0.0) ? -1.0 : 1.0;
+    return normalizedScale(sign / depth);
+}
+
+double editorPerspectiveDepthForTransform(const jcut::EditorTransformKeyframe& keyframe)
+{
+    const double x = safeEditorPerspectiveScaleMagnitude(keyframe.scaleX);
+    const double y = safeEditorPerspectiveScaleMagnitude(keyframe.scaleY);
+    return 1.0 / std::sqrt(std::max(0.00000001, x * y));
+}
+
+jcut::EditorTransformKeyframe interpolatedEditorTransformKeyframe(
+    const jcut::EditorTransformKeyframe& previous,
+    const jcut::EditorTransformKeyframe& current,
+    std::int64_t frame,
+    double amount)
+{
+    jcut::EditorTransformKeyframe offset;
+    offset.frame = frame;
+    offset.title = previous.title;
+    offset.rotation = previous.rotation +
+        (current.rotation - previous.rotation) * amount;
+    offset.linearInterpolation = current.linearInterpolation;
+    offset.interpolationMode = normalizedEditorTransformInterpolationMode(
+        current.interpolationMode, current.linearInterpolation);
+    if (!editorTransformUsesPerspectiveDepth(current)) {
+        offset.translationX = previous.translationX +
+            (current.translationX - previous.translationX) * amount;
+        offset.translationY = previous.translationY +
+            (current.translationY - previous.translationY) * amount;
+        offset.scaleX = previous.scaleX +
+            (current.scaleX - previous.scaleX) * amount;
+        offset.scaleY = previous.scaleY +
+            (current.scaleY - previous.scaleY) * amount;
+        return offset;
+    }
+
+    offset.scaleX = editorPerspectiveLinearScale(previous.scaleX, current.scaleX, amount);
+    offset.scaleY = editorPerspectiveLinearScale(previous.scaleY, current.scaleY, amount);
+    const double previousDepth = editorPerspectiveDepthForTransform(previous);
+    const double currentDepth = editorPerspectiveDepthForTransform(current);
+    const double depth = std::max(
+        0.0001,
+        previousDepth + ((currentDepth - previousDepth) * amount));
+    const double previousWorldX = previous.translationX * previousDepth;
+    const double currentWorldX = current.translationX * currentDepth;
+    const double previousWorldY = previous.translationY * previousDepth;
+    const double currentWorldY = current.translationY * currentDepth;
+    offset.translationX = (previousWorldX + ((currentWorldX - previousWorldX) * amount)) / depth;
+    offset.translationY = (previousWorldY + ((currentWorldY - previousWorldY) * amount)) / depth;
+    return offset;
+}
+
 double editorClipOpacityAtLocalFrame(const jcut::EditorClip& clip,
                                      std::int64_t localFrame)
 {
@@ -2567,19 +2659,8 @@ EditorTransformKeyframe evaluateEditorClipTransformAtLocalFrame(
                         const double amount =
                             static_cast<double>(frame - previous.frame) /
                             static_cast<double>(current.frame - previous.frame);
-                        offset.frame = frame;
-                        offset.title = previous.title;
-                        offset.translationX = previous.translationX +
-                            (current.translationX - previous.translationX) * amount;
-                        offset.translationY = previous.translationY +
-                            (current.translationY - previous.translationY) * amount;
-                        offset.rotation = previous.rotation +
-                            (current.rotation - previous.rotation) * amount;
-                        offset.scaleX = previous.scaleX +
-                            (current.scaleX - previous.scaleX) * amount;
-                        offset.scaleY = previous.scaleY +
-                            (current.scaleY - previous.scaleY) * amount;
-                        offset.linearInterpolation = current.linearInterpolation;
+                        offset = interpolatedEditorTransformKeyframe(
+                            previous, current, frame, amount);
                     }
                     break;
                 }
@@ -2921,11 +3002,26 @@ EditorRuntime EditorRuntime::createDemo()
         {3, "Graphics", false},
         {4, "Audio Mix", false},
     };
+    const auto demoClip = [](int id,
+                             int trackId,
+                             std::string label,
+                             int startFrame,
+                             int durationFrames,
+                             bool selected) {
+        EditorClip clip;
+        clip.id = id;
+        clip.trackId = trackId;
+        clip.label = std::move(label);
+        clip.startFrame = startFrame;
+        clip.durationFrames = durationFrames;
+        clip.selected = selected;
+        return clip;
+    };
     runtime.m_document.clips = {
-        {1, 1, "Interview A", 0, 420, true},
-        {2, 2, "Interview B", 36, 396, false},
-        {3, 3, "Lower Third", 120, 96, false},
-        {4, 4, "VO Main", 0, 420, false},
+        demoClip(1, 1, "Interview A", 0, 420, true),
+        demoClip(2, 2, "Interview B", 36, 396, false),
+        demoClip(3, 3, "Lower Third", 120, 96, false),
+        demoClip(4, 4, "VO Main", 0, 420, false),
     };
     runtime.m_document.transport.currentFrame = 1842;
     runtime.m_document.exportRequest.outputFormat = "mp4";

@@ -612,6 +612,9 @@ QJsonObject EditorWindow::pipelineSnapshot(bool verbose) const
 QJsonObject EditorWindow::throttleConfigSnapshot() const
 {
     const QJsonObject speakerTrackingConfig = transcriptSpeakerTrackingConfigSnapshot();
+    const PreviewSurface::PlaybackTuning previewTuning =
+        m_preview ? m_preview->playbackTuning()
+                  : defaultOptimizedPreviewProfile().previewTuning;
     return QJsonObject{
         {QStringLiteral("ok"), true},
         {QStringLiteral("playback_ui_sync_min_interval_ms"), m_playbackUiSyncMinIntervalMs},
@@ -624,11 +627,92 @@ QJsonObject EditorWindow::throttleConfigSnapshot() const
         {QStringLiteral("state_save_debounce_interval_ms"), m_stateSaveDebounceIntervalMs},
         {QStringLiteral("transcript_manual_selection_hold_ms"), m_transcriptManualSelectionHoldMs},
         {QStringLiteral("preview_visible_backlog_limit"),
-         m_preview ? m_preview->playbackTuning().visibleBacklogLimit : defaultOptimizedPreviewProfile().previewTuning.visibleBacklogLimit},
+         previewTuning.visibleBacklogLimit},
         {QStringLiteral("preview_source_lookahead_frames"),
-         m_preview ? m_preview->playbackTuning().sourceLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.sourceLookaheadFrames},
+         previewTuning.sourceLookaheadFrames},
         {QStringLiteral("preview_proxy_lookahead_frames"),
-         m_preview ? m_preview->playbackTuning().proxyLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.proxyLookaheadFrames},
+         previewTuning.proxyLookaheadFrames},
+        {QStringLiteral("preview_prefetch_max_queue_depth"),
+         previewTuning.prefetchMaxQueueDepth},
+        {QStringLiteral("preview_prefetch_max_inflight"),
+         previewTuning.prefetchMaxInflight},
+        {QStringLiteral("preview_prefetch_max_per_tick"),
+         previewTuning.prefetchMaxPerTick},
+        {QStringLiteral("preview_visible_queue_reserve"),
+         previewTuning.visibleQueueReserve},
+        {QStringLiteral("preview_playback_window_ahead"),
+         previewTuning.playbackWindowAhead},
+        {QStringLiteral("preview_decode_autotune_enabled"),
+         previewTuning.decodeAutotuneEnabled},
+        {QStringLiteral("preview_decode_autotune_max_boost_level"),
+         previewTuning.decodeAutotuneMaxBoostLevel},
+        {QStringLiteral("preview_decode_autotune_min_adjust_interval_ms"),
+         previewTuning.decodeAutotuneMinAdjustIntervalMs},
+        {QStringLiteral("preview_decode_autotune_window_ms"),
+         previewTuning.decodeAutotuneWindowMs},
+        {QStringLiteral("preview_decode_autotune_min_samples"),
+         previewTuning.decodeAutotuneMinSamples},
+        {QStringLiteral("preview_decode_autotune_starved_late_rate_permille"),
+         previewTuning.decodeAutotuneStarvedLateRatePermille},
+        {QStringLiteral("preview_decode_autotune_starved_exact_hit_rate_permille"),
+         previewTuning.decodeAutotuneStarvedExactHitRatePermille},
+        {QStringLiteral("preview_decode_autotune_starved_avg_frame_lag"),
+         previewTuning.decodeAutotuneStarvedAvgFrameLag},
+        {QStringLiteral("preview_decode_autotune_recovered_late_rate_permille"),
+         previewTuning.decodeAutotuneRecoveredLateRatePermille},
+        {QStringLiteral("preview_decode_autotune_recovered_exact_hit_rate_permille"),
+         previewTuning.decodeAutotuneRecoveredExactHitRatePermille},
+        {QStringLiteral("preview_decode_autotune_recovered_avg_frame_lag"),
+         previewTuning.decodeAutotuneRecoveredAvgFrameLag},
+        {QStringLiteral("preview_decode_autotune_max_visible_backlog_limit"),
+         previewTuning.decodeAutotuneMaxVisibleBacklogLimit},
+        {QStringLiteral("preview_decode_autotune_max_source_lookahead_frames"),
+         previewTuning.decodeAutotuneMaxSourceLookaheadFrames},
+        {QStringLiteral("preview_decode_autotune_max_proxy_lookahead_frames"),
+         previewTuning.decodeAutotuneMaxProxyLookaheadFrames},
+        {QStringLiteral("preview_decode_autotune_visible_backlog_step"),
+         previewTuning.decodeAutotuneVisibleBacklogStep},
+        {QStringLiteral("preview_decode_autotune_lookahead_step"),
+         previewTuning.decodeAutotuneLookaheadStep},
+        {QStringLiteral("preview_decode_autotune_max_prefetch_max_queue_depth"),
+         previewTuning.decodeAutotuneMaxPrefetchMaxQueueDepth},
+        {QStringLiteral("preview_decode_autotune_max_prefetch_max_inflight"),
+         previewTuning.decodeAutotuneMaxPrefetchMaxInflight},
+        {QStringLiteral("preview_decode_autotune_max_prefetch_max_per_tick"),
+         previewTuning.decodeAutotuneMaxPrefetchMaxPerTick},
+        {QStringLiteral("preview_decode_autotune_max_visible_queue_reserve"),
+         previewTuning.decodeAutotuneMaxVisibleQueueReserve},
+        {QStringLiteral("preview_decode_autotune_max_playback_window_ahead"),
+         previewTuning.decodeAutotuneMaxPlaybackWindowAhead},
+        {QStringLiteral("preview_decode_autotune_prefetch_queue_depth_step"),
+         previewTuning.decodeAutotunePrefetchQueueDepthStep},
+        {QStringLiteral("preview_decode_autotune_prefetch_concurrency_step"),
+         previewTuning.decodeAutotunePrefetchConcurrencyStep},
+        {QStringLiteral("preview_decode_autotune_visible_queue_reserve_step"),
+         previewTuning.decodeAutotuneVisibleQueueReserveStep},
+        {QStringLiteral("preview_decode_autotune_playback_window_ahead_step"),
+         previewTuning.decodeAutotunePlaybackWindowAheadStep},
+        {QStringLiteral("prefetch_max_queue_depth"), editor::debugPrefetchMaxQueueDepth()},
+        {QStringLiteral("prefetch_max_inflight"), editor::debugPrefetchMaxInflight()},
+        {QStringLiteral("prefetch_max_per_tick"), editor::debugPrefetchMaxPerTick()},
+        {QStringLiteral("prefetch_skip_visible_pending_threshold"),
+         editor::debugPrefetchSkipVisiblePendingThreshold()},
+        {QStringLiteral("visible_queue_reserve"), editor::debugVisibleQueueReserve()},
+        {QStringLiteral("playback_window_ahead"), editor::debugPlaybackWindowAhead()},
+        {QStringLiteral("file_video_playback_window_ahead"),
+         editor::debugFileVideoPlaybackWindowAhead()},
+        {QStringLiteral("visible_decode_keep_window"),
+         editor::debugVisibleDecodeKeepWindow()},
+        {QStringLiteral("sequence_visible_decode_keep_window"),
+         editor::debugSequenceVisibleDecodeKeepWindow()},
+        {QStringLiteral("visible_pending_retry_ms"),
+         editor::debugVisiblePendingRetryMs()},
+        {QStringLiteral("cancel_before_min_frame_advance"),
+         editor::debugCancelBeforeMinFrameAdvance()},
+        {QStringLiteral("cancel_before_min_interval_ms"),
+         editor::debugCancelBeforeMinIntervalMs()},
+        {QStringLiteral("supersede_slack_frames"),
+         editor::debugSupersedeSlackFrames()},
         {QStringLiteral("startup_optimization"), startupOptimizationSnapshot()},
         {QStringLiteral("runtime_patches"), runtimePatchesSnapshot()},
         {QStringLiteral("optimized_profile_path"), optimizedProfilePath()},
@@ -663,6 +747,37 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
         *target = static_cast<int>(value);
         return true;
     };
+    auto parseNonNegativeInt = [](const QJsonObject& obj, const QString& key, int* target, QString* error) -> bool {
+        if (!obj.contains(key)) return true;
+        bool ok = false;
+        const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+        if (!ok || value < 0 || value > std::numeric_limits<int>::max()) {
+            if (error) *error = QStringLiteral("%1 must be a non-negative integer").arg(key);
+            return false;
+        }
+        *target = static_cast<int>(value);
+        return true;
+    };
+    auto parseBool = [](const QJsonObject& obj, const QString& key, bool* target, QString* error) -> bool {
+        if (!obj.contains(key)) return true;
+        if (!obj.value(key).isBool()) {
+            if (error) *error = QStringLiteral("%1 must be a boolean").arg(key);
+            return false;
+        }
+        *target = obj.value(key).toBool();
+        return true;
+    };
+    auto parsePermille = [](const QJsonObject& obj, const QString& key, int* target, QString* error) -> bool {
+        if (!obj.contains(key)) return true;
+        bool ok = false;
+        const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+        if (!ok || value < 0 || value > 1000) {
+            if (error) *error = QStringLiteral("%1 must be an integer in [0, 1000]").arg(key);
+            return false;
+        }
+        *target = static_cast<int>(value);
+        return true;
+    };
     auto parsePositiveMs = [](const QJsonObject& obj, const QString& key, qint64* target, QString* error) -> bool {
         if (!obj.contains(key)) return true;
         bool ok = false;
@@ -682,6 +797,21 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
         m_preview ? m_preview->playbackTuning().sourceLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.sourceLookaheadFrames;
     int previewProxyLookaheadFrames =
         m_preview ? m_preview->playbackTuning().proxyLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.proxyLookaheadFrames;
+    int prefetchMaxQueueDepth = editor::debugPrefetchMaxQueueDepth();
+    int prefetchMaxInflight = editor::debugPrefetchMaxInflight();
+    int prefetchMaxPerTick = editor::debugPrefetchMaxPerTick();
+    int prefetchSkipVisiblePendingThreshold = editor::debugPrefetchSkipVisiblePendingThreshold();
+    int visibleQueueReserve = editor::debugVisibleQueueReserve();
+    int playbackWindowAhead = editor::debugPlaybackWindowAhead();
+    int fileVideoPlaybackWindowAhead = editor::debugFileVideoPlaybackWindowAhead();
+    int visibleDecodeKeepWindow = editor::debugVisibleDecodeKeepWindow();
+    int sequenceVisibleDecodeKeepWindow = editor::debugSequenceVisibleDecodeKeepWindow();
+    int visiblePendingRetryMs = editor::debugVisiblePendingRetryMs();
+    int cancelBeforeMinFrameAdvance = editor::debugCancelBeforeMinFrameAdvance();
+    int supersedeSlackFrames = editor::debugSupersedeSlackFrames();
+    qint64 cancelBeforeMinIntervalMs = editor::debugCancelBeforeMinIntervalMs();
+    PreviewSurface::PlaybackTuning previewTuning =
+        m_preview ? m_preview->playbackTuning() : defaultOptimizedPreviewProfile().previewTuning;
     if (!parsePositiveMs(patch, QStringLiteral("playback_ui_sync_min_interval_ms"), &m_playbackUiSyncMinIntervalMs, &error) ||
         !parsePositiveMs(patch, QStringLiteral("playback_table_sync_min_interval_ms"), &m_playbackTableSyncMinIntervalMs, &error) ||
         !parsePositiveMs(patch, QStringLiteral("playback_state_save_min_interval_ms"), &m_playbackStateSaveMinIntervalMs, &error) ||
@@ -693,19 +823,79 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
         !parsePositiveInt(patch, QStringLiteral("transcript_manual_selection_hold_ms"), &m_transcriptManualSelectionHoldMs, &error) ||
         !parsePositiveInt(patch, QStringLiteral("preview_visible_backlog_limit"), &previewVisibleBacklogLimit, &error) ||
         !parsePositiveInt(patch, QStringLiteral("preview_source_lookahead_frames"), &previewSourceLookaheadFrames, &error) ||
-        !parsePositiveInt(patch, QStringLiteral("preview_proxy_lookahead_frames"), &previewProxyLookaheadFrames, &error)) {
+        !parsePositiveInt(patch, QStringLiteral("preview_proxy_lookahead_frames"), &previewProxyLookaheadFrames, &error) ||
+        !parseBool(patch, QStringLiteral("preview_decode_autotune_enabled"), &previewTuning.decodeAutotuneEnabled, &error) ||
+        !parseNonNegativeInt(patch, QStringLiteral("preview_decode_autotune_max_boost_level"), &previewTuning.decodeAutotuneMaxBoostLevel, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_min_adjust_interval_ms"), &previewTuning.decodeAutotuneMinAdjustIntervalMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_window_ms"), &previewTuning.decodeAutotuneWindowMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_min_samples"), &previewTuning.decodeAutotuneMinSamples, &error) ||
+        !parsePermille(patch, QStringLiteral("preview_decode_autotune_starved_late_rate_permille"), &previewTuning.decodeAutotuneStarvedLateRatePermille, &error) ||
+        !parsePermille(patch, QStringLiteral("preview_decode_autotune_starved_exact_hit_rate_permille"), &previewTuning.decodeAutotuneStarvedExactHitRatePermille, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_starved_avg_frame_lag"), &previewTuning.decodeAutotuneStarvedAvgFrameLag, &error) ||
+        !parsePermille(patch, QStringLiteral("preview_decode_autotune_recovered_late_rate_permille"), &previewTuning.decodeAutotuneRecoveredLateRatePermille, &error) ||
+        !parsePermille(patch, QStringLiteral("preview_decode_autotune_recovered_exact_hit_rate_permille"), &previewTuning.decodeAutotuneRecoveredExactHitRatePermille, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_recovered_avg_frame_lag"), &previewTuning.decodeAutotuneRecoveredAvgFrameLag, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_visible_backlog_limit"), &previewTuning.decodeAutotuneMaxVisibleBacklogLimit, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_source_lookahead_frames"), &previewTuning.decodeAutotuneMaxSourceLookaheadFrames, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_proxy_lookahead_frames"), &previewTuning.decodeAutotuneMaxProxyLookaheadFrames, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_visible_backlog_step"), &previewTuning.decodeAutotuneVisibleBacklogStep, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_lookahead_step"), &previewTuning.decodeAutotuneLookaheadStep, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_prefetch_max_queue_depth"), &previewTuning.decodeAutotuneMaxPrefetchMaxQueueDepth, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_prefetch_max_inflight"), &previewTuning.decodeAutotuneMaxPrefetchMaxInflight, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_prefetch_max_per_tick"), &previewTuning.decodeAutotuneMaxPrefetchMaxPerTick, &error) ||
+        !parseNonNegativeInt(patch, QStringLiteral("preview_decode_autotune_max_visible_queue_reserve"), &previewTuning.decodeAutotuneMaxVisibleQueueReserve, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_max_playback_window_ahead"), &previewTuning.decodeAutotuneMaxPlaybackWindowAhead, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_prefetch_queue_depth_step"), &previewTuning.decodeAutotunePrefetchQueueDepthStep, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_prefetch_concurrency_step"), &previewTuning.decodeAutotunePrefetchConcurrencyStep, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_visible_queue_reserve_step"), &previewTuning.decodeAutotuneVisibleQueueReserveStep, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_decode_autotune_playback_window_ahead_step"), &previewTuning.decodeAutotunePlaybackWindowAheadStep, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_prefetch_max_queue_depth"), &prefetchMaxQueueDepth, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_prefetch_max_inflight"), &prefetchMaxInflight, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_prefetch_max_per_tick"), &prefetchMaxPerTick, &error) ||
+        !parseNonNegativeInt(patch, QStringLiteral("preview_visible_queue_reserve"), &visibleQueueReserve, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_playback_window_ahead"), &playbackWindowAhead, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("prefetch_max_queue_depth"), &prefetchMaxQueueDepth, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("prefetch_max_inflight"), &prefetchMaxInflight, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("prefetch_max_per_tick"), &prefetchMaxPerTick, &error) ||
+        !parseNonNegativeInt(patch, QStringLiteral("prefetch_skip_visible_pending_threshold"), &prefetchSkipVisiblePendingThreshold, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("visible_queue_reserve"), &visibleQueueReserve, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("playback_window_ahead"), &playbackWindowAhead, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("file_video_playback_window_ahead"), &fileVideoPlaybackWindowAhead, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("visible_decode_keep_window"), &visibleDecodeKeepWindow, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("sequence_visible_decode_keep_window"), &sequenceVisibleDecodeKeepWindow, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("visible_pending_retry_ms"), &visiblePendingRetryMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("cancel_before_min_frame_advance"), &cancelBeforeMinFrameAdvance, &error) ||
+        !parsePositiveMs(patch, QStringLiteral("cancel_before_min_interval_ms"), &cancelBeforeMinIntervalMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("supersede_slack_frames"), &supersedeSlackFrames, &error)) {
         return QJsonObject{
             {QStringLiteral("ok"), false},
             {QStringLiteral("error"), error}
         };
     }
     if (m_preview) {
-        PreviewSurface::PlaybackTuning tuning = m_preview->playbackTuning();
-        tuning.visibleBacklogLimit = previewVisibleBacklogLimit;
-        tuning.sourceLookaheadFrames = previewSourceLookaheadFrames;
-        tuning.proxyLookaheadFrames = previewProxyLookaheadFrames;
-        m_preview->setPlaybackTuning(tuning);
+        previewTuning.visibleBacklogLimit = previewVisibleBacklogLimit;
+        previewTuning.sourceLookaheadFrames = previewSourceLookaheadFrames;
+        previewTuning.proxyLookaheadFrames = previewProxyLookaheadFrames;
+        previewTuning.prefetchMaxQueueDepth = prefetchMaxQueueDepth;
+        previewTuning.prefetchMaxInflight = prefetchMaxInflight;
+        previewTuning.prefetchMaxPerTick = prefetchMaxPerTick;
+        previewTuning.visibleQueueReserve = visibleQueueReserve;
+        previewTuning.playbackWindowAhead = playbackWindowAhead;
+        m_preview->setPlaybackTuning(previewTuning);
     }
+    editor::setDebugPrefetchMaxQueueDepth(prefetchMaxQueueDepth);
+    editor::setDebugPrefetchMaxInflight(prefetchMaxInflight);
+    editor::setDebugPrefetchMaxPerTick(prefetchMaxPerTick);
+    editor::setDebugPrefetchSkipVisiblePendingThreshold(prefetchSkipVisiblePendingThreshold);
+    editor::setDebugVisibleQueueReserve(visibleQueueReserve);
+    editor::setDebugPlaybackWindowAhead(playbackWindowAhead);
+    editor::setDebugFileVideoPlaybackWindowAhead(fileVideoPlaybackWindowAhead);
+    editor::setDebugVisibleDecodeKeepWindow(visibleDecodeKeepWindow);
+    editor::setDebugSequenceVisibleDecodeKeepWindow(sequenceVisibleDecodeKeepWindow);
+    editor::setDebugVisiblePendingRetryMs(visiblePendingRetryMs);
+    editor::setDebugCancelBeforeMinFrameAdvance(cancelBeforeMinFrameAdvance);
+    editor::setDebugCancelBeforeMinIntervalMs(cancelBeforeMinIntervalMs);
+    editor::setDebugSupersedeSlackFrames(supersedeSlackFrames);
     QJsonObject speakerTrackingPatch;
     if (patch.contains(QStringLiteral("speaker_tracking_max_speed_permille_per_frame"))) {
         speakerTrackingPatch[QStringLiteral("max_speed_permille_per_frame")] =

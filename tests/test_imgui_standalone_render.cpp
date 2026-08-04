@@ -54,6 +54,25 @@ private slots:
 
 namespace {
 
+jcut::EditorClip makeTestClip(int id,
+                              int trackId,
+                              const std::string& label,
+                              int startFrame,
+                              int durationFrames,
+                              bool selected,
+                              const std::string& sourcePath)
+{
+    jcut::EditorClip clip;
+    clip.id = id;
+    clip.trackId = trackId;
+    clip.label = label;
+    clip.startFrame = startFrame;
+    clip.durationFrames = durationFrames;
+    clip.selected = selected;
+    clip.sourcePath = sourcePath;
+    return clip;
+}
+
 bool writeSilentPcmWav(const QString& path)
 {
     QFile file(path);
@@ -240,7 +259,8 @@ void TestImGuiStandaloneRender::testRenderPreviewFrameDecodesImageClip()
     document.projectName = "Preview";
     document.tracks.push_back({1, "Video", true});
     document.mediaItems.push_back({imagePath.toStdString(), "frame", "image"});
-    document.clips.push_back({1, 1, "frame", 0, 30, true, imagePath.toStdString()});
+    document.clips.push_back(
+        makeTestClip(1, 1, "frame", 0, 30, true, imagePath.toStdString()));
     document.transport.currentFrame = 0;
     document.exportRequest.outputSize = {320, 240};
 
@@ -1220,7 +1240,7 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersTranscriptOverlayFro
     document.clips.front().transcriptOverlay.showSpeakerTitle = true;
 
     document.clips.front().transcriptOverlay.useManualPlacement = false;
-    document.clips.front().transcriptOverlay.translationX = -1.0;
+    document.clips.front().transcriptOverlay.placement.translationX = -1.0;
     const auto speakerPlaced = jcut::standalone_render::renderTimelineFrame({
         document, outputSize, 5.0, tempDir.path().toStdString()});
     QVERIFY2(speakerPlaced.success, speakerPlaced.message.c_str());
@@ -1230,14 +1250,14 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersTranscriptOverlayFro
     QVERIFY(speakerPlaced.image.bytes[trackedFrame + 1] < 60);
     QVERIFY(speakerPlaced.image.bytes[trackedFrame + 2] < 60);
     document.clips.front().transcriptOverlay.useManualPlacement = true;
-    document.clips.front().transcriptOverlay.translationX = 0.0;
+    document.clips.front().transcriptOverlay.placement.translationX = 0.0;
 
     const auto secondWord = jcut::standalone_render::renderTimelineFrame({
         document, outputSize, 20.0, tempDir.path().toStdString()});
     QVERIFY2(secondWord.success, secondWord.message.c_str());
     QVERIFY(firstWord.image.bytes != secondWord.image.bytes);
 
-    document.clips.front().transcriptOverlay.translationX = 0.5;
+    document.clips.front().transcriptOverlay.placement.translationX = 0.5;
     const auto shifted = jcut::standalone_render::renderTimelineFrame({
         document, outputSize, 5.0, tempDir.path().toStdString()});
     QVERIFY2(shifted.success, shifted.message.c_str());
@@ -1343,7 +1363,8 @@ void TestImGuiStandaloneRender::testLegacyClipWithoutMediaKindIsVisual()
 
     jcut::EditorDocumentCore document;
     document.tracks.push_back({1, "Video", true});
-    document.clips.push_back({1, 1, "clip", 0, 30, true, imagePath.toStdString()});
+    document.clips.push_back(
+        makeTestClip(1, 1, "clip", 0, 30, true, imagePath.toStdString()));
     document.exportRequest.outputSize = {160, 120};
 
     const jcut::standalone_render::PreviewRenderResult result =

@@ -34,6 +34,7 @@
 #include <optional>
 #include <unordered_set>
 #include <utility>
+#include <utility>
 
 class TestEditorRuntime : public QObject {
     Q_OBJECT
@@ -113,6 +114,7 @@ private slots:
     void testLegacySaveRemapsGappedTrackIds();
     void testCoreDocumentFileRoundTrips();
     void testCanonicalLegacyStatePreservesExtensionsAndNormalizesProjection();
+    void testCanonicalLegacyStatePreservesTransformInterpolationMode();
     void testImGuiProjectSessionLoadsActiveQtProjectFiles();
     void testImGuiProjectSessionSaveWritesQtStateFiles();
     void testAiLoginPersistsRefreshTokenContract();
@@ -3617,8 +3619,8 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     overlay.highlightCurrentWord = false;
     overlay.autoScroll = true;
     overlay.useManualPlacement = true;
-    overlay.translationX = -0.375;
-    overlay.translationY = 0.625;
+    overlay.placement.translationX = -0.375;
+    overlay.placement.translationY = 0.625;
     overlay.boxWidth = 760.0;
     overlay.boxHeight = 190.0;
     overlay.maxLines = 4;
@@ -3666,8 +3668,8 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     QCOMPARE(stored.highlightCurrentWord, false);
     QCOMPARE(stored.autoScroll, true);
     QCOMPARE(stored.useManualPlacement, true);
-    QCOMPARE(stored.translationX, -0.375);
-    QCOMPARE(stored.translationY, 0.625);
+    QCOMPARE(stored.placement.translationX, -0.375);
+    QCOMPARE(stored.placement.translationY, 0.625);
     QCOMPARE(stored.boxWidth, 760.0);
     QCOMPARE(stored.boxHeight, 190.0);
     QCOMPARE(stored.maxLines, 4);
@@ -3748,8 +3750,10 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     QCOMPARE(roundTripped.textExtrudeBevelScale, stored.textExtrudeBevelScale);
     QCOMPARE(roundTripped.showSpeakerTitle, stored.showSpeakerTitle);
     QCOMPARE(roundTripped.useManualPlacement, stored.useManualPlacement);
-    QCOMPARE(roundTripped.translationX, stored.translationX);
-    QCOMPARE(roundTripped.translationY, stored.translationY);
+    QCOMPARE(roundTripped.placement.translationX,
+             stored.placement.translationX);
+    QCOMPARE(roundTripped.placement.translationY,
+             stored.placement.translationY);
     QCOMPARE(QString::fromStdString(roundTripped.fontFamily),
              QString::fromStdString(stored.fontFamily));
     QCOMPARE(roundTripped.fontPointSize, stored.fontPointSize);
@@ -3785,8 +3789,8 @@ void TestEditorRuntime::testTranscriptOverlayInspectorStateRoundTripsAndRenders(
     QCOMPARE(renderOverlay.textExtrudeBevelScale, 1.25);
     QCOMPARE(renderOverlay.showSpeakerTitle, true);
     QCOMPARE(renderOverlay.useManualPlacement, true);
-    QCOMPARE(renderOverlay.translationX, -0.375);
-    QCOMPARE(renderOverlay.translationY, 0.625);
+    QCOMPARE(renderOverlay.placement.translationX, -0.375);
+    QCOMPARE(renderOverlay.placement.translationY, 0.625);
     QCOMPARE(renderOverlay.fontFamily, QStringLiteral("Liberation Sans"));
     QCOMPARE(renderOverlay.fontPointSize, 58);
     QCOMPARE(renderOverlay.bold, false);
@@ -5477,6 +5481,7 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     clip.gradingKeyframes.back().curveSmoothingEnabled = false;
     clip.opacityKeyframes.push_back({12, 0.65, true});
     clip.transformKeyframes.push_back({12, "Start", 24.0, 0.0, 0.0, -1.0, 1.0, true});
+    clip.transformKeyframes.back().interpolationMode = "perspective_linear";
     clip.titleKeyframes.push_back({12, "Title", 20.0, 40.0, 48.0, 1.0,
                                    "DejaVu Sans", true, false, "#ffffffff", true});
     clip.transcriptOverlay.enabled = true;
@@ -5522,6 +5527,9 @@ void TestEditorRuntime::testExtendedClipStateRoundTripsIntoRenderTimeline()
     QCOMPARE(reparsedClip.gradingKeyframes.front().curveSmoothingEnabled, false);
     QCOMPARE(reparsedClip.opacityKeyframes.size(), std::size_t(1));
     QCOMPARE(reparsedClip.transformKeyframes.size(), std::size_t(1));
+    QCOMPARE(QString::fromStdString(
+                 reparsedClip.transformKeyframes.front().interpolationMode),
+             QStringLiteral("perspective_linear"));
     QCOMPARE(reparsedClip.titleKeyframes.size(), std::size_t(1));
     QCOMPARE(reparsedClip.speakerFramingEnabled, true);
     QCOMPARE(reparsedClip.speakerFramingBakedTargetXNorm, 0.42);
@@ -6499,6 +6507,58 @@ void TestEditorRuntime::testCanonicalLegacyStatePreservesExtensionsAndNormalizes
              QStringLiteral("clip-a"));
 }
 
+void TestEditorRuntime::testCanonicalLegacyStatePreservesTransformInterpolationMode()
+{
+    const nlohmann::json state = {
+        {"projectName", "Canonical Transform"},
+        {"selectedClipId", "clip-a"},
+        {"tracks", nlohmann::json::array({{
+            {"name", "Primary"}, {"height", 90}}})},
+        {"timeline", nlohmann::json::array({{
+            {"id", "clip-a"},
+            {"label", "Interview"},
+            {"filePath", "/tmp/interview.mov"},
+            {"mediaType", "video"},
+            {"trackIndex", 0},
+            {"startFrame", 12},
+            {"durationFrames", 80},
+            {"transformKeyframes", nlohmann::json::array({
+                {
+                    {"frame", 0},
+                    {"translationX", 0.0},
+                    {"translationY", 0.0},
+                    {"rotation", 0.0},
+                    {"scaleX", 1.0},
+                    {"scaleY", 1.0},
+                    {"linearInterpolation", true},
+                    {"interpolationMode", "perspective_linear"}
+                }
+            })}}})}
+    };
+
+    std::string error;
+    const std::optional<nlohmann::json> canonical =
+        jcut::canonicalLegacyStateJson(state, &error);
+
+    QVERIFY2(canonical.has_value(), error.c_str());
+    const nlohmann::json& keyframes =
+        canonical->at("timeline").at(0).at("transformKeyframes");
+    QCOMPARE(keyframes.size(), std::size_t(1));
+    QCOMPARE(QString::fromStdString(
+                 keyframes.at(0).at("interpolationMode").get<std::string>()),
+             QStringLiteral("perspective_linear"));
+
+    const std::optional<jcut::EditorDocumentCore> reparsed =
+        jcut::editorDocumentCoreFromJson(*canonical, &error);
+    QVERIFY2(reparsed.has_value(), error.c_str());
+    QCOMPARE(reparsed->clips.size(), std::size_t(1));
+    QCOMPARE(QString::fromStdString(
+                 reparsed->clips.front()
+                     .transformKeyframes.front()
+                     .interpolationMode),
+             QStringLiteral("perspective_linear"));
+}
+
 void TestEditorRuntime::testImGuiProjectSessionLoadsActiveQtProjectFiles()
 {
     QTemporaryDir tempDir;
@@ -6592,7 +6652,15 @@ void TestEditorRuntime::testImGuiProjectSessionSaveWritesQtStateFiles()
     updated.projectName = "Saved From ImGui";
     updated.transport.currentFrame = 91;
     updated.tracks = {{1, "Primary", true}};
-    updated.clips = {{1, 1, "Clip One", 24, 72, true, "/tmp/clip-one.mov"}};
+    jcut::EditorClip updatedClip;
+    updatedClip.id = 1;
+    updatedClip.trackId = 1;
+    updatedClip.label = "Clip One";
+    updatedClip.startFrame = 24;
+    updatedClip.durationFrames = 72;
+    updatedClip.selected = true;
+    updatedClip.sourcePath = "/tmp/clip-one.mov";
+    updated.clips = {std::move(updatedClip)};
     updated.mediaItems.push_back({
         "/tmp/imported-but-unused.wav", "Unused Voiceover", "audio"});
 

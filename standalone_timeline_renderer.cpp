@@ -787,10 +787,10 @@ void drawTranscriptOverlay(ImageBuffer* image,
     const double boxHeight = std::max(80.0, settings.boxHeight);
     const double translationX = !settings.useManualPlacement && layout.speakerLocationValid
         ? (std::clamp(layout.speakerLocationX, 0.0, 1.0) - 0.5) * image->size.width
-        : std::clamp(settings.translationX, -1.0, 1.0) * image->size.width * 0.5;
+        : std::clamp(settings.placement.translationX, -1.0, 1.0) * image->size.width * 0.5;
     const double translationY = !settings.useManualPlacement && layout.speakerLocationValid
         ? (std::clamp(layout.speakerLocationY, 0.0, 1.0) - 0.5) * image->size.height
-        : std::clamp(settings.translationY, -1.0, 1.0) * image->size.height * 0.5;
+        : std::clamp(settings.placement.translationY, -1.0, 1.0) * image->size.height * 0.5;
     const int left = static_cast<int>(std::lround(
         image->size.width * 0.5 + translationX - boxWidth * 0.5));
     const int top = static_cast<int>(std::lround(

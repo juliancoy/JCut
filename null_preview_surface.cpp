@@ -15,6 +15,80 @@ PreviewSurface::PlaybackTuning normalizedPlaybackTuning(const PreviewSurface::Pl
     normalized.visibleBacklogLimit = qBound(1, normalized.visibleBacklogLimit, 16);
     normalized.sourceLookaheadFrames = qBound(1, normalized.sourceLookaheadFrames, 32);
     normalized.proxyLookaheadFrames = qBound(1, normalized.proxyLookaheadFrames, 64);
+    normalized.prefetchMaxQueueDepth = qBound(1, normalized.prefetchMaxQueueDepth, 32);
+    normalized.prefetchMaxInflight = qBound(1, normalized.prefetchMaxInflight, 16);
+    normalized.prefetchMaxPerTick = qBound(1, normalized.prefetchMaxPerTick, 16);
+    normalized.visibleQueueReserve = qBound(0, normalized.visibleQueueReserve, 64);
+    normalized.playbackWindowAhead = qBound(1, normalized.playbackWindowAhead, 24);
+    normalized.decodeAutotuneMaxBoostLevel = qBound(0, normalized.decodeAutotuneMaxBoostLevel, 8);
+    normalized.decodeAutotuneMinAdjustIntervalMs =
+        qBound(100, normalized.decodeAutotuneMinAdjustIntervalMs, 30000);
+    normalized.decodeAutotuneWindowMs = qBound(500, normalized.decodeAutotuneWindowMs, 60000);
+    normalized.decodeAutotuneMinSamples = qBound(1, normalized.decodeAutotuneMinSamples, 600);
+    normalized.decodeAutotuneStarvedLateRatePermille =
+        qBound(0, normalized.decodeAutotuneStarvedLateRatePermille, 1000);
+    normalized.decodeAutotuneStarvedExactHitRatePermille =
+        qBound(0, normalized.decodeAutotuneStarvedExactHitRatePermille, 1000);
+    normalized.decodeAutotuneStarvedAvgFrameLag =
+        qBound(1, normalized.decodeAutotuneStarvedAvgFrameLag, 120);
+    normalized.decodeAutotuneRecoveredLateRatePermille =
+        qBound(0, normalized.decodeAutotuneRecoveredLateRatePermille, 1000);
+    normalized.decodeAutotuneRecoveredExactHitRatePermille =
+        qBound(0, normalized.decodeAutotuneRecoveredExactHitRatePermille, 1000);
+    normalized.decodeAutotuneRecoveredAvgFrameLag =
+        qBound(1, normalized.decodeAutotuneRecoveredAvgFrameLag, 120);
+    normalized.decodeAutotuneMaxVisibleBacklogLimit =
+        qBound(1, normalized.decodeAutotuneMaxVisibleBacklogLimit, 16);
+    normalized.decodeAutotuneMaxSourceLookaheadFrames =
+        qBound(1, normalized.decodeAutotuneMaxSourceLookaheadFrames, 32);
+    normalized.decodeAutotuneMaxProxyLookaheadFrames =
+        qBound(1, normalized.decodeAutotuneMaxProxyLookaheadFrames, 64);
+    normalized.decodeAutotuneMaxVisibleBacklogLimit =
+        qMax(normalized.visibleBacklogLimit,
+             normalized.decodeAutotuneMaxVisibleBacklogLimit);
+    normalized.decodeAutotuneMaxSourceLookaheadFrames =
+        qMax(normalized.sourceLookaheadFrames,
+             normalized.decodeAutotuneMaxSourceLookaheadFrames);
+    normalized.decodeAutotuneMaxProxyLookaheadFrames =
+        qMax(normalized.proxyLookaheadFrames,
+             normalized.decodeAutotuneMaxProxyLookaheadFrames);
+    normalized.decodeAutotuneVisibleBacklogStep =
+        qBound(1, normalized.decodeAutotuneVisibleBacklogStep, 8);
+    normalized.decodeAutotuneLookaheadStep =
+        qBound(1, normalized.decodeAutotuneLookaheadStep, 16);
+    normalized.decodeAutotuneMaxPrefetchMaxQueueDepth =
+        qBound(1, normalized.decodeAutotuneMaxPrefetchMaxQueueDepth, 32);
+    normalized.decodeAutotuneMaxPrefetchMaxInflight =
+        qBound(1, normalized.decodeAutotuneMaxPrefetchMaxInflight, 16);
+    normalized.decodeAutotuneMaxPrefetchMaxPerTick =
+        qBound(1, normalized.decodeAutotuneMaxPrefetchMaxPerTick, 16);
+    normalized.decodeAutotuneMaxVisibleQueueReserve =
+        qBound(0, normalized.decodeAutotuneMaxVisibleQueueReserve, 64);
+    normalized.decodeAutotuneMaxPlaybackWindowAhead =
+        qBound(1, normalized.decodeAutotuneMaxPlaybackWindowAhead, 24);
+    normalized.decodeAutotuneMaxPrefetchMaxQueueDepth =
+        qMax(normalized.prefetchMaxQueueDepth,
+             normalized.decodeAutotuneMaxPrefetchMaxQueueDepth);
+    normalized.decodeAutotuneMaxPrefetchMaxInflight =
+        qMax(normalized.prefetchMaxInflight,
+             normalized.decodeAutotuneMaxPrefetchMaxInflight);
+    normalized.decodeAutotuneMaxPrefetchMaxPerTick =
+        qMax(normalized.prefetchMaxPerTick,
+             normalized.decodeAutotuneMaxPrefetchMaxPerTick);
+    normalized.decodeAutotuneMaxVisibleQueueReserve =
+        qMax(normalized.visibleQueueReserve,
+             normalized.decodeAutotuneMaxVisibleQueueReserve);
+    normalized.decodeAutotuneMaxPlaybackWindowAhead =
+        qMax(normalized.playbackWindowAhead,
+             normalized.decodeAutotuneMaxPlaybackWindowAhead);
+    normalized.decodeAutotunePrefetchQueueDepthStep =
+        qBound(1, normalized.decodeAutotunePrefetchQueueDepthStep, 16);
+    normalized.decodeAutotunePrefetchConcurrencyStep =
+        qBound(1, normalized.decodeAutotunePrefetchConcurrencyStep, 8);
+    normalized.decodeAutotuneVisibleQueueReserveStep =
+        qBound(1, normalized.decodeAutotuneVisibleQueueReserveStep, 16);
+    normalized.decodeAutotunePlaybackWindowAheadStep =
+        qBound(1, normalized.decodeAutotunePlaybackWindowAheadStep, 8);
     return normalized;
 }
 }

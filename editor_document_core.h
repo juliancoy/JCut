@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio_dynamics_core.h"
+#include "keyframe_sequence.h"
 #include "render_contract_types.h"
 
 #include <array>
@@ -198,8 +199,7 @@ struct EditorMediaItem {
     bool hasAudio = false;
 };
 
-struct EditorTransformKeyframe {
-    std::int64_t frame = 0;
+struct EditorTransformValue {
     std::string title;
     double translationX = 0.0;
     double translationY = 0.0;
@@ -207,7 +207,11 @@ struct EditorTransformKeyframe {
     double scaleX = 1.0;
     double scaleY = 1.0;
     bool linearInterpolation = true;
+    std::string interpolationMode = "linear";
 };
+
+using EditorTransformKeyframe =
+    keyframes::Keyframe<EditorTransformValue>;
 
 struct EditorBoolKeyframe {
     std::int64_t frame = 0;
@@ -389,8 +393,7 @@ struct EditorTranscriptOverlayState {
     bool highlightCurrentWord = true;
     bool autoScroll = false;
     bool useManualPlacement = false;
-    double translationX = 0.0;
-    double translationY = 0.0;
+    EditorTransformValue placement;
     double boxWidth = 900.0;
     double boxHeight = 220.0;
     int maxLines = 2;
@@ -442,6 +445,13 @@ inline bool isGeneratedEditorChildTrack(const EditorTrack& track)
 }
 
 struct EditorClip {
+    EditorClip();
+    EditorClip(const EditorClip&);
+    EditorClip(EditorClip&&) noexcept;
+    EditorClip& operator=(const EditorClip&);
+    EditorClip& operator=(EditorClip&&) noexcept;
+    ~EditorClip();
+
     int id = 0;
     int trackId = 0;
     std::string label;
@@ -636,6 +646,13 @@ struct EditorExportRange {
 };
 
 struct EditorDocumentCore {
+    EditorDocumentCore();
+    EditorDocumentCore(const EditorDocumentCore&);
+    EditorDocumentCore(EditorDocumentCore&&) noexcept;
+    EditorDocumentCore& operator=(const EditorDocumentCore&);
+    EditorDocumentCore& operator=(EditorDocumentCore&&) noexcept;
+    ~EditorDocumentCore();
+
     std::string projectName;
     std::vector<EditorMediaItem> mediaItems;
     std::vector<EditorTrack> tracks;

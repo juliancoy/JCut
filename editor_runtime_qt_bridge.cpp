@@ -370,8 +370,8 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
         coreClip.transcriptOverlay.highlightCurrentWord = clip.transcriptOverlay.highlightCurrentWord;
         coreClip.transcriptOverlay.autoScroll = clip.transcriptOverlay.autoScroll;
         coreClip.transcriptOverlay.useManualPlacement = clip.transcriptOverlay.useManualPlacement;
-        coreClip.transcriptOverlay.translationX = clip.transcriptOverlay.translationX;
-        coreClip.transcriptOverlay.translationY = clip.transcriptOverlay.translationY;
+        coreClip.transcriptOverlay.placement.translationX = clip.transcriptOverlay.placement.translationX;
+        coreClip.transcriptOverlay.placement.translationY = clip.transcriptOverlay.placement.translationY;
         coreClip.transcriptOverlay.boxWidth = clip.transcriptOverlay.boxWidth;
         coreClip.transcriptOverlay.boxHeight = clip.transcriptOverlay.boxHeight;
         coreClip.transcriptOverlay.maxLines = clip.transcriptOverlay.maxLines;
@@ -405,7 +405,8 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
                         keyframe.rotation,
                         keyframe.scaleX,
                         keyframe.scaleY,
-                        keyframe.linearInterpolation});
+                        keyframe.linearInterpolation,
+                        keyframe.linearInterpolation ? "linear" : "step"});
                 }
                 return result;
             };
@@ -424,7 +425,10 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
                 keyframe.rotation,
                 keyframe.scaleX,
                 keyframe.scaleY,
-                keyframe.linearInterpolation
+                keyframe.linearInterpolation,
+                keyframe.interpolationMode.trimmed().isEmpty()
+                    ? (keyframe.linearInterpolation ? std::string("linear") : std::string("step"))
+                    : keyframe.interpolationMode.trimmed().toStdString()
             });
         }
         for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {

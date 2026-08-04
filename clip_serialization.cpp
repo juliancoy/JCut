@@ -683,6 +683,10 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("maskRepeatDeltaX")] = keyframe.maskRepeatDeltaX;
             keyframeObj[QStringLiteral("maskRepeatDeltaY")] = keyframe.maskRepeatDeltaY;
             keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
+            keyframeObj[QStringLiteral("interpolationMode")] =
+                keyframe.interpolationMode.trimmed().isEmpty()
+                    ? (keyframe.linearInterpolation ? QStringLiteral("linear") : QStringLiteral("step"))
+                    : keyframe.interpolationMode.trimmed();
             keyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("transformKeyframes")] = keyframes;
@@ -878,8 +882,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("highlightCurrentWord")] = clip.transcriptOverlay.highlightCurrentWord;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
         transcriptOverlayObj[QStringLiteral("useManualPlacement")] = clip.transcriptOverlay.useManualPlacement;
-        transcriptOverlayObj[QStringLiteral("translationX")] = clip.transcriptOverlay.translationX;
-        transcriptOverlayObj[QStringLiteral("translationY")] = clip.transcriptOverlay.translationY;
+        transcriptOverlayObj[QStringLiteral("translationX")] = clip.transcriptOverlay.placement.translationX;
+        transcriptOverlayObj[QStringLiteral("translationY")] = clip.transcriptOverlay.placement.translationY;
         transcriptOverlayObj[QStringLiteral("boxWidth")] = clip.transcriptOverlay.boxWidth;
         transcriptOverlayObj[QStringLiteral("boxHeight")] = clip.transcriptOverlay.boxHeight;
         transcriptOverlayObj[QStringLiteral("maxLines")] = clip.transcriptOverlay.maxLines;
@@ -1283,6 +1287,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                 keyframe.linearInterpolation =
                     keyframeObj.value(QStringLiteral("interpolated")).toBool(true);
             }
+            keyframe.interpolationMode =
+                keyframeObj.value(QStringLiteral("interpolationMode"))
+                    .toString(keyframe.linearInterpolation
+                                  ? QStringLiteral("linear")
+                                  : QStringLiteral("step"))
+                    .trimmed();
             clip.transformKeyframes.push_back(keyframe);
         }
         const QJsonArray speakerFramingKeyframes = obj.value(QStringLiteral("speakerFramingKeyframes")).toArray();
@@ -1469,8 +1479,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.autoScroll = transcriptOverlayObj.value(QStringLiteral("autoScroll")).toBool(false);
         clip.transcriptOverlay.useManualPlacement =
             transcriptOverlayObj.value(QStringLiteral("useManualPlacement")).toBool(false);
-        clip.transcriptOverlay.translationX = transcriptOverlayObj.value(QStringLiteral("translationX")).toDouble(0.0);
-        clip.transcriptOverlay.translationY = transcriptOverlayObj.value(QStringLiteral("translationY")).toDouble(0.0);
+        clip.transcriptOverlay.placement.translationX = transcriptOverlayObj.value(QStringLiteral("translationX")).toDouble(0.0);
+        clip.transcriptOverlay.placement.translationY = transcriptOverlayObj.value(QStringLiteral("translationY")).toDouble(0.0);
         clip.transcriptOverlay.boxWidth = transcriptOverlayObj.value(QStringLiteral("boxWidth")).toDouble(900.0);
         clip.transcriptOverlay.boxHeight = transcriptOverlayObj.value(QStringLiteral("boxHeight")).toDouble(220.0);
         clip.transcriptOverlay.maxLines = qMax(1, transcriptOverlayObj.value(QStringLiteral("maxLines")).toInt(2));

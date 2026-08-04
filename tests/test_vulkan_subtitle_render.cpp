@@ -79,8 +79,8 @@ TimelineClip makeTranscriptClip(const QString& clipPath, const QSize& outputSize
     clip.transcriptOverlay.showSpeakerTitle = false;
     clip.transcriptOverlay.autoScroll = true;
     clip.transcriptOverlay.useManualPlacement = true;
-    clip.transcriptOverlay.translationX = 0.0;
-    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.placement.translationX = 0.0;
+    clip.transcriptOverlay.placement.translationY = 0.0;
     const qreal base = qMax<qreal>(1.0, qMin(outputSize.width(), outputSize.height()));
     clip.transcriptOverlay.boxWidth = qBound<qreal>(280.0, outputSize.width() * 0.72, outputSize.width() - 32.0);
     clip.transcriptOverlay.boxHeight = qBound<qreal>(110.0, base * 0.25, outputSize.height() * 0.42);

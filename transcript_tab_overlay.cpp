@@ -109,10 +109,10 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
             clip.transcriptOverlay.autoScroll =
                 m_widgets.transcriptAutoScrollCheckBox->isChecked();
         }
-        clip.transcriptOverlay.translationX = m_widgets.transcriptOverlayXSpin
+        clip.transcriptOverlay.placement.translationX = m_widgets.transcriptOverlayXSpin
             ? m_widgets.transcriptOverlayXSpin->value()
             : 0.0;
-        clip.transcriptOverlay.translationY = m_widgets.transcriptOverlayYSpin
+        clip.transcriptOverlay.placement.translationY = m_widgets.transcriptOverlayYSpin
             ? m_widgets.transcriptOverlayYSpin->value()
             : 0.0;
         const bool requestedManualPlacement = m_widgets.transcriptPlacementModeCombo
@@ -443,10 +443,10 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
         m_widgets.transcriptAutoScrollCheckBox->setChecked(clip.transcriptOverlay.autoScroll);
     }
     if (m_widgets.transcriptOverlayXSpin) {
-        m_widgets.transcriptOverlayXSpin->setValue(clip.transcriptOverlay.translationX);
+        m_widgets.transcriptOverlayXSpin->setValue(clip.transcriptOverlay.placement.translationX);
     }
     if (m_widgets.transcriptOverlayYSpin) {
-        m_widgets.transcriptOverlayYSpin->setValue(clip.transcriptOverlay.translationY);
+        m_widgets.transcriptOverlayYSpin->setValue(clip.transcriptOverlay.placement.translationY);
     }
     if (m_widgets.transcriptOverlayWidthSpin) {
         m_widgets.transcriptOverlayWidthSpin->setValue(

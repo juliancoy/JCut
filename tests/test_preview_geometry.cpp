@@ -16,8 +16,8 @@ TimelineClip makeOverlayClip() {
     clip.transcriptOverlay.boxWidth = 420.0;
     clip.transcriptOverlay.boxHeight = 180.0;
     clip.transcriptOverlay.fontPointSize = 42;
-    clip.transcriptOverlay.translationX = 0.0;
-    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.placement.translationX = 0.0;
+    clip.transcriptOverlay.placement.translationY = 0.0;
     clip.transcriptOverlay.useManualPlacement = true;
     return clip;
 }
@@ -121,8 +121,8 @@ void TestPreviewGeometry::testTranscriptOverlayRectScalesProportionallyWithZoom(
 
 void TestPreviewGeometry::testTranscriptOverlayRectMapsToTargetCenterAtZeroTranslation() {
     TimelineClip clip = makeOverlayClip();
-    clip.transcriptOverlay.translationX = 0.0;
-    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.placement.translationX = 0.0;
+    clip.transcriptOverlay.placement.translationY = 0.0;
     clip.transcriptOverlay.useManualPlacement = true;
 
     const QSize outputSize(1080, 1920);

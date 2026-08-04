@@ -83,7 +83,8 @@ QJsonObject transformKeyframeDiagnosticObject(const TimelineClip::TransformKeyfr
         {QStringLiteral("scale_y"), transform.scaleY},
         {QStringLiteral("mask_repeat_delta_x"), transform.maskRepeatDeltaX},
         {QStringLiteral("mask_repeat_delta_y"), transform.maskRepeatDeltaY},
-        {QStringLiteral("linear_interpolation"), transform.linearInterpolation}
+        {QStringLiteral("linear_interpolation"), transform.linearInterpolation},
+        {QStringLiteral("interpolation_mode"), transform.interpolationMode}
     };
 }
 
@@ -1462,6 +1463,94 @@ int firstKeyframeAfterFrame(const QVector<Keyframe>& keyframes, Frame frame)
     return static_cast<int>(std::distance(keyframes.constBegin(), it));
 }
 
+QString normalizedTransformInterpolationMode(const QString& mode, bool linearInterpolation)
+{
+    const QString normalized = mode.trimmed().toLower().replace(QLatin1Char(' '), QLatin1Char('_'));
+    if (!linearInterpolation || normalized == QStringLiteral("step") ||
+        normalized == QStringLiteral("hold")) {
+        return QStringLiteral("step");
+    }
+    if (normalized == QStringLiteral("perspective_linear") ||
+        normalized == QStringLiteral("perspective") ||
+        normalized == QStringLiteral("parallax_linear") ||
+        normalized == QStringLiteral("depth_linear")) {
+        return QStringLiteral("perspective_linear");
+    }
+    return QStringLiteral("linear");
+}
+
+bool transformInterpolationUsesPerspectiveDepth(const TimelineClip::TransformKeyframe& keyframe)
+{
+    return normalizedTransformInterpolationMode(
+               keyframe.interpolationMode, keyframe.linearInterpolation) ==
+        QStringLiteral("perspective_linear");
+}
+
+qreal safePerspectiveScaleMagnitude(qreal scale)
+{
+    return qMax<qreal>(0.0001, std::abs(sanitizeScaleValue(scale)));
+}
+
+qreal perspectiveLinearScale(qreal previous, qreal current, qreal t)
+{
+    const qreal previousMagnitude = safePerspectiveScaleMagnitude(previous);
+    const qreal currentMagnitude = safePerspectiveScaleMagnitude(current);
+    const qreal previousDepth = 1.0 / previousMagnitude;
+    const qreal currentDepth = 1.0 / currentMagnitude;
+    const qreal depth = qMax<qreal>(
+        0.0001,
+        previousDepth + ((currentDepth - previousDepth) * t));
+    const qreal sign = (t < 0.5 ? previous : current) < 0.0 ? -1.0 : 1.0;
+    return sanitizeScaleValue(sign / depth);
+}
+
+qreal perspectiveDepthForTransform(const TimelineClip::TransformKeyframe& keyframe)
+{
+    const qreal x = safePerspectiveScaleMagnitude(keyframe.scaleX);
+    const qreal y = safePerspectiveScaleMagnitude(keyframe.scaleY);
+    return 1.0 / std::sqrt(qMax<qreal>(0.00000001, x * y));
+}
+
+TimelineClip::TransformKeyframe interpolatedTransformKeyframe(
+    const TimelineClip::TransformKeyframe& previous,
+    const TimelineClip::TransformKeyframe& current,
+    qreal localFrame,
+    qreal t)
+{
+    TimelineClip::TransformKeyframe state;
+    state.frame = qRound64(localFrame);
+    state.rotation = previous.rotation + ((current.rotation - previous.rotation) * t);
+    state.maskRepeatDeltaX =
+        previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * t);
+    state.maskRepeatDeltaY =
+        previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * t);
+    state.linearInterpolation = current.linearInterpolation;
+    state.interpolationMode =
+        normalizedTransformInterpolationMode(current.interpolationMode, current.linearInterpolation);
+    if (!transformInterpolationUsesPerspectiveDepth(current)) {
+        state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
+        state.translationY = previous.translationY + ((current.translationY - previous.translationY) * t);
+        state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * t);
+        state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * t);
+        return state;
+    }
+
+    state.scaleX = perspectiveLinearScale(previous.scaleX, current.scaleX, t);
+    state.scaleY = perspectiveLinearScale(previous.scaleY, current.scaleY, t);
+    const qreal previousDepth = perspectiveDepthForTransform(previous);
+    const qreal currentDepth = perspectiveDepthForTransform(current);
+    const qreal depth = qMax<qreal>(
+        0.0001,
+        previousDepth + ((currentDepth - previousDepth) * t));
+    const qreal previousWorldX = previous.translationX * previousDepth;
+    const qreal currentWorldX = current.translationX * currentDepth;
+    const qreal previousWorldY = previous.translationY * previousDepth;
+    const qreal currentWorldY = current.translationY * currentDepth;
+    state.translationX = (previousWorldX + ((currentWorldX - previousWorldX) * t)) / depth;
+    state.translationY = (previousWorldY + ((currentWorldY - previousWorldY) * t)) / depth;
+    return state;
+}
+
 TimelineClip::TransformKeyframe interpolatedSpeakerFramingTarget(
     const TimelineClip::TransformKeyframe& previous,
     const TimelineClip::TransformKeyframe& current,
@@ -1586,6 +1675,9 @@ void normalizeClipTransformKeyframes(TimelineClip& clip) {
         [](TimelineClip::TransformKeyframe& keyframe) {
             keyframe.scaleX = sanitizeScaleValue(keyframe.scaleX);
             keyframe.scaleY = sanitizeScaleValue(keyframe.scaleY);
+            keyframe.interpolationMode =
+                normalizedTransformInterpolationMode(
+                    keyframe.interpolationMode, keyframe.linearInterpolation);
         });
     if (clipHasVisuals(clip)) {
         if (clip.transformKeyframes.isEmpty()) {
@@ -1806,17 +1898,7 @@ TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const Timeline
                                               static_cast<qreal>(current.frame),
                                               static_cast<qreal>(localFrame)),
                                           1.0);
-            state.frame = localFrame;
-            state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
-            state.translationY = previous.translationY + ((current.translationY - previous.translationY) * t);
-            state.rotation = previous.rotation + ((current.rotation - previous.rotation) * t);
-            state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * t);
-            state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * t);
-            state.maskRepeatDeltaX =
-                previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * t);
-            state.maskRepeatDeltaY =
-                previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * t);
-            state.linearInterpolation = current.linearInterpolation;
+            state = interpolatedTransformKeyframe(previous, current, localFrame, t);
             return state;
         }
         if (localFrame == current.frame) {
@@ -1879,17 +1961,7 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
                                                       localFrame,
                                                       timing),
                                                   1.0);
-                    state.frame = qRound64(localFrame);
-                    state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
-                    state.translationY = previous.translationY + ((current.translationY - previous.translationY) * t);
-                    state.rotation = previous.rotation + ((current.rotation - previous.rotation) * t);
-                    state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * t);
-                    state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * t);
-                    state.maskRepeatDeltaX =
-                        previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * t);
-                    state.maskRepeatDeltaY =
-                        previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * t);
-                    state.linearInterpolation = current.linearInterpolation;
+                    state = interpolatedTransformKeyframe(previous, current, localFrame, t);
                 }
                 break;
             }
@@ -1912,53 +1984,35 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
 
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtFrame(const TimelineClip& clip,
                                                                         int64_t timelineFrame) {
-    if (clip.speakerFramingTargetKeyframes.isEmpty()) {
-        return clipBaseSpeakerFramingTarget(clip);
-    }
-
     const int64_t localFrame = qBound<int64_t>(
         0, timelineFrame - clip.startFrame, qMax<int64_t>(0, clip.durationFrames - 1));
-    if (localFrame <= clip.speakerFramingTargetKeyframes.constFirst().frame) {
-        return clip.speakerFramingTargetKeyframes.constFirst();
-    }
-
-    const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingTargetKeyframes, localFrame);
-    if (upperIndex <= 0) {
-        return clip.speakerFramingTargetKeyframes.constFirst();
-    }
-    if (upperIndex >= clip.speakerFramingTargetKeyframes.size()) {
-        return clip.speakerFramingTargetKeyframes.constLast();
-    }
-    const TimelineClip::TransformKeyframe& previous = clip.speakerFramingTargetKeyframes.at(upperIndex - 1);
-    const TimelineClip::TransformKeyframe& current = clip.speakerFramingTargetKeyframes.at(upperIndex);
-    return previous.frame == localFrame ? previous : interpolatedSpeakerFramingTarget(previous, current, localFrame);
+    return jcut::keyframes::evaluateTrackAt(
+        clip.speakerFramingTargetKeyframes,
+        localFrame,
+        clipBaseSpeakerFramingTarget(clip),
+        [](const TimelineClip::TransformKeyframe& previous,
+           const TimelineClip::TransformKeyframe& current,
+           int64_t frame) {
+            return interpolatedSpeakerFramingTarget(
+                previous, current, static_cast<qreal>(frame));
+        });
 }
 
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtPosition(const TimelineClip& clip,
                                                                            qreal timelineFramePosition) {
-    if (clip.speakerFramingTargetKeyframes.isEmpty()) {
-        return clipBaseSpeakerFramingTarget(clip);
-    }
-
     const qreal maxFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
     const qreal localFrame = qBound<qreal>(
         0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
-    if (localFrame <= static_cast<qreal>(clip.speakerFramingTargetKeyframes.constFirst().frame)) {
-        return clip.speakerFramingTargetKeyframes.constFirst();
-    }
-
-    const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingTargetKeyframes, localFrame);
-    if (upperIndex <= 0) {
-        return clip.speakerFramingTargetKeyframes.constFirst();
-    }
-    if (upperIndex >= clip.speakerFramingTargetKeyframes.size()) {
-        return clip.speakerFramingTargetKeyframes.constLast();
-    }
-    const TimelineClip::TransformKeyframe& previous = clip.speakerFramingTargetKeyframes.at(upperIndex - 1);
-    const TimelineClip::TransformKeyframe& current = clip.speakerFramingTargetKeyframes.at(upperIndex);
-    return qFuzzyCompare(localFrame + 1.0, static_cast<qreal>(previous.frame) + 1.0)
-        ? previous
-        : interpolatedSpeakerFramingTarget(previous, current, localFrame);
+    return jcut::keyframes::evaluateTrackAt(
+        clip.speakerFramingTargetKeyframes,
+        localFrame,
+        clipBaseSpeakerFramingTarget(clip),
+        [](const TimelineClip::TransformKeyframe& previous,
+           const TimelineClip::TransformKeyframe& current,
+           qreal frame) {
+            return interpolatedSpeakerFramingTarget(
+                previous, current, frame);
+        });
 }
 
 bool evaluateClipSpeakerFramingEnabledAtFrame(const TimelineClip& clip, int64_t timelineFrame)
@@ -2366,21 +2420,17 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
             sectionRotationDegrees,
             outputSize);
     }
-    TimelineClip::TransformKeyframe framingState;
-    if (localFrame <= clip.speakerFramingKeyframes.constFirst().frame) {
-        framingState = clip.speakerFramingKeyframes.constFirst();
-    } else {
-        const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingKeyframes, localFrame);
-        if (upperIndex >= clip.speakerFramingKeyframes.size()) {
-            framingState = clip.speakerFramingKeyframes.constLast();
-        } else {
-            const TimelineClip::TransformKeyframe& previous = clip.speakerFramingKeyframes.at(upperIndex - 1);
-            const TimelineClip::TransformKeyframe& current = clip.speakerFramingKeyframes.at(upperIndex);
-            framingState = previous.frame == localFrame
-                ? previous
-                : interpolatedSpeakerFramingKeyframe(previous, current, static_cast<qreal>(localFrame));
-        }
-    }
+    const TimelineClip::TransformKeyframe framingState =
+        jcut::keyframes::evaluateTrackAt(
+            clip.speakerFramingKeyframes,
+            localFrame,
+            TimelineClip::TransformKeyframe{},
+            [](const TimelineClip::TransformKeyframe& previous,
+               const TimelineClip::TransformKeyframe& current,
+               int64_t frame) {
+                return interpolatedSpeakerFramingKeyframe(
+                    previous, current, static_cast<qreal>(frame));
+            });
 
     const TimelineClip::TransformKeyframe target =
         evaluateClipSpeakerFramingTargetAtFrame(clip, timelineFrame);

@@ -1505,24 +1505,26 @@ void drawInspectorTab07(
                         fallback.frame = currentClipLocalFrame;
                         return fallback;
                     };
-                jcut::EditorTransformKeyframe framingDraft{
-                    currentClipLocalFrame,
-                    "Baked Framing",
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    1.0,
-                    true};
-                jcut::EditorTransformKeyframe targetDraft{
-                    currentClipLocalFrame,
-                    "Framing Target",
-                    0.5,
-                    0.35,
-                    0.0,
-                    -1.0,
-                    -1.0,
-                    true};
+                jcut::EditorTransformKeyframe framingDraft;
+                framingDraft.frame = currentClipLocalFrame;
+                framingDraft.title = "Baked Framing";
+                framingDraft.translationX = 0.0;
+                framingDraft.translationY = 0.0;
+                framingDraft.rotation = 0.0;
+                framingDraft.scaleX = 1.0;
+                framingDraft.scaleY = 1.0;
+                framingDraft.linearInterpolation = true;
+                framingDraft.interpolationMode = "linear";
+                jcut::EditorTransformKeyframe targetDraft;
+                targetDraft.frame = currentClipLocalFrame;
+                targetDraft.title = "Framing Target";
+                targetDraft.translationX = 0.5;
+                targetDraft.translationY = 0.35;
+                targetDraft.rotation = 0.0;
+                targetDraft.scaleX = -1.0;
+                targetDraft.scaleY = -1.0;
+                targetDraft.linearInterpolation = true;
+                targetDraft.interpolationMode = "linear";
                 if (currentClip) {
                     framingDraft = latestTransformAtPlayhead(
                         currentClip->speakerFramingKeyframes,
@@ -1703,15 +1705,15 @@ void drawInspectorTab07(
                             SpeakerFramingTarget);
                 }
             }
-            const jcut::EditorTransformKeyframe transformInitial{
-                currentClipLocalFrame,
-                {},
-                tx,
-                ty,
-                rotation,
-                scaleX,
-                scaleY,
-                true};
+            jcut::EditorTransformKeyframe transformInitial;
+            transformInitial.frame = currentClipLocalFrame;
+            transformInitial.translationX = tx;
+            transformInitial.translationY = ty;
+            transformInitial.rotation = rotation;
+            transformInitial.scaleX = scaleX;
+            transformInitial.scaleY = scaleY;
+            transformInitial.linearInterpolation = true;
+            transformInitial.interpolationMode = "linear";
             drawKeyframeDraftEditor<
                 jcut::EditorTransformKeyframe,
                 jcut::UpsertTransformKeyframeCommand>(

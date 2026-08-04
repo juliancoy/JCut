@@ -124,6 +124,8 @@ public:
                       int detectionCount);
     bool presentRenderMonitorFrame(const render_detail::OffscreenVulkanFrame& frame,
                                    const RenderMonitorStatus& status);
+    bool discardRenderMonitorFrame(
+        const render_detail::OffscreenVulkanFrame& frame);
     bool renderMonitorCancelRequested() const;
 
 private:

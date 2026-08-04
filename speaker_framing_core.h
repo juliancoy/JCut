@@ -1,5 +1,7 @@
 #pragma once
 
+#include "keyframe_sequence.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -13,8 +15,7 @@ struct Size {
     double height = 0.0;
 };
 
-struct Transform {
-    std::int64_t frame = 0;
+struct TransformValue {
     double translationX = 0.0;
     double translationY = 0.0;
     double rotation = 0.0;
@@ -22,6 +23,8 @@ struct Transform {
     double scaleY = 1.0;
     bool linearInterpolation = true;
 };
+
+using Transform = keyframes::Keyframe<TransformValue>;
 
 struct EnabledKeyframe {
     std::int64_t frame = 0;
@@ -115,27 +118,15 @@ inline Transform evaluate(
     bool target,
     Transform fallback)
 {
-    if (keyframes.empty()) {
-        return fallback;
-    }
-    if (localFrame <= static_cast<double>(
-            keyframes.front().frame)) {
-        return keyframes.front();
-    }
-    const auto upper = std::upper_bound(
-        keyframes.begin(),
-        keyframes.end(),
+    return jcut::keyframes::evaluateTrackAt(
+        keyframes,
         localFrame,
-        [](double frame, const Transform& keyframe) {
-            return frame < static_cast<double>(keyframe.frame);
+        std::move(fallback),
+        [target](const Transform& previous,
+                 const Transform& current,
+                 double frame) {
+            return interpolate(previous, current, frame, target);
         });
-    if (upper == keyframes.end()) {
-        return keyframes.back();
-    }
-    const Transform& previous = *std::prev(upper);
-    return localFrame == static_cast<double>(previous.frame)
-        ? previous
-        : interpolate(previous, *upper, localFrame, target);
 }
 
 inline Transform retarget(

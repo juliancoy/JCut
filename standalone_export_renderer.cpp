@@ -98,6 +98,16 @@ int timelineLastFrame(const jcut::EditorDocumentCore& document)
     return endFrame;
 }
 
+bool documentHasEnabledAudio(const jcut::EditorDocumentCore& document)
+{
+    return std::any_of(
+        document.clips.cbegin(),
+        document.clips.cend(),
+        [](const jcut::EditorClip& clip) {
+            return clip.hasAudio && clip.audioEnabled;
+        });
+}
+
 std::vector<jcut::EditorExportRange> exportRanges(
     const jcut::EditorDocumentCore& document)
 {
@@ -953,7 +963,7 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
     std::unique_ptr<AudioOutput> audioOutput;
     bool hardwareVideoEncoder = false;
 
-    if (writeEncodedVideo) {
+    if (writeEncodedVideo && documentHasEnabledAudio(request.document)) {
         std::string audioDecodeError;
         if (!audio::decodeDocumentAudio(
                 request.document, request.rootDirectory,

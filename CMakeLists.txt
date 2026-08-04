@@ -1102,6 +1102,7 @@ target_link_libraries(jcut_imgui_preview_support
 )
 
 add_library(jcut_editor_core STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_core_json.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_project_io.cpp

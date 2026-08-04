@@ -221,9 +221,9 @@ QPointF transcriptOverlayManualTranslationPixels(const TimelineClip& clip,
                                                  qreal outputHeight)
 {
     const qreal normalizedX =
-        qBound<qreal>(-1.0, clip.transcriptOverlay.translationX, 1.0);
+        qBound<qreal>(-1.0, clip.transcriptOverlay.placement.translationX, 1.0);
     const qreal normalizedY =
-        qBound<qreal>(-1.0, clip.transcriptOverlay.translationY, 1.0);
+        qBound<qreal>(-1.0, clip.transcriptOverlay.placement.translationY, 1.0);
     return QPointF(normalizedX * (outputWidth * 0.5),
                    normalizedY * (outputHeight * 0.5));
 }

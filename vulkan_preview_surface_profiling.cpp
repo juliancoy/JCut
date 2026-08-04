@@ -17,8 +17,6 @@
 
 namespace {
 
-constexpr qint64 kAdaptivePlaybackTuningMinAdjustIntervalMs = 1200;
-
 QJsonArray pipelineStageHealthJson(const QVector<PreviewSurface::PipelineStageSnapshot>& stages)
 {
     QJsonArray array;
@@ -142,9 +140,33 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), effectivePlaybackLookaheadFrames());
     snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), m_playbackTuning.sourceLookaheadFrames);
     snapshot.insert(QStringLiteral("vulkan_proxy_lookahead_frames"), m_playbackTuning.proxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_prefetch_max_queue_depth"), m_playbackTuning.prefetchMaxQueueDepth);
+    snapshot.insert(QStringLiteral("vulkan_prefetch_max_inflight"), m_playbackTuning.prefetchMaxInflight);
+    snapshot.insert(QStringLiteral("vulkan_prefetch_max_per_tick"), m_playbackTuning.prefetchMaxPerTick);
+    snapshot.insert(QStringLiteral("vulkan_visible_queue_reserve"), m_playbackTuning.visibleQueueReserve);
+    snapshot.insert(QStringLiteral("vulkan_playback_window_ahead"), m_playbackTuning.playbackWindowAhead);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_enabled"),
+                    m_configuredPlaybackTuning.decodeAutotuneEnabled);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_max_boost_level"),
+                    m_configuredPlaybackTuning.decodeAutotuneMaxBoostLevel);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_min_adjust_interval_ms"),
+                    m_configuredPlaybackTuning.decodeAutotuneMinAdjustIntervalMs);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_window_ms"),
+                    m_configuredPlaybackTuning.decodeAutotuneWindowMs);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_min_samples"),
+                    m_configuredPlaybackTuning.decodeAutotuneMinSamples);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_adjust_count"),
+                    static_cast<qint64>(m_adaptivePlaybackTuningAdjustCount));
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_last_reason"),
+                    m_lastAdaptivePlaybackTuningReason);
     snapshot.insert(QStringLiteral("vulkan_configured_visible_backlog_limit"), m_configuredPlaybackTuning.visibleBacklogLimit);
     snapshot.insert(QStringLiteral("vulkan_configured_source_lookahead_frames"), m_configuredPlaybackTuning.sourceLookaheadFrames);
     snapshot.insert(QStringLiteral("vulkan_configured_proxy_lookahead_frames"), m_configuredPlaybackTuning.proxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_configured_prefetch_max_queue_depth"), m_configuredPlaybackTuning.prefetchMaxQueueDepth);
+    snapshot.insert(QStringLiteral("vulkan_configured_prefetch_max_inflight"), m_configuredPlaybackTuning.prefetchMaxInflight);
+    snapshot.insert(QStringLiteral("vulkan_configured_prefetch_max_per_tick"), m_configuredPlaybackTuning.prefetchMaxPerTick);
+    snapshot.insert(QStringLiteral("vulkan_configured_visible_queue_reserve"), m_configuredPlaybackTuning.visibleQueueReserve);
+    snapshot.insert(QStringLiteral("vulkan_configured_playback_window_ahead"), m_configuredPlaybackTuning.playbackWindowAhead);
     snapshot.insert(QStringLiteral("vulkan_adaptive_playback_boost_level"), m_adaptivePlaybackBoostLevel);
     if (m_decoder) {
         snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
@@ -358,7 +380,31 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
     snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), effectivePlaybackLookaheadFrames());
     snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), m_playbackTuning.sourceLookaheadFrames);
     snapshot.insert(QStringLiteral("vulkan_proxy_lookahead_frames"), m_playbackTuning.proxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_prefetch_max_queue_depth"), m_playbackTuning.prefetchMaxQueueDepth);
+    snapshot.insert(QStringLiteral("vulkan_prefetch_max_inflight"), m_playbackTuning.prefetchMaxInflight);
+    snapshot.insert(QStringLiteral("vulkan_prefetch_max_per_tick"), m_playbackTuning.prefetchMaxPerTick);
+    snapshot.insert(QStringLiteral("vulkan_visible_queue_reserve"), m_playbackTuning.visibleQueueReserve);
+    snapshot.insert(QStringLiteral("vulkan_playback_window_ahead"), m_playbackTuning.playbackWindowAhead);
+    snapshot.insert(QStringLiteral("vulkan_configured_prefetch_max_queue_depth"), m_configuredPlaybackTuning.prefetchMaxQueueDepth);
+    snapshot.insert(QStringLiteral("vulkan_configured_prefetch_max_inflight"), m_configuredPlaybackTuning.prefetchMaxInflight);
+    snapshot.insert(QStringLiteral("vulkan_configured_prefetch_max_per_tick"), m_configuredPlaybackTuning.prefetchMaxPerTick);
+    snapshot.insert(QStringLiteral("vulkan_configured_visible_queue_reserve"), m_configuredPlaybackTuning.visibleQueueReserve);
+    snapshot.insert(QStringLiteral("vulkan_configured_playback_window_ahead"), m_configuredPlaybackTuning.playbackWindowAhead);
     snapshot.insert(QStringLiteral("vulkan_adaptive_playback_boost_level"), m_adaptivePlaybackBoostLevel);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_enabled"),
+                    m_configuredPlaybackTuning.decodeAutotuneEnabled);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_max_boost_level"),
+                    m_configuredPlaybackTuning.decodeAutotuneMaxBoostLevel);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_min_adjust_interval_ms"),
+                    m_configuredPlaybackTuning.decodeAutotuneMinAdjustIntervalMs);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_window_ms"),
+                    m_configuredPlaybackTuning.decodeAutotuneWindowMs);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_min_samples"),
+                    m_configuredPlaybackTuning.decodeAutotuneMinSamples);
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_adjust_count"),
+                    static_cast<qint64>(m_adaptivePlaybackTuningAdjustCount));
+    snapshot.insert(QStringLiteral("vulkan_decode_autotune_last_reason"),
+                    m_lastAdaptivePlaybackTuningReason);
     if (m_decoder) {
         snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
         snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
@@ -505,6 +551,8 @@ void VulkanPreviewSurface::resetProfilingStats()
     m_maxPlaybackNativeUpdateMs = 0;
     m_adaptivePlaybackBoostLevel = 0;
     m_lastAdaptivePlaybackTuningAdjustMs = 0;
+    m_adaptivePlaybackTuningAdjustCount = 0;
+    m_lastAdaptivePlaybackTuningReason.clear();
     applyAdaptivePlaybackTuning();
 }
 
@@ -551,34 +599,95 @@ void VulkanPreviewSurface::recordPlaybackSmoothnessSample(int exactCount,
 void VulkanPreviewSurface::applyAdaptivePlaybackTuning()
 {
     PlaybackTuning effective = m_configuredPlaybackTuning;
-    const int level = qBound(0, m_adaptivePlaybackBoostLevel, 3);
+    const int level = m_configuredPlaybackTuning.decodeAutotuneEnabled
+        ? qBound(0,
+                 m_adaptivePlaybackBoostLevel,
+                 m_configuredPlaybackTuning.decodeAutotuneMaxBoostLevel)
+        : 0;
     effective.visibleBacklogLimit =
-        qBound(1, effective.visibleBacklogLimit + level, 8);
+        qBound(1,
+               effective.visibleBacklogLimit +
+                   (level * effective.decodeAutotuneVisibleBacklogStep),
+               effective.decodeAutotuneMaxVisibleBacklogLimit);
     effective.sourceLookaheadFrames =
-        qBound(1, effective.sourceLookaheadFrames + (level * 2), 16);
+        qBound(1,
+               effective.sourceLookaheadFrames +
+                   (level * effective.decodeAutotuneLookaheadStep),
+               effective.decodeAutotuneMaxSourceLookaheadFrames);
     effective.proxyLookaheadFrames =
-        qBound(1, effective.proxyLookaheadFrames + (level * 2), 24);
-    if (m_playbackTuning.visibleBacklogLimit == effective.visibleBacklogLimit &&
-        m_playbackTuning.sourceLookaheadFrames == effective.sourceLookaheadFrames &&
-        m_playbackTuning.proxyLookaheadFrames == effective.proxyLookaheadFrames) {
-        return;
-    }
+        qBound(1,
+               effective.proxyLookaheadFrames +
+                   (level * effective.decodeAutotuneLookaheadStep),
+               effective.decodeAutotuneMaxProxyLookaheadFrames);
+    effective.prefetchMaxQueueDepth =
+        qBound(1,
+               effective.prefetchMaxQueueDepth +
+                   (level * effective.decodeAutotunePrefetchQueueDepthStep),
+               effective.decodeAutotuneMaxPrefetchMaxQueueDepth);
+    effective.prefetchMaxInflight =
+        qBound(1,
+               effective.prefetchMaxInflight +
+                   (level * effective.decodeAutotunePrefetchConcurrencyStep),
+               effective.decodeAutotuneMaxPrefetchMaxInflight);
+    effective.prefetchMaxPerTick =
+        qBound(1,
+               effective.prefetchMaxPerTick +
+                   (level * effective.decodeAutotunePrefetchConcurrencyStep),
+               effective.decodeAutotuneMaxPrefetchMaxPerTick);
+    effective.visibleQueueReserve =
+        qBound(0,
+               effective.visibleQueueReserve +
+                   (level * effective.decodeAutotuneVisibleQueueReserveStep),
+               effective.decodeAutotuneMaxVisibleQueueReserve);
+    effective.playbackWindowAhead =
+        qBound(1,
+               effective.playbackWindowAhead +
+                   (level * effective.decodeAutotunePlaybackWindowAheadStep),
+               effective.decodeAutotuneMaxPlaybackWindowAhead);
+    const bool lookaheadChanged =
+        m_playbackTuning.visibleBacklogLimit != effective.visibleBacklogLimit ||
+        m_playbackTuning.sourceLookaheadFrames != effective.sourceLookaheadFrames ||
+        m_playbackTuning.proxyLookaheadFrames != effective.proxyLookaheadFrames;
+    const bool decodeThroughputChanged =
+        m_playbackTuning.prefetchMaxQueueDepth != effective.prefetchMaxQueueDepth ||
+        m_playbackTuning.prefetchMaxInflight != effective.prefetchMaxInflight ||
+        m_playbackTuning.prefetchMaxPerTick != effective.prefetchMaxPerTick ||
+        m_playbackTuning.visibleQueueReserve != effective.visibleQueueReserve ||
+        m_playbackTuning.playbackWindowAhead != effective.playbackWindowAhead;
     m_playbackTuning = effective;
-    if (m_cache) {
+    if (lookaheadChanged && m_cache) {
         m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
+    }
+    if (decodeThroughputChanged) {
+        editor::setDebugPrefetchMaxQueueDepth(effective.prefetchMaxQueueDepth);
+        editor::setDebugPrefetchMaxInflight(effective.prefetchMaxInflight);
+        editor::setDebugPrefetchMaxPerTick(effective.prefetchMaxPerTick);
+        editor::setDebugVisibleQueueReserve(effective.visibleQueueReserve);
+        editor::setDebugPlaybackWindowAhead(effective.playbackWindowAhead);
     }
 }
 
 void VulkanPreviewSurface::updateAdaptivePlaybackTuning(qint64 nowMs)
 {
+    if (!m_configuredPlaybackTuning.decodeAutotuneEnabled) {
+        if (m_adaptivePlaybackBoostLevel != 0) {
+            m_adaptivePlaybackBoostLevel = 0;
+            m_lastAdaptivePlaybackTuningAdjustMs = nowMs;
+            ++m_adaptivePlaybackTuningAdjustCount;
+            m_lastAdaptivePlaybackTuningReason = QStringLiteral("disabled");
+            applyAdaptivePlaybackTuning();
+        }
+        return;
+    }
     if (!m_interaction.playing) {
         return;
     }
-    if (nowMs - m_lastAdaptivePlaybackTuningAdjustMs < kAdaptivePlaybackTuningMinAdjustIntervalMs) {
+    if (nowMs - m_lastAdaptivePlaybackTuningAdjustMs <
+        m_configuredPlaybackTuning.decodeAutotuneMinAdjustIntervalMs) {
         return;
     }
 
-    constexpr qint64 kWindowMs = 5000;
+    const qint64 kWindowMs = m_configuredPlaybackTuning.decodeAutotuneWindowMs;
     int windowSamples = 0;
     qint64 exactTotal = 0;
     qint64 approxTotal = 0;
@@ -598,7 +707,7 @@ void VulkanPreviewSurface::updateAdaptivePlaybackTuning(qint64 nowMs)
             ++lateSamples;
         }
     }
-    if (windowSamples < 24) {
+    if (windowSamples < m_configuredPlaybackTuning.decodeAutotuneMinSamples) {
         return;
     }
 
@@ -613,33 +722,43 @@ void VulkanPreviewSurface::updateAdaptivePlaybackTuning(qint64 nowMs)
     const int decoderPending = m_decoder ? m_decoder->pendingRequestCount() : 0;
     const int workerCount = m_decoder ? qMax(1, m_decoder->workerCount()) : 1;
     const bool starved =
-        lateSampleRate > 0.35 ||
-        exactHitRate < 0.55 ||
-        avgFrameLag > 8.0 ||
+        lateSampleRate >
+            (static_cast<double>(m_configuredPlaybackTuning.decodeAutotuneStarvedLateRatePermille) / 1000.0) ||
+        exactHitRate <
+            (static_cast<double>(m_configuredPlaybackTuning.decodeAutotuneStarvedExactHitRatePermille) / 1000.0) ||
+        avgFrameLag > static_cast<double>(m_configuredPlaybackTuning.decodeAutotuneStarvedAvgFrameLag) ||
         decoderPending >= qMax(2, workerCount / 2);
     const bool recovered =
-        lateSampleRate < 0.10 &&
-        exactHitRate > 0.90 &&
-        avgFrameLag < 2.0 &&
+        lateSampleRate <
+            (static_cast<double>(m_configuredPlaybackTuning.decodeAutotuneRecoveredLateRatePermille) / 1000.0) &&
+        exactHitRate >
+            (static_cast<double>(m_configuredPlaybackTuning.decodeAutotuneRecoveredExactHitRatePermille) / 1000.0) &&
+        avgFrameLag < static_cast<double>(m_configuredPlaybackTuning.decodeAutotuneRecoveredAvgFrameLag) &&
         decoderPending == 0;
 
     int nextLevel = m_adaptivePlaybackBoostLevel;
-    if (starved && nextLevel < 3) {
+    QString reason;
+    if (starved &&
+        nextLevel < m_configuredPlaybackTuning.decodeAutotuneMaxBoostLevel) {
         ++nextLevel;
+        reason = QStringLiteral("starved");
     } else if (recovered && nextLevel > 0) {
         --nextLevel;
+        reason = QStringLiteral("recovered");
     } else {
         return;
     }
 
     m_adaptivePlaybackBoostLevel = nextLevel;
     m_lastAdaptivePlaybackTuningAdjustMs = nowMs;
+    ++m_adaptivePlaybackTuningAdjustCount;
+    m_lastAdaptivePlaybackTuningReason = reason;
     applyAdaptivePlaybackTuning();
 }
 
 QJsonObject VulkanPreviewSurface::playbackSmoothnessSnapshot(const QJsonObject& presenterSnapshot) const
 {
-    constexpr qint64 kWindowMs = 5000;
+    const qint64 kWindowMs = m_configuredPlaybackTuning.decodeAutotuneWindowMs;
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     QVector<PlaybackSmoothnessSample> window;
     window.reserve(m_playbackSmoothnessSamples.size());

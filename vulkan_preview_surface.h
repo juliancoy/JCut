@@ -257,6 +257,8 @@ private:
     PlaybackTuning m_playbackTuning;
     int m_adaptivePlaybackBoostLevel = 0;
     qint64 m_lastAdaptivePlaybackTuningAdjustMs = 0;
+    qint64 m_adaptivePlaybackTuningAdjustCount = 0;
+    QString m_lastAdaptivePlaybackTuningReason;
     qreal m_playbackSpeed = 1.0;
     bool m_forcedPreviewDecodePreference = false;
     editor::DecodePreference m_previousDecodePreference = editor::DecodePreference::Hardware;

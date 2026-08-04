@@ -1111,8 +1111,8 @@ void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately(
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-overlay"), QStringLiteral("/tmp/overlay.wav"));
     clip.transcriptOverlay.enabled = true;
     clip.transcriptOverlay.useManualPlacement = true;
-    clip.transcriptOverlay.translationX = 0.0;
-    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.placement.translationX = 0.0;
+    clip.transcriptOverlay.placement.translationY = 0.0;
     clip.transcriptOverlay.boxWidth = 900.0;
     clip.transcriptOverlay.boxHeight = 220.0;
 
@@ -1176,7 +1176,7 @@ void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately(
     tab.wire();
 
     overlayX.setValue(0.25);
-    QCOMPARE(clip.transcriptOverlay.translationX, 0.25);
+    QCOMPARE(clip.transcriptOverlay.placement.translationX, 0.25);
     QVERIFY(clip.transcriptOverlay.useManualPlacement);
     QCOMPARE(previewUpdateCount, 1);
     QCOMPARE(saveCount, 1);
@@ -1184,7 +1184,7 @@ void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately(
 
     overlayX.setValue(0.30);
     overlayX.setValue(0.35);
-    QCOMPARE(clip.transcriptOverlay.translationX, 0.35);
+    QCOMPARE(clip.transcriptOverlay.placement.translationX, 0.35);
     QCOMPARE(historyCount, 0);
     QVERIFY(QMetaObject::invokeMethod(&overlayX, "editingFinished", Qt::DirectConnection));
     QCOMPARE(historyCount, 1);

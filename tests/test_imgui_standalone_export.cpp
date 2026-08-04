@@ -78,6 +78,25 @@ std::string writePpmFixture(
     return path;
 }
 
+jcut::EditorClip makeTestClip(int id,
+                              int trackId,
+                              const std::string& label,
+                              int startFrame,
+                              int durationFrames,
+                              bool selected,
+                              const std::string& sourcePath)
+{
+    jcut::EditorClip clip;
+    clip.id = id;
+    clip.trackId = trackId;
+    clip.label = label;
+    clip.startFrame = startFrame;
+    clip.durationFrames = durationFrames;
+    clip.selected = selected;
+    clip.sourcePath = sourcePath;
+    return clip;
+}
+
 std::string writeWavFixture(
     const std::string& path,
     std::uint32_t frameCount = 48000)
@@ -273,7 +292,8 @@ void TestImGuiStandaloneExport::exportsQtFreeVideoFile()
     jcut::EditorDocumentCore document;
     document.projectName = "Standalone export";
     document.tracks.push_back({1, "Video A", true});
-    document.clips.push_back({1, 1, "Still", 0, 30, true, sourcePath});
+    document.clips.push_back(
+        makeTestClip(1, 1, "Still", 0, 30, true, sourcePath));
     document.transport.currentFrame = 0;
     document.exportRequest.outputPath = outputPath;
     document.exportRequest.outputFormat = "mp4";
@@ -311,7 +331,8 @@ void TestImGuiStandaloneExport::exportsQtFreeImageSequence()
     jcut::EditorDocumentCore document;
     document.projectName = "Standalone image sequence export";
     document.tracks.push_back({1, "Video A", true});
-    document.clips.push_back({1, 1, "Still", 0, 10, true, sourcePath});
+    document.clips.push_back(
+        makeTestClip(1, 1, "Still", 0, 10, true, sourcePath));
     document.transport.currentFrame = 0;
     document.exportRequest.outputPath = outputPath;
     document.exportRequest.outputFormat = "mp4";
@@ -347,7 +368,8 @@ void TestImGuiStandaloneExport::exportPlaybackSpeedChangesVideoFrameCount()
     jcut::EditorDocumentCore document;
     document.projectName = "Standalone speed export";
     document.tracks.push_back({1, "Video A", true});
-    document.clips.push_back({1, 1, "Still", 0, 30, true, sourcePath});
+    document.clips.push_back(
+        makeTestClip(1, 1, "Still", 0, 30, true, sourcePath));
     document.exportRequest.outputPath = outputPath;
     document.exportRequest.outputFormat = "mp4";
     document.exportRequest.outputSize = {320, 240};
@@ -385,7 +407,7 @@ void TestImGuiStandaloneExport::exportRangesBoundAndConcatenateSegments()
     document.projectName = "Discontiguous export";
     document.tracks.push_back({1, "Video A", true});
     document.clips.push_back(
-        {1, 1, "Still", 0, 60, true, sourcePath});
+        makeTestClip(1, 1, "Still", 0, 60, true, sourcePath));
     document.clips.back().hasAudio = true;
     document.clips.back().audioPresenceKnown = true;
     document.clips.back().audioSourceMode = "external";
@@ -476,7 +498,8 @@ void TestImGuiStandaloneExport::outputFormatOverridesMismatchedPathExtension()
     jcut::EditorDocumentCore document;
     document.projectName = "Standalone Matroska export";
     document.tracks.push_back({1, "Video A", true});
-    document.clips.push_back({1, 1, "Still", 0, 2, true, sourcePath});
+    document.clips.push_back(
+        makeTestClip(1, 1, "Still", 0, 2, true, sourcePath));
     document.exportRequest.outputPath = outputPath;
     document.exportRequest.outputFormat = "mkv";
     document.exportRequest.outputSize = {64, 64};

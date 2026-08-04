@@ -38,6 +38,9 @@ struct OffscreenVulkanFrame {
     // after a chunk renderer is destroyed, so handles alone cannot identify
     // an imported allocation or its semaphore pair.
     std::uint64_t producerSessionId = 0;
+    // Monotonic publication order within producerSessionId. Unlike generation,
+    // which is local to one reusable slot, this orders frames across all slots.
+    std::uint64_t presentationSequence = 0;
     std::uint64_t generation = 0;
     // Same-process, host-visible mailbox acknowledgment. A producer may reuse
     // a preview slot only after the consumer has queued its consumed semaphore

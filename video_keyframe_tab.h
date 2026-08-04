@@ -109,11 +109,14 @@ private:
         double maskRepeatDeltaX = 0.0;
         double maskRepeatDeltaY = 0.0;
         bool linearInterpolation = true;
+        QString interpolationMode = QStringLiteral("linear");
     };
 
-    QString videoInterpolationLabel(bool linearInterpolation) const;
+    QString videoInterpolationLabel(bool linearInterpolation, const QString& interpolationMode = QString()) const;
     QString nextVideoInterpolationLabel(const QString& text) const;
-    bool parseVideoInterpolationText(const QString& text, bool* linearInterpolationOut) const;
+    bool parseVideoInterpolationText(const QString& text,
+                                     bool* linearInterpolationOut,
+                                     QString* interpolationModeOut = nullptr) const;
     bool showClipRelativeKeyframes() const;
     int64_t keyframeFrameForInspectorDisplay(const TimelineClip& clip, int64_t storedFrame) const;
     int64_t keyframeFrameFromInspectorDisplay(const TimelineClip& clip, int64_t displayedFrame) const;

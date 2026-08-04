@@ -1532,8 +1532,8 @@ void TestTranscriptLogic::testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocat
     TimelineClip clip;
     clip.transcriptOverlay.boxWidth = 400.0;
     clip.transcriptOverlay.boxHeight = 200.0;
-    clip.transcriptOverlay.translationX = 999.0; // ignored when speaker location resolves
-    clip.transcriptOverlay.translationY = 999.0;
+    clip.transcriptOverlay.placement.translationX = 999.0; // ignored when speaker location resolves
+    clip.transcriptOverlay.placement.translationY = 999.0;
     const QSize outputSize(1080, 1920);
     const QRectF rect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, transcriptPath, sections, /*sourceFrame=*/15);
@@ -1548,8 +1548,8 @@ void TestTranscriptLogic::testTranscriptOverlayRectInOutputSpaceFallsBackToManua
     TimelineClip clip;
     clip.transcriptOverlay.boxWidth = 500.0;
     clip.transcriptOverlay.boxHeight = 250.0;
-    clip.transcriptOverlay.translationX = 0.25;
-    clip.transcriptOverlay.translationY = -0.5;
+    clip.transcriptOverlay.placement.translationX = 0.25;
+    clip.transcriptOverlay.placement.translationY = -0.5;
 
     const QSize outputSize(1080, 1920);
     const QRectF rect = transcriptOverlayRectInOutputSpace(
@@ -1565,8 +1565,8 @@ void TestTranscriptLogic::testTranscriptOverlayManualTranslationUsesNormalizedOf
     TimelineClip clip;
     clip.transcriptOverlay.boxWidth = 500.0;
     clip.transcriptOverlay.boxHeight = 250.0;
-    clip.transcriptOverlay.translationX = 0.5;
-    clip.transcriptOverlay.translationY = -0.25;
+    clip.transcriptOverlay.placement.translationX = 0.5;
+    clip.transcriptOverlay.placement.translationY = -0.25;
     clip.transcriptOverlay.useManualPlacement = true;
 
     const QSize outputSize(1080, 1920);
@@ -1616,8 +1616,8 @@ void TestTranscriptLogic::testTranscriptOverlayManualPlacementOverridesSpeakerTr
     TimelineClip clip;
     clip.transcriptOverlay.boxWidth = 400.0;
     clip.transcriptOverlay.boxHeight = 200.0;
-    clip.transcriptOverlay.translationX = -0.25;
-    clip.transcriptOverlay.translationY = 0.1;
+    clip.transcriptOverlay.placement.translationX = -0.25;
+    clip.transcriptOverlay.placement.translationY = 0.1;
     clip.transcriptOverlay.useManualPlacement = true;
     const QSize outputSize(1080, 1920);
 
@@ -1634,15 +1634,15 @@ void TestTranscriptLogic::testTranscriptOverlayStyleCacheMaterialIncludesTransfo
     clip.transcriptOverlay.autoScroll = true;
     clip.transcriptOverlay.maxLines = 2;
     clip.transcriptOverlay.maxCharsPerLine = 28;
-    clip.transcriptOverlay.translationX = 0.0;
-    clip.transcriptOverlay.translationY = 0.0;
+    clip.transcriptOverlay.placement.translationX = 0.0;
+    clip.transcriptOverlay.placement.translationY = 0.0;
     clip.transcriptOverlay.boxWidth = 900.0;
     clip.transcriptOverlay.boxHeight = 220.0;
 
     const QString baseMaterial = transcriptOverlayStyleCacheMaterial(clip);
 
     TimelineClip moved = clip;
-    moved.transcriptOverlay.translationX = 0.25;
+    moved.transcriptOverlay.placement.translationX = 0.25;
     QVERIFY2(transcriptOverlayStyleCacheMaterial(moved) != baseMaterial,
              "Transcript overlay cache material must change when X translation changes.");
 

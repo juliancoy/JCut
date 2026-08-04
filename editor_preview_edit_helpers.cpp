@@ -263,8 +263,8 @@ bool commitPreviewMove(TimelineClip& clip,
                        bool transcriptOverlaySelected) {
     if (transcriptOverlaySelected &&
         clipSupportsTranscriptOverlayPreviewEdits(clip)) {
-        clip.transcriptOverlay.translationX = translationX;
-        clip.transcriptOverlay.translationY = translationY;
+        clip.transcriptOverlay.placement.translationX = translationX;
+        clip.transcriptOverlay.placement.translationY = translationY;
         clip.transcriptOverlay.useManualPlacement = true;
         return true;
     }
@@ -298,8 +298,8 @@ bool commitPreviewTransform(TimelineClip& clip,
                             bool transcriptOverlaySelected) {
     if (transcriptOverlaySelected &&
         clipSupportsTranscriptOverlayPreviewEdits(clip)) {
-        clip.transcriptOverlay.translationX = translationX;
-        clip.transcriptOverlay.translationY = translationY;
+        clip.transcriptOverlay.placement.translationX = translationX;
+        clip.transcriptOverlay.placement.translationY = translationY;
         clip.transcriptOverlay.useManualPlacement = true;
         clip.transcriptOverlay.boxWidth = qMax<qreal>(
             TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth,

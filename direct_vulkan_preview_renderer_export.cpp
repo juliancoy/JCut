@@ -9,6 +9,19 @@ bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
     }
     render_detail::OffscreenVulkanFrame frame;
     if (m_owner->takeGpuExportPreviewFrame(&frame)) {
+        bool staleFrame = false;
+        if (m_gpuExportPreviewProducerSessionId != frame.producerSessionId) {
+            m_gpuExportPreviewProducerSessionId = frame.producerSessionId;
+            m_lastAcceptedGpuExportPreviewSequence = 0;
+        }
+        if (frame.presentationSequence > 0 &&
+            frame.presentationSequence <=
+                m_lastAcceptedGpuExportPreviewSequence) {
+            staleFrame = true;
+        } else {
+            m_lastAcceptedGpuExportPreviewSequence =
+                frame.presentationSequence;
+        }
         const int slotIndex = static_cast<int>(frame.bufferIndex);
         if (slotIndex < 0 ||
             slotIndex >= static_cast<int>(m_gpuExportPreviewSlots.size())) {
@@ -133,6 +146,10 @@ bool DirectVulkanPreviewRenderer::renderGpuExportPreview(
                        .arg(QString::fromStdString(error));
             return false;
         }
+        if (staleFrame) {
+            signalConsumed();
+            return m_gpuExportPreviewCurrentSlot >= 0;
+        }
         m_resources->beginFrameUploads(
             static_cast<size_t>(qMax(0, m_window->currentFrame())),
             static_cast<size_t>(
@@ -225,10 +242,11 @@ void DirectVulkanPreviewRenderer::destroyGpuExportPreviewResources()
     m_pendingGpuExportPreviewGeneration = 0;
     m_pendingGpuExportPreviewSlot = -1;
     m_pendingGpuExportPreviewProducerSessionId = 0;
+    m_gpuExportPreviewProducerSessionId = 0;
+    m_lastAcceptedGpuExportPreviewSequence = 0;
 }
 
 void DirectVulkanPreviewRenderer::clearGpuExportPreview()
 {
     destroyGpuExportPreviewResources();
 }
-

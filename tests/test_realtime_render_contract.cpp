@@ -58,6 +58,7 @@ private slots:
     void exportFrameTimingNamesOutputTimeAndTimelineDomains();
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
+    void perspectiveLinearTransformInterpolationUsesScaleAsDepth();
     void childTransformLockUsesSourceTransformWhenEnabled();
     void maskMatteMappingAlwaysUsesParentClockAndMarkers();
     void maskMatteVisualEffectsUseParentClockAndMarkerIdentity();
@@ -159,6 +160,38 @@ void TestRealtimeRenderContract::renderTransformsInterpolateAtOutputFpsPositions
              "render transforms must evaluate at fractional output-frame positions");
     QVERIFY2(std::abs(atHalfFrame.translationY - 10.0) < 0.000001,
              "fractional render transform evaluation prevents visible half-frame stepping");
+}
+
+void TestRealtimeRenderContract::perspectiveLinearTransformInterpolationUsesScaleAsDepth()
+{
+    TimelineClip clip = makeMappedClip(30.0);
+    TimelineClip::TransformKeyframe start;
+    start.frame = 0;
+    start.translationX = 0.0;
+    start.translationY = 0.0;
+    start.scaleX = 1.0;
+    start.scaleY = 1.0;
+    start.linearInterpolation = true;
+    start.interpolationMode = QStringLiteral("linear");
+    TimelineClip::TransformKeyframe end = start;
+    end.frame = 10;
+    end.translationX = 100.0;
+    end.translationY = 50.0;
+    end.scaleX = 4.0;
+    end.scaleY = 4.0;
+    end.interpolationMode = QStringLiteral("perspective_linear");
+    clip.transformKeyframes = {start, end};
+
+    const TimelineClip::TransformKeyframe midpoint =
+        evaluateClipRenderTransformAtPosition(clip, 5.0, QSize(1920, 1080));
+
+    QVERIFY2(std::abs(midpoint.scaleX - 1.6) < 0.000001,
+             "perspective-linear scale should interpolate reciprocal depth, not raw scale");
+    QVERIFY2(std::abs(midpoint.translationX - 20.0) < 0.000001,
+             "perspective-linear X should interpolate in depth/world space before projection");
+    QVERIFY2(std::abs(midpoint.translationY - 10.0) < 0.000001,
+             "perspective-linear Y should interpolate in depth/world space before projection");
+    QCOMPARE(midpoint.interpolationMode, QStringLiteral("perspective_linear"));
 }
 
 void TestRealtimeRenderContract::childTransformLockUsesSourceTransformWhenEnabled()

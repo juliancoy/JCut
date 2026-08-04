@@ -2,6 +2,7 @@
 
 #include "audio_dynamics_core.h"
 #include "background_fill_effect.h"
+#include "keyframe_sequence.h"
 #include "timeline_fps.h"
 
 #include <QColor>
@@ -131,8 +132,7 @@ struct TimelineClip {
     static constexpr int kSpeakerFramingSmoothingMaxFrames = 500;
     static constexpr int kSpeakerFramingGapHoldMaxFrames = 240;
 
-    struct TransformKeyframe {
-        int64_t frame = 0;
+    struct TransformValue {
         QString title;
         qreal translationX = 0.0;
         qreal translationY = 0.0;
@@ -142,7 +142,11 @@ struct TimelineClip {
         bool linearInterpolation = true;
         qreal maskRepeatDeltaX = 0.0;
         qreal maskRepeatDeltaY = 0.0;
+        QString interpolationMode = QStringLiteral("linear");
     };
+
+    using TransformKeyframe =
+        jcut::keyframes::Keyframe<TransformValue>;
 
     struct GradingKeyframe {
         int64_t frame = 0;
@@ -296,8 +300,7 @@ struct TimelineClip {
         bool highlightCurrentWord = true;
         bool autoScroll = false;
         bool useManualPlacement = false;
-        qreal translationX = 0.0;
-        qreal translationY = 0.0;
+        TransformValue placement;
         qreal boxWidth = 900.0;
         qreal boxHeight = 220.0;
         int maxLines = 2;

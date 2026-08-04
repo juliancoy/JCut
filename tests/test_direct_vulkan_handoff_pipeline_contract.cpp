@@ -76,7 +76,7 @@ private slots:
   void transcriptTimingEditsInvertDisplayPadding();
   void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
-  void exportPreviewUsesGpuDoubleBufferOnDedicatedSurface();
+  void exportPreviewUsesOrderedTripleBufferOnDedicatedSurface();
   void exportRunsOffGuiThreadWhileDedicatedSurfacePresents();
   void renderSynchronizationWaitsAreBoundedAndDiagnosable();
   void hardwareFrameImportUsesGpuSemaphoreSynchronization();
@@ -3935,7 +3935,7 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
-    exportPreviewUsesGpuDoubleBufferOnDedicatedSurface() {
+    exportPreviewUsesOrderedTripleBufferOnDedicatedSurface() {
   const QString frameContract =
       readSourceFile(QStringLiteral("core/offscreen_vulkan_frame.h"));
   const QString producer =
@@ -3955,6 +3955,7 @@ void TestDirectVulkanHandoffPipelineContract::
                frameContract.contains(QStringLiteral("consumedSemaphoreFd")) &&
     frameContract.contains(QStringLiteral("bufferIndex")) &&
                frameContract.contains(QStringLiteral("producerSessionId")) &&
+               frameContract.contains(QStringLiteral("presentationSequence")) &&
                frameContract.contains(QStringLiteral("generation")) &&
                frameContract.contains(QStringLiteral("consumptionState")),
            "the GPU preview frame contract must identify both synchronization "
@@ -3968,7 +3969,10 @@ void TestDirectVulkanHandoffPipelineContract::
                producer.contains(QStringLiteral(
                    "all optional preview slots are busy")) &&
                producer.contains(QStringLiteral(
-                   "completedGeneration.load")),
+                   "completedGeneration.load")) &&
+               producer.contains(QStringLiteral(
+                   "frame->presentationSequence = "
+                   "++m_previewPresentationSequence")),
            "the export renderer must own exactly three externally synchronized "
            "GPU preview images and drop updates instead of waiting for a busy "
            "optional consumer");
@@ -3986,6 +3990,16 @@ void TestDirectVulkanHandoffPipelineContract::
                    "m_owner->hasGpuExportPreviewFrames()")),
            "the primary Vulkan presenter must finish each GPU-only import copy "
            "and acknowledge its slot before independent swapchain presentation");
+  QVERIFY2(presenter.contains(QStringLiteral(
+               "kGpuExportPreviewSlotCount = 3")) &&
+               presenter.contains(QStringLiteral(
+                   "std::array<GpuExportPreviewSlot, "
+                   "kGpuExportPreviewSlotCount>")) &&
+               presenter.contains(QStringLiteral(
+                   "m_lastAcceptedGpuExportPreviewSequence")) &&
+               presenter.contains(QStringLiteral("if (staleFrame)")),
+           "the Qt Vulkan presenter must match the producer's three slots and "
+           "retire stale sequences without presenting them");
   const qsizetype cleanupDeviceStart = presenter.indexOf(
       QStringLiteral("void DirectVulkanPreviewWindow::cleanupDevice()"));
   const qsizetype ensureReadyStart = presenter.indexOf(
@@ -4130,33 +4144,63 @@ void TestDirectVulkanHandoffPipelineContract::
                imguiPresenter.contains(QStringLiteral(
                    "VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME")) &&
                imguiPresenter.contains(QStringLiteral(
-                   "consumeRenderMonitorExportFrame")) &&
+                   "acquireRenderMonitorExportFrame")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "releaseRenderMonitorExportFrame")) &&
                imguiPresenter.contains(QStringLiteral(
                    "waitForReady.pWaitSemaphores = &slot.ready")) &&
                imguiPresenter.contains(QStringLiteral(
                    "signal.pSignalSemaphores = &slot.consumed")) &&
                imguiPresenter.contains(QStringLiteral(
                    "completedGeneration.store")) &&
-	               imguiPresenter.contains(QStringLiteral(
-	                   "importExternalFrame(frame")) &&
-	               imguiPresenter.contains(QStringLiteral(
-	                   "Activity: %s")) &&
-	               imguiPresenterHeader.contains(QStringLiteral(
-	                   "std::string activity")) &&
-	               exportUi.contains(QStringLiteral(
-	                   "monitorStatus.activity")) &&
-	               exportUi.contains(QStringLiteral(
-	                   "imguiRenderMonitorPtr->setStatusText")) &&
-	               exportUi.contains(QStringLiteral(
-	                   "activity.toHtmlEscaped()")) &&
-	               imguiPresenter.contains(QStringLiteral(
-	                   "ImVec2(0.0f, 0.0f),\n                 ImVec2(1.0f, 1.0f)")) &&
-	               imguiPresenter.contains(QStringLiteral(
-	                   "JCut Render Monitor")),
+               imguiPresenter.contains(QStringLiteral(
+                   "lastAcceptedRenderMonitorSequence")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "importExternalFrame(frame")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "Activity: %s")) &&
+               imguiPresenterHeader.contains(QStringLiteral(
+                   "std::string activity")) &&
+               exportUi.contains(QStringLiteral(
+                   "monitorStatus.activity")) &&
+               exportUi.contains(QStringLiteral(
+                   "imguiRenderMonitorPtr->setStatusText")) &&
+               exportUi.contains(QStringLiteral(
+                   "activity.toHtmlEscaped()")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "ImVec2(0.0f, 0.0f),\n                 ImVec2(1.0f, 1.0f)")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "JCut Render Monitor")),
            "the export UI must provide an optional Dear ImGui Vulkan render "
            "monitor that consumes the same synchronized GPU handoff frame "
            "upright and remains a monitor/control surface, not a second "
            "renderer");
+
+  const qsizetype monitorPresentStart = imguiPresenter.indexOf(
+      QStringLiteral("bool ImGuiPreviewWindow::presentRenderMonitorFrame("));
+  const qsizetype monitorDiscardStart = imguiPresenter.indexOf(
+      QStringLiteral("bool ImGuiPreviewWindow::discardRenderMonitorFrame("),
+      monitorPresentStart);
+  const QString monitorPresentBody =
+      monitorPresentStart >= 0 && monitorDiscardStart > monitorPresentStart
+          ? imguiPresenter.mid(monitorPresentStart,
+                               monitorDiscardStart - monitorPresentStart)
+          : QString();
+  const qsizetype samplingSubmit = monitorPresentBody.indexOf(
+      QStringLiteral("frameRender(m_impl.get(), drawData)"));
+  const qsizetype ownershipRelease = monitorPresentBody.indexOf(
+      QStringLiteral("releaseRenderMonitorExportFrame("), samplingSubmit);
+  QVERIFY2(samplingSubmit >= 0 && ownershipRelease > samplingSubmit,
+           "the ImGui monitor must queue sampling before releasing the producer slot");
+  QVERIFY2(exportUi.contains(QStringLiteral("pendingGpuPreviews")) &&
+               exportUi.contains(QStringLiteral("pending.back()")) &&
+               exportUi.contains(QStringLiteral("discardGpuPreview")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "lastAcceptedRenderMonitorSequence")) &&
+               imguiPresenter.contains(QStringLiteral(
+                   "discardRenderMonitorFrame(frame)")),
+           "optional export previews must coalesce to the newest frame and "
+           "safely retire stale publications");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

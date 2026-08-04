@@ -326,8 +326,8 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
         timelineClip.transcriptOverlay.highlightCurrentWord = clip.transcriptOverlay.highlightCurrentWord;
         timelineClip.transcriptOverlay.autoScroll = clip.transcriptOverlay.autoScroll;
         timelineClip.transcriptOverlay.useManualPlacement = clip.transcriptOverlay.useManualPlacement;
-        timelineClip.transcriptOverlay.translationX = clip.transcriptOverlay.translationX;
-        timelineClip.transcriptOverlay.translationY = clip.transcriptOverlay.translationY;
+        timelineClip.transcriptOverlay.placement.translationX = clip.transcriptOverlay.placement.translationX;
+        timelineClip.transcriptOverlay.placement.translationY = clip.transcriptOverlay.placement.translationY;
         timelineClip.transcriptOverlay.boxWidth = clip.transcriptOverlay.boxWidth;
         timelineClip.transcriptOverlay.boxHeight = clip.transcriptOverlay.boxHeight;
         timelineClip.transcriptOverlay.maxLines = std::max(1, clip.transcriptOverlay.maxLines);
@@ -367,6 +367,8 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
                     value.scaleY = keyframe.scaleY;
                     value.linearInterpolation =
                         keyframe.linearInterpolation;
+                    value.interpolationMode =
+                        keyframe.linearInterpolation ? QStringLiteral("linear") : QStringLiteral("step");
                     result.push_back(std::move(value));
                 }
                 return result;
@@ -387,6 +389,10 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
             value.scaleX = keyframe.scaleX;
             value.scaleY = keyframe.scaleY;
             value.linearInterpolation = keyframe.linearInterpolation;
+            value.interpolationMode = QString::fromStdString(
+                keyframe.interpolationMode.empty()
+                    ? (keyframe.linearInterpolation ? "linear" : "step")
+                    : keyframe.interpolationMode);
             timelineClip.transformKeyframes.push_back(std::move(value));
         }
         for (const EditorGradingKeyframe& keyframe : clip.gradingKeyframes) {

@@ -120,16 +120,20 @@ void parseTransformKeyframes(const json& values,
         if (!value.is_object()) {
             continue;
         }
-        keyframes->push_back({
-            valueOr(value, "frame", std::int64_t{0}),
-            stringOr(value, "title"),
-            valueOr(value, "translationX", 0.0),
-            valueOr(value, "translationY", 0.0),
-            valueOr(value, "rotation", 0.0),
-            valueOr(value, "scaleX", 1.0),
-            valueOr(value, "scaleY", 1.0),
-            valueOr(value, "linearInterpolation", true)
-        });
+        jcut::EditorTransformKeyframe keyframe;
+        keyframe.frame = valueOr(value, "frame", std::int64_t{0});
+        keyframe.title = stringOr(value, "title");
+        keyframe.translationX = valueOr(value, "translationX", 0.0);
+        keyframe.translationY = valueOr(value, "translationY", 0.0);
+        keyframe.rotation = valueOr(value, "rotation", 0.0);
+        keyframe.scaleX = valueOr(value, "scaleX", 1.0);
+        keyframe.scaleY = valueOr(value, "scaleY", 1.0);
+        keyframe.linearInterpolation =
+            valueOr(value, "linearInterpolation", true);
+        keyframe.interpolationMode =
+            stringOr(value, "interpolationMode",
+                     keyframe.linearInterpolation ? "linear" : "step");
+        keyframes->push_back(std::move(keyframe));
     }
 }
 
@@ -386,8 +390,10 @@ void parseTranscriptOverlay(const json& value, jcut::EditorTranscriptOverlayStat
     overlay->highlightCurrentWord = valueOr(value, "highlightCurrentWord", overlay->highlightCurrentWord);
     overlay->autoScroll = valueOr(value, "autoScroll", overlay->autoScroll);
     overlay->useManualPlacement = valueOr(value, "useManualPlacement", overlay->useManualPlacement);
-    overlay->translationX = valueOr(value, "translationX", overlay->translationX);
-    overlay->translationY = valueOr(value, "translationY", overlay->translationY);
+    overlay->placement.translationX = valueOr(
+        value, "translationX", overlay->placement.translationX);
+    overlay->placement.translationY = valueOr(
+        value, "translationY", overlay->placement.translationY);
     overlay->boxWidth = valueOr(value, "boxWidth", overlay->boxWidth);
     overlay->boxHeight = valueOr(value, "boxHeight", overlay->boxHeight);
     overlay->maxLines = valueOr(value, "maxLines", overlay->maxLines);
@@ -872,15 +878,15 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
         if (!clip.is_object()) {
             continue;
         }
-        document->clips.push_back({
-            valueOr(clip, "id", 0),
-            valueOr(clip, "trackId", 0),
-            stringOr(clip, "label"),
-            valueOr(clip, "startFrame", 0),
-            valueOr(clip, "durationFrames", 0),
-            valueOr(clip, "selected", false),
-            stringOr(clip, "sourcePath")
-        });
+        jcut::EditorClip parsedClip;
+        parsedClip.id = valueOr(clip, "id", 0);
+        parsedClip.trackId = valueOr(clip, "trackId", 0);
+        parsedClip.label = stringOr(clip, "label");
+        parsedClip.startFrame = valueOr(clip, "startFrame", 0);
+        parsedClip.durationFrames = valueOr(clip, "durationFrames", 0);
+        parsedClip.selected = valueOr(clip, "selected", false);
+        parsedClip.sourcePath = stringOr(clip, "sourcePath");
+        document->clips.push_back(std::move(parsedClip));
         parseExtendedClip(clip, &document->clips.back());
     }
 
@@ -1207,15 +1213,15 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
             });
         }
         const int trackId = std::max(1, valueOr(clip, "trackIndex", 0) + 1);
-        document->clips.push_back({
-            nextClipId++,
-            trackId,
-            label,
-            valueOr(clip, "startFrame", 0),
-            valueOr(clip, "durationFrames", 0),
-            stringOr(clip, "id") == selectedClipId,
-            sourcePath
-        });
+        jcut::EditorClip parsedClip;
+        parsedClip.id = nextClipId++;
+        parsedClip.trackId = trackId;
+        parsedClip.label = label;
+        parsedClip.startFrame = valueOr(clip, "startFrame", 0);
+        parsedClip.durationFrames = valueOr(clip, "durationFrames", 0);
+        parsedClip.selected = stringOr(clip, "id") == selectedClipId;
+        parsedClip.sourcePath = sourcePath;
+        document->clips.push_back(std::move(parsedClip));
         parseExtendedClip(clip, &document->clips.back());
         if (document->clips.back().selected &&
             !selectedTranscriptActiveCutPath.empty()) {
@@ -1284,7 +1290,10 @@ json transformKeyframesJson(const std::vector<jcut::EditorTransformKeyframe>& ke
             {"rotation", keyframe.rotation},
             {"scaleX", keyframe.scaleX},
             {"scaleY", keyframe.scaleY},
-            {"linearInterpolation", keyframe.linearInterpolation}
+            {"linearInterpolation", keyframe.linearInterpolation},
+            {"interpolationMode", keyframe.interpolationMode.empty()
+                                      ? (keyframe.linearInterpolation ? "linear" : "step")
+                                      : keyframe.interpolationMode}
         });
     }
     return values;
@@ -1436,8 +1445,8 @@ json transcriptOverlayJson(const jcut::EditorTranscriptOverlayState& overlay)
         {"highlightCurrentWord", overlay.highlightCurrentWord},
         {"autoScroll", overlay.autoScroll},
         {"useManualPlacement", overlay.useManualPlacement},
-        {"translationX", overlay.translationX},
-        {"translationY", overlay.translationY},
+        {"translationX", overlay.placement.translationX},
+        {"translationY", overlay.placement.translationY},
         {"boxWidth", overlay.boxWidth},
         {"boxHeight", overlay.boxHeight},
         {"maxLines", overlay.maxLines},

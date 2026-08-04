@@ -5,6 +5,7 @@
     m_producerSessionId =
         g_nextOffscreenProducerSessionId.fetch_add(
             1, std::memory_order_relaxed);
+    m_previewPresentationSequence = 0;
 
     m_outputSize =
         QSize(qMax(16, outputSize.width()), qMax(16, outputSize.height()));

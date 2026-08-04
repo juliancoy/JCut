@@ -21,12 +21,38 @@
 #include <cstring>
 #include <cstdio>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace {
 
 constexpr uint32_t kMinImageCount = 2;
 constexpr std::uint64_t kMonitorSwapchainWaitTimeoutNs = 16'000'000ull;
+
+template <typename Fn>
+class ScopeExit {
+public:
+    explicit ScopeExit(Fn fn)
+        : m_fn(std::move(fn))
+    {
+    }
+
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+    ~ScopeExit()
+    {
+        if (m_active) {
+            m_fn();
+        }
+    }
+
+    void release() { m_active = false; }
+
+private:
+    Fn m_fn;
+    bool m_active = true;
+};
 
 bool validNonEmptyRect(const jcut::core::RectF& rect)
 {
@@ -221,6 +247,8 @@ struct ImGuiPreviewWindow::Impl {
         bool initialized = false;
     };
     std::array<RenderMonitorSlot, 3> renderMonitorSlots;
+    std::uint64_t renderMonitorProducerSessionId = 0;
+    std::uint64_t lastAcceptedRenderMonitorSequence = 0;
     VkImageView boundImageView = VK_NULL_HANDLE;
     VkImageLayout boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     jcut::core::SizeI boundImageSize;
@@ -657,9 +685,48 @@ void cleanupVulkan(ImGuiPreviewWindow::Impl* impl)
     impl->boundImageView = VK_NULL_HANDLE;
     impl->boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     impl->boundImageSize = {};
+    impl->renderMonitorProducerSessionId = 0;
+    impl->lastAcceptedRenderMonitorSequence = 0;
 }
 
-bool consumeRenderMonitorExportFrame(
+bool releaseRenderMonitorExportFrame(
+    ImGuiPreviewWindow::Impl* impl,
+    const render_detail::OffscreenVulkanFrame& frame,
+    std::string* errorOut)
+{
+    if (!impl || frame.bufferIndex >= impl->renderMonitorSlots.size()) {
+        if (errorOut) {
+            *errorOut = "Dear ImGui render monitor cannot release an invalid export frame slot.";
+        }
+        return false;
+    }
+    ImGuiPreviewWindow::Impl::RenderMonitorSlot& slot =
+        impl->renderMonitorSlots[frame.bufferIndex];
+    if (!slot.initialized || slot.consumed == VK_NULL_HANDLE) {
+        if (errorOut) {
+            *errorOut = "Dear ImGui render monitor cannot release an uninitialized export frame slot.";
+        }
+        return false;
+    }
+
+    VkSubmitInfo signal{};
+    signal.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    signal.signalSemaphoreCount = 1;
+    signal.pSignalSemaphores = &slot.consumed;
+    if (vkQueueSubmit(impl->queue, 1, &signal, VK_NULL_HANDLE) != VK_SUCCESS) {
+        if (errorOut) {
+            *errorOut = "Dear ImGui render monitor failed to release the exported frame.";
+        }
+        return false;
+    }
+    if (frame.consumptionState) {
+        frame.consumptionState->completedGeneration.store(
+            frame.generation, std::memory_order_release);
+    }
+    return true;
+}
+
+bool acquireRenderMonitorExportFrame(
     ImGuiPreviewWindow::Impl* impl,
     const render_detail::OffscreenVulkanFrame& frame,
     jcut::vulkan_import::ExternalImage* imageOut,
@@ -793,28 +860,12 @@ bool consumeRenderMonitorExportFrame(
         return false;
     }
 
-    const auto signalConsumed = [&]() -> bool {
-        VkSubmitInfo signal{};
-        signal.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        signal.signalSemaphoreCount = 1;
-        signal.pSignalSemaphores = &slot.consumed;
-        const bool submitted =
-            vkQueueSubmit(impl->queue, 1, &signal, VK_NULL_HANDLE) ==
-            VK_SUCCESS;
-        if (submitted && frame.consumptionState) {
-            frame.consumptionState->completedGeneration.store(
-                frame.generation, std::memory_order_release);
-        }
-        return submitted;
-    };
-
     if (!slot.importer ||
         !slot.importer->importExternalFrame(frame, errorOut) ||
         !slot.importer->finishPendingCopy(nullptr, errorOut)) {
-        signalConsumed();
+        releaseRenderMonitorExportFrame(impl, frame, nullptr);
         return false;
     }
-    signalConsumed();
     if (imageOut) {
         *imageOut = slot.importer->externalImage();
     }
@@ -1771,14 +1822,32 @@ bool ImGuiPreviewWindow::presentRenderMonitorFrame(
     }
     rebuildSwapchainIfNeeded(m_impl.get());
 
+    if (m_impl->renderMonitorProducerSessionId == frame.producerSessionId &&
+        frame.presentationSequence > 0 &&
+        frame.presentationSequence <=
+            m_impl->lastAcceptedRenderMonitorSequence) {
+        const bool discarded = discardRenderMonitorFrame(frame);
+        m_impl->updatePending = false;
+        return discarded;
+    }
+    if (m_impl->renderMonitorProducerSessionId != frame.producerSessionId) {
+        m_impl->renderMonitorProducerSessionId = frame.producerSessionId;
+        m_impl->lastAcceptedRenderMonitorSequence = 0;
+    }
+
     jcut::vulkan_import::ExternalImage external;
     std::string handoffError;
-    if (!consumeRenderMonitorExportFrame(
+    if (!acquireRenderMonitorExportFrame(
             m_impl.get(), frame, &external, &handoffError)) {
         markFailure(handoffError);
         m_impl->updatePending = false;
         return false;
     }
+    ScopeExit releaseFrameOnError([&]() {
+        releaseRenderMonitorExportFrame(
+            m_impl.get(), frame, nullptr);
+    });
+    m_impl->lastAcceptedRenderMonitorSequence = frame.presentationSequence;
     if (external.imageView == VK_NULL_HANDLE || !external.size.valid()) {
         markFailure("Dear ImGui render monitor received an invalid imported Vulkan image.");
         m_impl->updatePending = false;
@@ -1914,15 +1983,55 @@ bool ImGuiPreviewWindow::presentRenderMonitorFrame(
     ImDrawData* drawData = ImGui::GetDrawData();
     const bool minimized =
         drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f;
-    if (!minimized) {
-        if (frameRender(m_impl.get(), drawData)) {
-            framePresent(m_impl.get());
-        }
+    const bool samplingSubmitted = !minimized &&
+        frameRender(m_impl.get(), drawData);
+    if (!releaseRenderMonitorExportFrame(
+            m_impl.get(), frame, &handoffError)) {
+        releaseFrameOnError.release();
+        markFailure(handoffError);
+        m_impl->updatePending = false;
+        return false;
+    }
+    releaseFrameOnError.release();
+    if (samplingSubmitted) {
+        framePresent(m_impl.get());
     }
 
     m_impl->lastPresentedSourceFrame = status.timelineFrame;
     m_impl->redrawRequested = false;
     m_impl->updatePending = false;
+    return true;
+}
+
+bool ImGuiPreviewWindow::discardRenderMonitorFrame(
+    const render_detail::OffscreenVulkanFrame& frame)
+{
+    if (!isActive() || !frame.valid) {
+        return false;
+    }
+    if (frame.consumptionState &&
+        frame.consumptionState->completedGeneration.load(
+            std::memory_order_acquire) >= frame.generation) {
+        if (frame.readySemaphoreFd >= 0) {
+            close(frame.readySemaphoreFd);
+        }
+        if (frame.consumedSemaphoreFd >= 0) {
+            close(frame.consumedSemaphoreFd);
+        }
+        return true;
+    }
+    std::string error;
+    if (!ensureVulkanReady(m_impl.get(), VK_NULL_HANDLE, &error)) {
+        markFailure(error);
+        return false;
+    }
+    jcut::vulkan_import::ExternalImage ignored;
+    if (!acquireRenderMonitorExportFrame(
+            m_impl.get(), frame, &ignored, &error) ||
+        !releaseRenderMonitorExportFrame(m_impl.get(), frame, &error)) {
+        markFailure(error);
+        return false;
+    }
     return true;
 }
 

@@ -552,6 +552,7 @@
     frame->memoryTypeIndex = slot.memoryTypeIndex;
     frame->memoryAllocationSize = slot.memoryAllocationSize;
     frame->producerSessionId = m_producerSessionId;
+    frame->presentationSequence = ++m_previewPresentationSequence;
     frame->generation = slot.generation;
     frame->consumptionState = slot.consumptionState;
     frame->size = {m_outputSize.width(), m_outputSize.height()};
@@ -788,4 +789,3 @@
     useSlot(next);
     return true;
   }
-

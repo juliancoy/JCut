@@ -4,6 +4,8 @@
 #include "../editor_shared_keyframes.h"
 #include "../keyframe_sequence.h"
 
+#include <type_traits>
+
 class TestPreviewEditHelpers : public QObject {
     Q_OBJECT
 
@@ -246,6 +248,13 @@ void TestPreviewEditHelpers::testSharedKeyframeSequenceOperations() {
         double value = 0.0;
     };
 
+    static_assert(std::is_base_of_v<
+                  TimelineClip::TransformValue,
+                  TimelineClip::TransformKeyframe>);
+    static_assert(std::is_same_v<
+                  decltype(TimelineClip::TranscriptOverlaySettings{}.placement),
+                  TimelineClip::TransformValue>);
+
     QVector<TestKeyframe> keyframes{{12, 1.0}, {-5, 2.0}, {12, 3.0}, {80, 4.0}};
     jcut::keyframes::normalizeSequence(
         &keyframes, 30,
@@ -258,6 +267,38 @@ void TestPreviewEditHelpers::testSharedKeyframeSequenceOperations() {
     QCOMPARE(keyframes[2].frame, int64_t{30});
     QCOMPARE(keyframes[2].value, 3.5);
     QCOMPARE(jcut::keyframes::findFrameIndex(keyframes, 12), 1);
+
+    QVector<TestKeyframe> duplicateFrames;
+    for (int inputIndex = 0; inputIndex < 64; ++inputIndex) {
+        duplicateFrames.push_back(
+            TestKeyframe{7, static_cast<double>(inputIndex)});
+    }
+    jcut::keyframes::normalizeSequence(&duplicateFrames, 30);
+    QCOMPARE(duplicateFrames.size(), 1);
+    QCOMPARE(duplicateFrames.constFirst().frame, int64_t{7});
+    QCOMPARE(duplicateFrames.constFirst().value, 63.0);
+
+    struct TestValue {
+        double value = 0.0;
+    };
+    using GenericKeyframe = jcut::keyframes::Keyframe<TestValue>;
+    const QVector<GenericKeyframe> genericTrack{{0, 2.0}, {10, 12.0}};
+    const GenericKeyframe evaluated = jcut::keyframes::evaluateTrackAt(
+        genericTrack,
+        5.0,
+        GenericKeyframe{},
+        [](const GenericKeyframe& previous,
+           const GenericKeyframe& current,
+           double frame) {
+            const double amount =
+                (frame - previous.frame) /
+                static_cast<double>(current.frame - previous.frame);
+            return GenericKeyframe{
+                qRound64(frame),
+                previous.value + ((current.value - previous.value) * amount)};
+        });
+    QCOMPARE(evaluated.frame, int64_t{5});
+    QCOMPARE(evaluated.value, 7.0);
 
     jcut::keyframes::upsertByFrame(&keyframes, TestKeyframe{12, 9.0});
     QCOMPARE(keyframes[1].value, 9.0);

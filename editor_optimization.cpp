@@ -46,7 +46,37 @@ QJsonObject tuningToJson(const PreviewSurface::PlaybackTuning& tuning)
     return QJsonObject{
         {QStringLiteral("visible_backlog_limit"), tuning.visibleBacklogLimit},
         {QStringLiteral("source_lookahead_frames"), tuning.sourceLookaheadFrames},
-        {QStringLiteral("proxy_lookahead_frames"), tuning.proxyLookaheadFrames}
+        {QStringLiteral("proxy_lookahead_frames"), tuning.proxyLookaheadFrames},
+        {QStringLiteral("prefetch_max_queue_depth"), tuning.prefetchMaxQueueDepth},
+        {QStringLiteral("prefetch_max_inflight"), tuning.prefetchMaxInflight},
+        {QStringLiteral("prefetch_max_per_tick"), tuning.prefetchMaxPerTick},
+        {QStringLiteral("visible_queue_reserve"), tuning.visibleQueueReserve},
+        {QStringLiteral("playback_window_ahead"), tuning.playbackWindowAhead},
+        {QStringLiteral("decode_autotune_enabled"), tuning.decodeAutotuneEnabled},
+        {QStringLiteral("decode_autotune_max_boost_level"), tuning.decodeAutotuneMaxBoostLevel},
+        {QStringLiteral("decode_autotune_min_adjust_interval_ms"), tuning.decodeAutotuneMinAdjustIntervalMs},
+        {QStringLiteral("decode_autotune_window_ms"), tuning.decodeAutotuneWindowMs},
+        {QStringLiteral("decode_autotune_min_samples"), tuning.decodeAutotuneMinSamples},
+        {QStringLiteral("decode_autotune_starved_late_rate_permille"), tuning.decodeAutotuneStarvedLateRatePermille},
+        {QStringLiteral("decode_autotune_starved_exact_hit_rate_permille"), tuning.decodeAutotuneStarvedExactHitRatePermille},
+        {QStringLiteral("decode_autotune_starved_avg_frame_lag"), tuning.decodeAutotuneStarvedAvgFrameLag},
+        {QStringLiteral("decode_autotune_recovered_late_rate_permille"), tuning.decodeAutotuneRecoveredLateRatePermille},
+        {QStringLiteral("decode_autotune_recovered_exact_hit_rate_permille"), tuning.decodeAutotuneRecoveredExactHitRatePermille},
+        {QStringLiteral("decode_autotune_recovered_avg_frame_lag"), tuning.decodeAutotuneRecoveredAvgFrameLag},
+        {QStringLiteral("decode_autotune_max_visible_backlog_limit"), tuning.decodeAutotuneMaxVisibleBacklogLimit},
+        {QStringLiteral("decode_autotune_max_source_lookahead_frames"), tuning.decodeAutotuneMaxSourceLookaheadFrames},
+        {QStringLiteral("decode_autotune_max_proxy_lookahead_frames"), tuning.decodeAutotuneMaxProxyLookaheadFrames},
+        {QStringLiteral("decode_autotune_visible_backlog_step"), tuning.decodeAutotuneVisibleBacklogStep},
+        {QStringLiteral("decode_autotune_lookahead_step"), tuning.decodeAutotuneLookaheadStep},
+        {QStringLiteral("decode_autotune_max_prefetch_max_queue_depth"), tuning.decodeAutotuneMaxPrefetchMaxQueueDepth},
+        {QStringLiteral("decode_autotune_max_prefetch_max_inflight"), tuning.decodeAutotuneMaxPrefetchMaxInflight},
+        {QStringLiteral("decode_autotune_max_prefetch_max_per_tick"), tuning.decodeAutotuneMaxPrefetchMaxPerTick},
+        {QStringLiteral("decode_autotune_max_visible_queue_reserve"), tuning.decodeAutotuneMaxVisibleQueueReserve},
+        {QStringLiteral("decode_autotune_max_playback_window_ahead"), tuning.decodeAutotuneMaxPlaybackWindowAhead},
+        {QStringLiteral("decode_autotune_prefetch_queue_depth_step"), tuning.decodeAutotunePrefetchQueueDepthStep},
+        {QStringLiteral("decode_autotune_prefetch_concurrency_step"), tuning.decodeAutotunePrefetchConcurrencyStep},
+        {QStringLiteral("decode_autotune_visible_queue_reserve_step"), tuning.decodeAutotuneVisibleQueueReserveStep},
+        {QStringLiteral("decode_autotune_playback_window_ahead_step"), tuning.decodeAutotunePlaybackWindowAheadStep}
     };
 }
 
@@ -60,6 +90,122 @@ PreviewSurface::PlaybackTuning tuningFromJson(const QJsonObject& object,
         positiveIntOr(object, QStringLiteral("source_lookahead_frames"), fallback.sourceLookaheadFrames);
     tuning.proxyLookaheadFrames =
         positiveIntOr(object, QStringLiteral("proxy_lookahead_frames"), fallback.proxyLookaheadFrames);
+    tuning.prefetchMaxQueueDepth =
+        positiveIntOr(object, QStringLiteral("prefetch_max_queue_depth"), fallback.prefetchMaxQueueDepth);
+    tuning.prefetchMaxInflight =
+        positiveIntOr(object, QStringLiteral("prefetch_max_inflight"), fallback.prefetchMaxInflight);
+    tuning.prefetchMaxPerTick =
+        positiveIntOr(object, QStringLiteral("prefetch_max_per_tick"), fallback.prefetchMaxPerTick);
+    tuning.visibleQueueReserve =
+        qMax(0, object.value(QStringLiteral("visible_queue_reserve")).toInt(fallback.visibleQueueReserve));
+    tuning.playbackWindowAhead =
+        positiveIntOr(object, QStringLiteral("playback_window_ahead"), fallback.playbackWindowAhead);
+    if (object.contains(QStringLiteral("decode_autotune_enabled")) &&
+        object.value(QStringLiteral("decode_autotune_enabled")).isBool()) {
+        tuning.decodeAutotuneEnabled =
+            object.value(QStringLiteral("decode_autotune_enabled")).toBool();
+    }
+    tuning.decodeAutotuneMaxBoostLevel =
+        qBound(0,
+               object.value(QStringLiteral("decode_autotune_max_boost_level"))
+                   .toInt(fallback.decodeAutotuneMaxBoostLevel),
+               8);
+    tuning.decodeAutotuneMinAdjustIntervalMs =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_min_adjust_interval_ms"),
+                      fallback.decodeAutotuneMinAdjustIntervalMs);
+    tuning.decodeAutotuneWindowMs =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_window_ms"),
+                      fallback.decodeAutotuneWindowMs);
+    tuning.decodeAutotuneMinSamples =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_min_samples"),
+                      fallback.decodeAutotuneMinSamples);
+    tuning.decodeAutotuneStarvedLateRatePermille =
+        qBound(0,
+               object.value(QStringLiteral("decode_autotune_starved_late_rate_permille"))
+                   .toInt(fallback.decodeAutotuneStarvedLateRatePermille),
+               1000);
+    tuning.decodeAutotuneStarvedExactHitRatePermille =
+        qBound(0,
+               object.value(QStringLiteral("decode_autotune_starved_exact_hit_rate_permille"))
+                   .toInt(fallback.decodeAutotuneStarvedExactHitRatePermille),
+               1000);
+    tuning.decodeAutotuneStarvedAvgFrameLag =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_starved_avg_frame_lag"),
+                      fallback.decodeAutotuneStarvedAvgFrameLag);
+    tuning.decodeAutotuneRecoveredLateRatePermille =
+        qBound(0,
+               object.value(QStringLiteral("decode_autotune_recovered_late_rate_permille"))
+                   .toInt(fallback.decodeAutotuneRecoveredLateRatePermille),
+               1000);
+    tuning.decodeAutotuneRecoveredExactHitRatePermille =
+        qBound(0,
+               object.value(QStringLiteral("decode_autotune_recovered_exact_hit_rate_permille"))
+                   .toInt(fallback.decodeAutotuneRecoveredExactHitRatePermille),
+               1000);
+    tuning.decodeAutotuneRecoveredAvgFrameLag =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_recovered_avg_frame_lag"),
+                      fallback.decodeAutotuneRecoveredAvgFrameLag);
+    tuning.decodeAutotuneMaxVisibleBacklogLimit =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_visible_backlog_limit"),
+                      fallback.decodeAutotuneMaxVisibleBacklogLimit);
+    tuning.decodeAutotuneMaxSourceLookaheadFrames =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_source_lookahead_frames"),
+                      fallback.decodeAutotuneMaxSourceLookaheadFrames);
+    tuning.decodeAutotuneMaxProxyLookaheadFrames =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_proxy_lookahead_frames"),
+                      fallback.decodeAutotuneMaxProxyLookaheadFrames);
+    tuning.decodeAutotuneVisibleBacklogStep =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_visible_backlog_step"),
+                      fallback.decodeAutotuneVisibleBacklogStep);
+    tuning.decodeAutotuneLookaheadStep =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_lookahead_step"),
+                      fallback.decodeAutotuneLookaheadStep);
+    tuning.decodeAutotuneMaxPrefetchMaxQueueDepth =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_prefetch_max_queue_depth"),
+                      fallback.decodeAutotuneMaxPrefetchMaxQueueDepth);
+    tuning.decodeAutotuneMaxPrefetchMaxInflight =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_prefetch_max_inflight"),
+                      fallback.decodeAutotuneMaxPrefetchMaxInflight);
+    tuning.decodeAutotuneMaxPrefetchMaxPerTick =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_prefetch_max_per_tick"),
+                      fallback.decodeAutotuneMaxPrefetchMaxPerTick);
+    tuning.decodeAutotuneMaxVisibleQueueReserve =
+        qMax(0,
+             object.value(QStringLiteral("decode_autotune_max_visible_queue_reserve"))
+                 .toInt(fallback.decodeAutotuneMaxVisibleQueueReserve));
+    tuning.decodeAutotuneMaxPlaybackWindowAhead =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_max_playback_window_ahead"),
+                      fallback.decodeAutotuneMaxPlaybackWindowAhead);
+    tuning.decodeAutotunePrefetchQueueDepthStep =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_prefetch_queue_depth_step"),
+                      fallback.decodeAutotunePrefetchQueueDepthStep);
+    tuning.decodeAutotunePrefetchConcurrencyStep =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_prefetch_concurrency_step"),
+                      fallback.decodeAutotunePrefetchConcurrencyStep);
+    tuning.decodeAutotuneVisibleQueueReserveStep =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_visible_queue_reserve_step"),
+                      fallback.decodeAutotuneVisibleQueueReserveStep);
+    tuning.decodeAutotunePlaybackWindowAheadStep =
+        positiveIntOr(object,
+                      QStringLiteral("decode_autotune_playback_window_ahead_step"),
+                      fallback.decodeAutotunePlaybackWindowAheadStep);
     return tuning;
 }
 

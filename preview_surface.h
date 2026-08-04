@@ -55,6 +55,36 @@ public:
         int visibleBacklogLimit = 4;
         int sourceLookaheadFrames = 5;
         int proxyLookaheadFrames = 8;
+        int prefetchMaxQueueDepth = 4;
+        int prefetchMaxInflight = 1;
+        int prefetchMaxPerTick = 1;
+        int visibleQueueReserve = 4;
+        int playbackWindowAhead = 2;
+        bool decodeAutotuneEnabled = true;
+        int decodeAutotuneMaxBoostLevel = 3;
+        int decodeAutotuneMinAdjustIntervalMs = 1200;
+        int decodeAutotuneWindowMs = 5000;
+        int decodeAutotuneMinSamples = 24;
+        int decodeAutotuneStarvedLateRatePermille = 350;
+        int decodeAutotuneStarvedExactHitRatePermille = 550;
+        int decodeAutotuneStarvedAvgFrameLag = 8;
+        int decodeAutotuneRecoveredLateRatePermille = 100;
+        int decodeAutotuneRecoveredExactHitRatePermille = 900;
+        int decodeAutotuneRecoveredAvgFrameLag = 2;
+        int decodeAutotuneMaxVisibleBacklogLimit = 8;
+        int decodeAutotuneMaxSourceLookaheadFrames = 16;
+        int decodeAutotuneMaxProxyLookaheadFrames = 24;
+        int decodeAutotuneVisibleBacklogStep = 1;
+        int decodeAutotuneLookaheadStep = 2;
+        int decodeAutotuneMaxPrefetchMaxQueueDepth = 16;
+        int decodeAutotuneMaxPrefetchMaxInflight = 4;
+        int decodeAutotuneMaxPrefetchMaxPerTick = 4;
+        int decodeAutotuneMaxVisibleQueueReserve = 16;
+        int decodeAutotuneMaxPlaybackWindowAhead = 8;
+        int decodeAutotunePrefetchQueueDepthStep = 4;
+        int decodeAutotunePrefetchConcurrencyStep = 1;
+        int decodeAutotuneVisibleQueueReserveStep = 4;
+        int decodeAutotunePlaybackWindowAheadStep = 2;
     };
 
     struct PresentationTelemetrySnapshot {

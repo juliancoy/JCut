@@ -216,6 +216,11 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
     m_playbackTuning.visibleBacklogLimit = editor::debugMaxVisibleBacklog();
     m_playbackTuning.sourceLookaheadFrames = kDefaultVulkanPreviewSourceLookaheadFrames;
     m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
+    m_playbackTuning.prefetchMaxQueueDepth = editor::debugPrefetchMaxQueueDepth();
+    m_playbackTuning.prefetchMaxInflight = editor::debugPrefetchMaxInflight();
+    m_playbackTuning.prefetchMaxPerTick = editor::debugPrefetchMaxPerTick();
+    m_playbackTuning.visibleQueueReserve = editor::debugVisibleQueueReserve();
+    m_playbackTuning.playbackWindowAhead = editor::debugPlaybackWindowAhead();
     m_configuredPlaybackTuning = m_playbackTuning;
     m_previousDecodePreference = editor::debugDecodePreference();
     if (m_previousDecodePreference == editor::DecodePreference::Hardware) {
@@ -606,12 +611,124 @@ void VulkanPreviewSurface::setPlaybackTuning(const PlaybackTuning& tuning)
     normalized.visibleBacklogLimit = qBound(1, tuning.visibleBacklogLimit, 16);
     normalized.sourceLookaheadFrames = qBound(1, tuning.sourceLookaheadFrames, 32);
     normalized.proxyLookaheadFrames = qBound(1, tuning.proxyLookaheadFrames, 64);
+    normalized.prefetchMaxQueueDepth = qBound(1, tuning.prefetchMaxQueueDepth, 32);
+    normalized.prefetchMaxInflight = qBound(1, tuning.prefetchMaxInflight, 16);
+    normalized.prefetchMaxPerTick = qBound(1, tuning.prefetchMaxPerTick, 16);
+    normalized.visibleQueueReserve = qBound(0, tuning.visibleQueueReserve, 64);
+    normalized.playbackWindowAhead = qBound(1, tuning.playbackWindowAhead, 24);
+    normalized.decodeAutotuneEnabled = tuning.decodeAutotuneEnabled;
+    normalized.decodeAutotuneMaxBoostLevel = qBound(0, tuning.decodeAutotuneMaxBoostLevel, 8);
+    normalized.decodeAutotuneMinAdjustIntervalMs =
+        qBound(100, tuning.decodeAutotuneMinAdjustIntervalMs, 30000);
+    normalized.decodeAutotuneWindowMs = qBound(500, tuning.decodeAutotuneWindowMs, 60000);
+    normalized.decodeAutotuneMinSamples = qBound(1, tuning.decodeAutotuneMinSamples, 600);
+    normalized.decodeAutotuneStarvedLateRatePermille =
+        qBound(0, tuning.decodeAutotuneStarvedLateRatePermille, 1000);
+    normalized.decodeAutotuneStarvedExactHitRatePermille =
+        qBound(0, tuning.decodeAutotuneStarvedExactHitRatePermille, 1000);
+    normalized.decodeAutotuneStarvedAvgFrameLag =
+        qBound(1, tuning.decodeAutotuneStarvedAvgFrameLag, 120);
+    normalized.decodeAutotuneRecoveredLateRatePermille =
+        qBound(0, tuning.decodeAutotuneRecoveredLateRatePermille, 1000);
+    normalized.decodeAutotuneRecoveredExactHitRatePermille =
+        qBound(0, tuning.decodeAutotuneRecoveredExactHitRatePermille, 1000);
+    normalized.decodeAutotuneRecoveredAvgFrameLag =
+        qBound(1, tuning.decodeAutotuneRecoveredAvgFrameLag, 120);
+    normalized.decodeAutotuneMaxVisibleBacklogLimit =
+        qBound(1, tuning.decodeAutotuneMaxVisibleBacklogLimit, 16);
+    normalized.decodeAutotuneMaxSourceLookaheadFrames =
+        qBound(1, tuning.decodeAutotuneMaxSourceLookaheadFrames, 32);
+    normalized.decodeAutotuneMaxProxyLookaheadFrames =
+        qBound(1, tuning.decodeAutotuneMaxProxyLookaheadFrames, 64);
+    normalized.decodeAutotuneMaxVisibleBacklogLimit =
+        qMax(normalized.visibleBacklogLimit,
+             normalized.decodeAutotuneMaxVisibleBacklogLimit);
+    normalized.decodeAutotuneMaxSourceLookaheadFrames =
+        qMax(normalized.sourceLookaheadFrames,
+             normalized.decodeAutotuneMaxSourceLookaheadFrames);
+    normalized.decodeAutotuneMaxProxyLookaheadFrames =
+        qMax(normalized.proxyLookaheadFrames,
+             normalized.decodeAutotuneMaxProxyLookaheadFrames);
+    normalized.decodeAutotuneVisibleBacklogStep =
+        qBound(1, tuning.decodeAutotuneVisibleBacklogStep, 8);
+    normalized.decodeAutotuneLookaheadStep =
+        qBound(1, tuning.decodeAutotuneLookaheadStep, 16);
+    normalized.decodeAutotuneMaxPrefetchMaxQueueDepth =
+        qBound(1, tuning.decodeAutotuneMaxPrefetchMaxQueueDepth, 32);
+    normalized.decodeAutotuneMaxPrefetchMaxInflight =
+        qBound(1, tuning.decodeAutotuneMaxPrefetchMaxInflight, 16);
+    normalized.decodeAutotuneMaxPrefetchMaxPerTick =
+        qBound(1, tuning.decodeAutotuneMaxPrefetchMaxPerTick, 16);
+    normalized.decodeAutotuneMaxVisibleQueueReserve =
+        qBound(0, tuning.decodeAutotuneMaxVisibleQueueReserve, 64);
+    normalized.decodeAutotuneMaxPlaybackWindowAhead =
+        qBound(1, tuning.decodeAutotuneMaxPlaybackWindowAhead, 24);
+    normalized.decodeAutotuneMaxPrefetchMaxQueueDepth =
+        qMax(normalized.prefetchMaxQueueDepth,
+             normalized.decodeAutotuneMaxPrefetchMaxQueueDepth);
+    normalized.decodeAutotuneMaxPrefetchMaxInflight =
+        qMax(normalized.prefetchMaxInflight,
+             normalized.decodeAutotuneMaxPrefetchMaxInflight);
+    normalized.decodeAutotuneMaxPrefetchMaxPerTick =
+        qMax(normalized.prefetchMaxPerTick,
+             normalized.decodeAutotuneMaxPrefetchMaxPerTick);
+    normalized.decodeAutotuneMaxVisibleQueueReserve =
+        qMax(normalized.visibleQueueReserve,
+             normalized.decodeAutotuneMaxVisibleQueueReserve);
+    normalized.decodeAutotuneMaxPlaybackWindowAhead =
+        qMax(normalized.playbackWindowAhead,
+             normalized.decodeAutotuneMaxPlaybackWindowAhead);
+    normalized.decodeAutotunePrefetchQueueDepthStep =
+        qBound(1, tuning.decodeAutotunePrefetchQueueDepthStep, 16);
+    normalized.decodeAutotunePrefetchConcurrencyStep =
+        qBound(1, tuning.decodeAutotunePrefetchConcurrencyStep, 8);
+    normalized.decodeAutotuneVisibleQueueReserveStep =
+        qBound(1, tuning.decodeAutotuneVisibleQueueReserveStep, 16);
+    normalized.decodeAutotunePlaybackWindowAheadStep =
+        qBound(1, tuning.decodeAutotunePlaybackWindowAheadStep, 8);
     if (m_configuredPlaybackTuning.visibleBacklogLimit == normalized.visibleBacklogLimit &&
         m_configuredPlaybackTuning.sourceLookaheadFrames == normalized.sourceLookaheadFrames &&
-        m_configuredPlaybackTuning.proxyLookaheadFrames == normalized.proxyLookaheadFrames) {
+        m_configuredPlaybackTuning.proxyLookaheadFrames == normalized.proxyLookaheadFrames &&
+        m_configuredPlaybackTuning.prefetchMaxQueueDepth == normalized.prefetchMaxQueueDepth &&
+        m_configuredPlaybackTuning.prefetchMaxInflight == normalized.prefetchMaxInflight &&
+        m_configuredPlaybackTuning.prefetchMaxPerTick == normalized.prefetchMaxPerTick &&
+        m_configuredPlaybackTuning.visibleQueueReserve == normalized.visibleQueueReserve &&
+        m_configuredPlaybackTuning.playbackWindowAhead == normalized.playbackWindowAhead &&
+        m_configuredPlaybackTuning.decodeAutotuneEnabled == normalized.decodeAutotuneEnabled &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxBoostLevel == normalized.decodeAutotuneMaxBoostLevel &&
+        m_configuredPlaybackTuning.decodeAutotuneMinAdjustIntervalMs == normalized.decodeAutotuneMinAdjustIntervalMs &&
+        m_configuredPlaybackTuning.decodeAutotuneWindowMs == normalized.decodeAutotuneWindowMs &&
+        m_configuredPlaybackTuning.decodeAutotuneMinSamples == normalized.decodeAutotuneMinSamples &&
+        m_configuredPlaybackTuning.decodeAutotuneStarvedLateRatePermille == normalized.decodeAutotuneStarvedLateRatePermille &&
+        m_configuredPlaybackTuning.decodeAutotuneStarvedExactHitRatePermille == normalized.decodeAutotuneStarvedExactHitRatePermille &&
+        m_configuredPlaybackTuning.decodeAutotuneStarvedAvgFrameLag == normalized.decodeAutotuneStarvedAvgFrameLag &&
+        m_configuredPlaybackTuning.decodeAutotuneRecoveredLateRatePermille == normalized.decodeAutotuneRecoveredLateRatePermille &&
+        m_configuredPlaybackTuning.decodeAutotuneRecoveredExactHitRatePermille == normalized.decodeAutotuneRecoveredExactHitRatePermille &&
+        m_configuredPlaybackTuning.decodeAutotuneRecoveredAvgFrameLag == normalized.decodeAutotuneRecoveredAvgFrameLag &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxVisibleBacklogLimit == normalized.decodeAutotuneMaxVisibleBacklogLimit &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxSourceLookaheadFrames == normalized.decodeAutotuneMaxSourceLookaheadFrames &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxProxyLookaheadFrames == normalized.decodeAutotuneMaxProxyLookaheadFrames &&
+        m_configuredPlaybackTuning.decodeAutotuneVisibleBacklogStep == normalized.decodeAutotuneVisibleBacklogStep &&
+        m_configuredPlaybackTuning.decodeAutotuneLookaheadStep == normalized.decodeAutotuneLookaheadStep &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxPrefetchMaxQueueDepth == normalized.decodeAutotuneMaxPrefetchMaxQueueDepth &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxPrefetchMaxInflight == normalized.decodeAutotuneMaxPrefetchMaxInflight &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxPrefetchMaxPerTick == normalized.decodeAutotuneMaxPrefetchMaxPerTick &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxVisibleQueueReserve == normalized.decodeAutotuneMaxVisibleQueueReserve &&
+        m_configuredPlaybackTuning.decodeAutotuneMaxPlaybackWindowAhead == normalized.decodeAutotuneMaxPlaybackWindowAhead &&
+        m_configuredPlaybackTuning.decodeAutotunePrefetchQueueDepthStep == normalized.decodeAutotunePrefetchQueueDepthStep &&
+        m_configuredPlaybackTuning.decodeAutotunePrefetchConcurrencyStep == normalized.decodeAutotunePrefetchConcurrencyStep &&
+        m_configuredPlaybackTuning.decodeAutotuneVisibleQueueReserveStep == normalized.decodeAutotuneVisibleQueueReserveStep &&
+        m_configuredPlaybackTuning.decodeAutotunePlaybackWindowAheadStep == normalized.decodeAutotunePlaybackWindowAheadStep) {
         return;
     }
     m_configuredPlaybackTuning = normalized;
+    if (!m_configuredPlaybackTuning.decodeAutotuneEnabled) {
+        m_adaptivePlaybackBoostLevel = 0;
+        m_lastAdaptivePlaybackTuningReason = QStringLiteral("disabled");
+    } else {
+        m_adaptivePlaybackBoostLevel =
+            qBound(0, m_adaptivePlaybackBoostLevel, m_configuredPlaybackTuning.decodeAutotuneMaxBoostLevel);
+    }
     applyAdaptivePlaybackTuning();
 }
 

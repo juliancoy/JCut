@@ -7,13 +7,26 @@
 
 namespace jcut::keyframes {
 
+template <typename Value>
+struct Keyframe : Value {
+    Keyframe() = default;
+
+    template <typename... Args>
+    Keyframe(std::int64_t frameValue, Args&&... args)
+        : Value{std::forward<Args>(args)...}, frame(frameValue)
+    {
+    }
+
+    std::int64_t frame = 0;
+};
+
 template <typename Collection>
 void sortByFrame(Collection* keyframes)
 {
-    std::sort(keyframes->begin(), keyframes->end(),
-              [](const auto& left, const auto& right) {
-                  return left.frame < right.frame;
-              });
+    std::stable_sort(keyframes->begin(), keyframes->end(),
+                     [](const auto& left, const auto& right) {
+                         return left.frame < right.frame;
+                     });
 }
 
 template <typename Collection>
@@ -44,6 +57,8 @@ void normalizeSequence(Collection* keyframes,
         keyframe.frame = std::clamp<std::int64_t>(keyframe.frame, 0, maxFrame);
         sanitize(keyframe);
         if (!normalized.empty() && normalized.back().frame == keyframe.frame) {
+            // Stable frame ordering makes this replacement explicitly
+            // last-input-wins for duplicate frames.
             normalized.back() = std::move(keyframe);
         } else {
             normalized.push_back(std::move(keyframe));
@@ -91,6 +106,32 @@ bool removeIf(Collection* keyframes, ShouldRemove&& shouldRemove)
                        std::forward<ShouldRemove>(shouldRemove)),
         keyframes->end());
     return keyframes->size() != originalSize;
+}
+
+template <typename Collection, typename Frame, typename Interpolate>
+typename Collection::value_type evaluateTrackAt(
+    const Collection& keyframes,
+    Frame frame,
+    typename Collection::value_type fallback,
+    Interpolate&& interpolate)
+{
+    if (keyframes.empty()) {
+        return fallback;
+    }
+    const auto upper = std::upper_bound(
+        keyframes.cbegin(), keyframes.cend(), frame,
+        [](Frame needle, const auto& keyframe) {
+            return needle < static_cast<Frame>(keyframe.frame);
+        });
+    if (upper == keyframes.cbegin()) {
+        return keyframes.front();
+    }
+    const auto previous = std::prev(upper);
+    if (upper == keyframes.cend() ||
+        frame == static_cast<Frame>(previous->frame)) {
+        return *previous;
+    }
+    return std::forward<Interpolate>(interpolate)(*previous, *upper, frame);
 }
 
 } // namespace jcut::keyframes

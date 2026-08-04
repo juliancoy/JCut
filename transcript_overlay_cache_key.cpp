@@ -44,8 +44,10 @@ QString transcriptOverlayStyleCacheMaterial(const TimelineClip& clip)
         QString::number(overlay.autoScroll ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.maxLines) + QLatin1Char('|') +
         QString::number(overlay.maxCharsPerLine) + QLatin1Char('|') +
-        QString::number(overlay.translationX, 'f', 4) + QLatin1Char('|') +
-        QString::number(overlay.translationY, 'f', 4) + QLatin1Char('|') +
+        QString::number(overlay.placement.translationX, 'f', 4) +
+            QLatin1Char('|') +
+        QString::number(overlay.placement.translationY, 'f', 4) +
+            QLatin1Char('|') +
         QString::number(overlay.boxWidth, 'f', 2) + QLatin1Char('|') +
         QString::number(overlay.boxHeight, 'f', 2);
 }

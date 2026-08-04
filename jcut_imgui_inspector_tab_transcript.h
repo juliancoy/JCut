@@ -35,8 +35,10 @@ void drawInspectorTab08(
                 : jcut::EditorTranscriptOverlayState{};
             float width = static_cast<float>(overlay.boxWidth);
             float height = static_cast<float>(overlay.boxHeight);
-            float translationX = static_cast<float>(overlay.translationX);
-            float translationY = static_cast<float>(overlay.translationY);
+            float translationX =
+                static_cast<float>(overlay.placement.translationX);
+            float translationY =
+                static_cast<float>(overlay.placement.translationY);
             float textOpacity = static_cast<float>(overlay.textOpacity);
             float backgroundOpacity = static_cast<float>(overlay.backgroundOpacity);
             float backgroundCornerRadius = static_cast<float>(overlay.backgroundCornerRadius);
@@ -181,8 +183,8 @@ void drawInspectorTab08(
             beginRuntimeHistoryTransactionForLastItem(shellState);
             overlayChanged |= ImGui::Checkbox("Auto Scroll", &overlay.autoScroll);
             if (overlayChanged && currentClip) {
-                overlay.translationX = translationX;
-                overlay.translationY = translationY;
+                overlay.placement.translationX = translationX;
+                overlay.placement.translationY = translationY;
                 overlay.boxWidth = width;
                 overlay.boxHeight = height;
                 overlay.textOpacity = textOpacity;

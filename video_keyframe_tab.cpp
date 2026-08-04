@@ -13,7 +13,58 @@
 #include <QApplication>
 #include <QDir>
 #include <QColor>
+#include <QStyledItemDelegate>
 #include <cmath>
+
+namespace {
+
+constexpr int kTransformInterpolationColumn = 8;
+
+class TransformInterpolationDelegate final : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QWidget* createEditor(QWidget* parent,
+                          const QStyleOptionViewItem&,
+                          const QModelIndex&) const override
+    {
+        auto* combo = new QComboBox(parent);
+        combo->setEditable(false);
+        combo->addItems({
+            QStringLiteral("Step"),
+            QStringLiteral("Linear"),
+            QStringLiteral("Perspective Linear"),
+        });
+        return combo;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    {
+        auto* combo = qobject_cast<QComboBox*>(editor);
+        if (!combo) {
+            QStyledItemDelegate::setEditorData(editor, index);
+            return;
+        }
+        const QString value = index.data(Qt::EditRole).toString();
+        const int comboIndex = combo->findText(value);
+        combo->setCurrentIndex(comboIndex >= 0 ? comboIndex : 1);
+    }
+
+    void setModelData(QWidget* editor,
+                      QAbstractItemModel* model,
+                      const QModelIndex& index) const override
+    {
+        auto* combo = qobject_cast<QComboBox*>(editor);
+        if (!combo) {
+            QStyledItemDelegate::setModelData(editor, model, index);
+            return;
+        }
+        model->setData(index, combo->currentText(), Qt::EditRole);
+    }
+};
+
+} // namespace
 
 VideoKeyframeTab::VideoKeyframeTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : KeyframeTabBase(deps, parent)
@@ -113,6 +164,9 @@ void VideoKeyframeTab::wire()
         connect(m_widgets.videoKeyframeTable->horizontalHeader(), &QHeaderView::sectionClicked,
                 this, &VideoKeyframeTab::onTableHeaderClicked);
         m_widgets.videoKeyframeTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        m_widgets.videoKeyframeTable->setItemDelegateForColumn(
+            kTransformInterpolationColumn,
+            new TransformInterpolationDelegate(m_widgets.videoKeyframeTable));
         connect(m_widgets.videoKeyframeTable, &QWidget::customContextMenuRequested,
                 this, &VideoKeyframeTab::onTableCustomContextMenu);
         installTableHandlers(m_widgets.videoKeyframeTable);
@@ -165,6 +219,7 @@ VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::keyframeForInspecto
         displayed.maskRepeatDeltaX = keyframe.maskRepeatDeltaX;
         displayed.maskRepeatDeltaY = keyframe.maskRepeatDeltaY;
         displayed.linearInterpolation = keyframe.linearInterpolation;
+        displayed.interpolationMode = keyframe.interpolationMode;
         return displayed;
     }
     
@@ -178,6 +233,7 @@ VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::keyframeForInspecto
     displayed.maskRepeatDeltaX = clip.maskRepeatDeltaX + keyframe.maskRepeatDeltaX;
     displayed.maskRepeatDeltaY = clip.maskRepeatDeltaY + keyframe.maskRepeatDeltaY;
     displayed.linearInterpolation = keyframe.linearInterpolation;
+    displayed.interpolationMode = keyframe.interpolationMode;
     return displayed;
 }
 
@@ -195,6 +251,7 @@ TimelineClip::TransformKeyframe VideoKeyframeTab::keyframeFromInspectorDisplay(
         stored.maskRepeatDeltaX = displayed.maskRepeatDeltaX;
         stored.maskRepeatDeltaY = displayed.maskRepeatDeltaY;
         stored.linearInterpolation = displayed.linearInterpolation;
+        stored.interpolationMode = displayed.interpolationMode;
         return stored;
     }
     
@@ -208,32 +265,63 @@ TimelineClip::TransformKeyframe VideoKeyframeTab::keyframeFromInspectorDisplay(
     stored.maskRepeatDeltaX = displayed.maskRepeatDeltaX - clip.maskRepeatDeltaX;
     stored.maskRepeatDeltaY = displayed.maskRepeatDeltaY - clip.maskRepeatDeltaY;
     stored.linearInterpolation = displayed.linearInterpolation;
+    stored.interpolationMode = displayed.interpolationMode;
     return stored;
 }
 
-QString VideoKeyframeTab::videoInterpolationLabel(bool linearInterpolation) const
+QString VideoKeyframeTab::videoInterpolationLabel(bool linearInterpolation, const QString& interpolationMode) const
 {
-    return linearInterpolation ? QStringLiteral("Linear") : QStringLiteral("Step");
+    const QString normalized = interpolationMode.trimmed().toLower().replace(QLatin1Char(' '), QLatin1Char('_'));
+    if (!linearInterpolation || normalized == QStringLiteral("step") ||
+        normalized == QStringLiteral("hold")) {
+        return QStringLiteral("Step");
+    }
+    if (normalized == QStringLiteral("perspective_linear") ||
+        normalized == QStringLiteral("perspective") ||
+        normalized == QStringLiteral("parallax_linear") ||
+        normalized == QStringLiteral("depth_linear")) {
+        return QStringLiteral("Perspective Linear");
+    }
+    return QStringLiteral("Linear");
 }
 
 QString VideoKeyframeTab::nextVideoInterpolationLabel(const QString& text) const
 {
     bool linearInterpolation = true;
-    if (!parseVideoInterpolationText(text, &linearInterpolation)) {
+    QString interpolationMode = QStringLiteral("linear");
+    if (!parseVideoInterpolationText(text, &linearInterpolation, &interpolationMode)) {
         linearInterpolation = true;
+        interpolationMode = QStringLiteral("linear");
     }
-    return videoInterpolationLabel(!linearInterpolation);
+    if (!linearInterpolation) {
+        return QStringLiteral("Linear");
+    }
+    return interpolationMode == QStringLiteral("perspective_linear")
+               ? QStringLiteral("Step")
+               : QStringLiteral("Perspective Linear");
 }
 
-bool VideoKeyframeTab::parseVideoInterpolationText(const QString& text, bool* linearInterpolationOut) const
+bool VideoKeyframeTab::parseVideoInterpolationText(const QString& text,
+                                                   bool* linearInterpolationOut,
+                                                   QString* interpolationModeOut) const
 {
-    const QString normalized = text.trimmed().toLower();
+    const QString normalized = text.trimmed().toLower().replace(QLatin1Char(' '), QLatin1Char('_'));
     if (normalized.isEmpty() || normalized == QStringLiteral("step")) {
         *linearInterpolationOut = false;
+        if (interpolationModeOut) *interpolationModeOut = QStringLiteral("step");
         return true;
     }
     if (normalized == QStringLiteral("linear") || normalized == QStringLiteral("smooth")) {
         *linearInterpolationOut = true;
+        if (interpolationModeOut) *interpolationModeOut = QStringLiteral("linear");
+        return true;
+    }
+    if (normalized == QStringLiteral("perspective_linear") ||
+        normalized == QStringLiteral("perspective") ||
+        normalized == QStringLiteral("parallax_linear") ||
+        normalized == QStringLiteral("depth_linear")) {
+        *linearInterpolationOut = true;
+        if (interpolationModeOut) *interpolationModeOut = QStringLiteral("perspective_linear");
         return true;
     }
     return false;
@@ -303,6 +391,7 @@ VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::evaluateDisplayedTr
     result.maskRepeatDeltaX = evaluated.maskRepeatDeltaX;
     result.maskRepeatDeltaY = evaluated.maskRepeatDeltaY;
     result.linearInterpolation = evaluated.linearInterpolation;
+    result.interpolationMode = evaluated.interpolationMode;
     return result;
 }
 
@@ -370,7 +459,8 @@ void VideoKeyframeTab::populateTable(const TimelineClip& clip)
             QString::number(displayedFrame.scaleY, 'f', 3),
             QString::number(displayedFrame.maskRepeatDeltaX, 'f', 3),
             QString::number(displayedFrame.maskRepeatDeltaY, 'f', 3),
-            videoInterpolationLabel(displayedFrame.linearInterpolation)};
+            videoInterpolationLabel(displayedFrame.linearInterpolation,
+                                    displayedFrame.interpolationMode)};
 
         for (int column = 0; column < rowValues.size(); ++column) {
             auto* item = new QTableWidgetItem(rowValues[column]);
@@ -471,7 +561,11 @@ void VideoKeyframeTab::refresh()
 
     updateSpinBoxesFromKeyframe(displayed);
     updateMirrorCheckboxesFromScale(displayed.scaleX, displayed.scaleY);
-    m_widgets.videoInterpolationCombo->setCurrentIndex(displayed.linearInterpolation ? 1 : 0);
+    m_widgets.videoInterpolationCombo->setCurrentIndex(
+        videoInterpolationLabel(displayed.linearInterpolation, displayed.interpolationMode) ==
+                QStringLiteral("Perspective Linear")
+            ? 2
+            : (displayed.linearInterpolation ? 1 : 0));
     if (m_widgets.keyframeSkipAwareTimingCheckBox) {
         m_widgets.keyframeSkipAwareTimingCheckBox->setChecked(clip->transformSkipAwareTiming);
     }
@@ -531,7 +625,11 @@ void VideoKeyframeTab::applyKeyframeFromInspector(bool pushHistory)
         keyframe.scaleY = stored.scaleY;
         keyframe.maskRepeatDeltaX = stored.maskRepeatDeltaX;
         keyframe.maskRepeatDeltaY = stored.maskRepeatDeltaY;
-        keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() == 1;
+        keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() != 0;
+        keyframe.interpolationMode =
+            m_widgets.videoInterpolationCombo->currentIndex() == 2
+                ? QStringLiteral("perspective_linear")
+                : (keyframe.linearInterpolation ? QStringLiteral("linear") : QStringLiteral("step"));
         normalizeClipTransformKeyframes(clip);
     });
 
@@ -574,7 +672,11 @@ void VideoKeyframeTab::upsertKeyframeAtPlayhead()
         displayed.maskRepeatDeltaY = evaluated.maskRepeatDeltaY;
         TimelineClip::TransformKeyframe keyframe = keyframeFromInspectorDisplay(editableClip, displayed);
         keyframe.frame = keyframeFrame;
-        keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() == 1;
+        keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() != 0;
+        keyframe.interpolationMode =
+            m_widgets.videoInterpolationCombo->currentIndex() == 2
+                ? QStringLiteral("perspective_linear")
+                : (keyframe.linearInterpolation ? QStringLiteral("linear") : QStringLiteral("step"));
 
         upsertStoredTransformKeyframe(editableClip, keyframe);
     });
@@ -1010,7 +1112,11 @@ void VideoKeyframeTab::onTableSelectionChanged()
             updateSpinBoxesFromKeyframe(displayed);
             updateMirrorCheckboxesFromScale(displayed.scaleX, displayed.scaleY);
             if (m_widgets.videoInterpolationCombo) {
-                m_widgets.videoInterpolationCombo->setCurrentIndex(displayed.linearInterpolation ? 1 : 0);
+                m_widgets.videoInterpolationCombo->setCurrentIndex(
+                    videoInterpolationLabel(displayed.linearInterpolation, displayed.interpolationMode) ==
+                            QStringLiteral("Perspective Linear")
+                        ? 2
+                        : (displayed.linearInterpolation ? 1 : 0));
             }
             m_updating = false;
         }
@@ -1055,7 +1161,8 @@ void VideoKeyframeTab::onTableItemChanged(QTableWidgetItem* changedItem)
     if (!ok) { refresh(); return; }
     displayed.maskRepeatDeltaY = tableText(7).toDouble(&ok);
     if (!ok) { refresh(); return; }
-    if (!parseVideoInterpolationText(tableText(8), &displayed.linearInterpolation)) {
+    if (!parseVideoInterpolationText(
+            tableText(8), &displayed.linearInterpolation, &displayed.interpolationMode)) {
         refresh();
         return;
     }
@@ -1187,6 +1294,7 @@ void VideoKeyframeTab::onFlipHorizontalClicked()
             TimelineClip::TransformKeyframe keyframe = keyframeFromInspectorDisplay(editableClip, transform);
             keyframe.frame = frame;
             keyframe.linearInterpolation = true; // Use linear interpolation for smooth flip
+            keyframe.interpolationMode = QStringLiteral("linear");
 
             bool replaced = false;
             for (TimelineClip::TransformKeyframe& existing : editableClip.transformKeyframes) {
