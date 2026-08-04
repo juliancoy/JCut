@@ -1180,20 +1180,27 @@ void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately(
     QVERIFY(clip.transcriptOverlay.useManualPlacement);
     QCOMPARE(previewUpdateCount, 1);
     QCOMPARE(saveCount, 1);
+    QCOMPARE(historyCount, 0);
+
+    overlayX.setValue(0.30);
+    overlayX.setValue(0.35);
+    QCOMPARE(clip.transcriptOverlay.translationX, 0.35);
+    QCOMPARE(historyCount, 0);
+    QVERIFY(QMetaObject::invokeMethod(&overlayX, "editingFinished", Qt::DirectConnection));
     QCOMPARE(historyCount, 1);
 
     overlayWidth.setValue(1100);
     QCOMPARE(clip.transcriptOverlay.boxWidth, 1100.0);
-    QCOMPARE(previewUpdateCount, 2);
+    QCOMPARE(previewUpdateCount, 4);
 
     placementMode.setCurrentIndex(1);
     QVERIFY(!clip.transcriptOverlay.useManualPlacement);
-    QCOMPARE(previewUpdateCount, 3);
+    QCOMPARE(previewUpdateCount, 5);
 
     overlayHeight.setValue(260);
     QCOMPARE(clip.transcriptOverlay.boxHeight, 260.0);
     QVERIFY(clip.transcriptOverlay.useManualPlacement);
-    QCOMPARE(previewUpdateCount, 4);
+    QCOMPARE(previewUpdateCount, 6);
 }
 
 void TestTranscriptTabFollow::testSubtitleRenderingEffectControlsUpdateTranscriptOwner()

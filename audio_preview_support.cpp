@@ -1,5 +1,6 @@
 #include "audio_preview_support.h"
 
+#include "editor_shared_render_sync.h"
 #include "editor_shared_timing.h"
 #include "waveform_service.h"
 

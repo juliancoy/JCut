@@ -1,5 +1,6 @@
 #include <QtTest/QtTest>
 
+#include "editor_shared_transcript.h"
 #include "titles.h"
 #include "vulkan_text_renderer.h"
 #include "title_mesh_extrusion.h"

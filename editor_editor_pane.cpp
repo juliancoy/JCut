@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "editor_shared_media.h"
 #include "mask_tab.h"
 #include "editor_preview_edit_helpers.h"
 #include "editor_scale_to_fill.h"

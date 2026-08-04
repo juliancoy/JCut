@@ -1,10 +1,14 @@
 #pragma once
 
-#include "editor_shared.h"
 #include "cpu_overlay_render_backend.h"
+#include "editor_shared_font_defaults.h"
+#include "editor_timeline_types.h"
+#include "playback_timing_context.h"
 
 #include <QColor>
 #include <QRect>
+#include <QRectF>
+#include <QSize>
 #include <QString>
 
 using TitleMaterialStyle = TimelineClip::TitleKeyframe::MaterialStyle;

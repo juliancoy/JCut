@@ -1,5 +1,8 @@
 #pragma once
 
+#include "editor_shared_font_defaults.h"
+#include "editor_shared_transcript_types.h"
+#include "editor_timeline_types.h"
 #include "render.h"
 
 #include <QByteArray>

@@ -1,6 +1,14 @@
 #pragma once
 
-#include "editor_shared_core.h"
+#include "editor_playback_types.h"
+#include "editor_shared_audio_constants.h"
+#include "editor_timeline_types.h"
+
+#include <QPointF>
+#include <QRect>
+#include <QRectF>
+#include <QSize>
+#include <QSizeF>
 
 int64_t frameToSamples(int64_t frame);
 int64_t framePositionToSamples(qreal framePosition);

@@ -3,6 +3,7 @@
 
 #include "editor_document_core_json.h"
 #include "editor_grading_core.h"
+#include "keyframe_sequence.h"
 
 #include <algorithm>
 #include <array>
@@ -612,18 +613,8 @@ void normalizeRenderSyncMarkers(jcut::EditorDocumentCore* document)
 template <typename Keyframe>
 void upsertKeyframe(std::vector<Keyframe>* keyframes, Keyframe keyframe)
 {
-    const auto existing = std::find_if(
-        keyframes->begin(), keyframes->end(),
-        [&](const Keyframe& value) { return value.frame == keyframe.frame; });
-    if (existing == keyframes->end()) {
-        keyframes->push_back(std::move(keyframe));
-    } else {
-        *existing = std::move(keyframe);
-    }
-    std::sort(keyframes->begin(), keyframes->end(),
-              [](const Keyframe& left, const Keyframe& right) {
-                  return left.frame < right.frame;
-              });
+    jcut::keyframes::upsertByFrame(keyframes, std::move(keyframe));
+    jcut::keyframes::sortByFrame(keyframes);
 }
 
 template <typename Keyframe>
@@ -633,13 +624,9 @@ bool removeKeyframeAtFrame(std::vector<Keyframe>* keyframes,
     if (!keyframes) {
         return false;
     }
-    const auto previousSize = keyframes->size();
-    keyframes->erase(
-        std::remove_if(
-            keyframes->begin(), keyframes->end(),
-            [&](const Keyframe& keyframe) { return keyframe.frame == frame; }),
-        keyframes->end());
-    return keyframes->size() != previousSize;
+    return jcut::keyframes::removeIf(
+        keyframes,
+        [frame](const Keyframe& keyframe) { return keyframe.frame == frame; });
 }
 
 bool hasTrackId(const std::vector<jcut::EditorTrack>& tracks, int trackId)
@@ -1448,43 +1435,27 @@ void normalizeEditorOpacityKeyframes(jcut::EditorClip* clip)
     if (!clip) {
         return;
     }
-    std::sort(
-        clip->opacityKeyframes.begin(),
-        clip->opacityKeyframes.end(),
-        [](const jcut::EditorOpacityKeyframe& left,
-           const jcut::EditorOpacityKeyframe& right) {
-            return left.frame < right.frame;
+    const std::int64_t maxFrame = std::max(0, clip->durationFrames - 1);
+    jcut::keyframes::normalizeSequence(
+        &clip->opacityKeyframes, maxFrame,
+        [](jcut::EditorOpacityKeyframe& keyframe) {
+            keyframe.opacity = normalizedEditorOpacity(keyframe.opacity);
         });
 
-    std::vector<jcut::EditorOpacityKeyframe> normalized;
-    normalized.reserve(clip->opacityKeyframes.size());
-    const std::int64_t maxFrame = std::max(0, clip->durationFrames - 1);
-    for (jcut::EditorOpacityKeyframe keyframe : clip->opacityKeyframes) {
-        keyframe.frame = std::clamp<std::int64_t>(
-            keyframe.frame, 0, maxFrame);
-        keyframe.opacity = normalizedEditorOpacity(keyframe.opacity);
-        if (!normalized.empty() &&
-            normalized.back().frame == keyframe.frame) {
-            normalized.back() = std::move(keyframe);
-        } else {
-            normalized.push_back(std::move(keyframe));
-        }
-    }
-
     if (editorClipHasVisuals(*clip)) {
-        if (normalized.empty()) {
-            normalized.push_back(
+        if (clip->opacityKeyframes.empty()) {
+            clip->opacityKeyframes.push_back(
                 {0, normalizedEditorOpacity(clip->opacity), true});
-        } else if (normalized.front().frame > 0) {
-            jcut::EditorOpacityKeyframe first = normalized.front();
+        } else if (clip->opacityKeyframes.front().frame > 0) {
+            jcut::EditorOpacityKeyframe first = clip->opacityKeyframes.front();
             first.frame = 0;
-            normalized.insert(normalized.begin(), std::move(first));
+            clip->opacityKeyframes.insert(
+                clip->opacityKeyframes.begin(), std::move(first));
         } else {
-            normalized.front().frame = 0;
+            clip->opacityKeyframes.front().frame = 0;
         }
     }
 
-    clip->opacityKeyframes = std::move(normalized);
     if (!clip->opacityKeyframes.empty()) {
         clip->opacity = clip->opacityKeyframes.front().opacity;
     }

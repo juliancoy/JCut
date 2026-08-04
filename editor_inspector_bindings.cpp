@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "background_fill_effect.h"
+#include "editor_shared_media.h"
 
 #include <QCheckBox>
 #include <QComboBox>

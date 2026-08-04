@@ -1,5 +1,6 @@
 // Transcript and speaker text preparation methods.
 // Included inside OffscreenVulkanRendererPrivate; do not compile separately.
+  #include "editor_shared_render_sync.h"
   QVector<TranscriptTextInput> buildTranscriptTextInputs(
       const QSize &imageSize, const RenderRequest &request,
       const RenderFrameClock &clock,

@@ -3,6 +3,7 @@
 #include "background_fill_effect.h"
 #include "editor_shared_effects.h"
 #include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
 #include "editor_shared_transcript.h"
 #include "preview_view_transform.h"
 #include "transform_skip_aware_timing.h"

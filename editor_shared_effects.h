@@ -1,10 +1,11 @@
 #pragma once
 
 #include "core/image_buffer.h"
-#include "editor_shared_core.h"
+#include "editor_shared_effect_types.h"
 #include "editor_shared_render_sync.h"
 #include "transform_skip_aware_timing.h"
 
+#include <QImage>
 #include <memory>
 
 #include <QSet>

@@ -2,10 +2,11 @@
 
 #include "background_fill_effect_fwd.h"
 #include "core/image_buffer.h"
+#include "editor_playback_types.h"
+#include "editor_timeline_types.h"
 #include "frame_handle.h"
 #include "playback_timing_context.h"
 #include "preview_surface.h"
-#include "editor_shared_core.h"
 #include "render_vulkan_shared.h"
 
 #include <QColor>

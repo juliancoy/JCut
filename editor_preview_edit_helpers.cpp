@@ -1,6 +1,7 @@
 #include "editor_preview_edit_helpers.h"
 
 #include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
 #include "editor_transform_keyframe_ops.h"
 #include "titles.h"
 

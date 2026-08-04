@@ -2,18 +2,14 @@
 
 #include "editor_shared_keyframes.h"
 #include "editor_shared_media.h"
+#include "keyframe_sequence.h"
 
 #include <QtGlobal>
 
 #include <algorithm>
 
 int findTransformKeyframeIndex(const TimelineClip& clip, int64_t frame) {
-    for (int i = 0; i < clip.transformKeyframes.size(); ++i) {
-        if (clip.transformKeyframes[i].frame == frame) {
-            return i;
-        }
-    }
-    return -1;
+    return jcut::keyframes::findFrameIndex(clip.transformKeyframes, frame);
 }
 
 bool upsertStoredTransformKeyframe(TimelineClip& clip,
@@ -26,12 +22,7 @@ bool upsertStoredTransformKeyframe(TimelineClip& clip,
     stored.frame = qBound<int64_t>(
         0, stored.frame, qMax<int64_t>(0, clip.durationFrames - 1));
 
-    const int index = findTransformKeyframeIndex(clip, stored.frame);
-    if (index >= 0) {
-        clip.transformKeyframes[index] = stored;
-    } else {
-        clip.transformKeyframes.push_back(stored);
-    }
+    jcut::keyframes::upsertByFrame(&clip.transformKeyframes, stored);
     normalizeClipTransformKeyframes(clip);
     return true;
 }
@@ -41,15 +32,11 @@ bool removeStoredTransformKeyframes(TimelineClip& clip, const QList<int64_t>& fr
         return false;
     }
 
-    const int originalSize = clip.transformKeyframes.size();
-    clip.transformKeyframes.erase(
-        std::remove_if(clip.transformKeyframes.begin(),
-                       clip.transformKeyframes.end(),
-                       [&frames](const TimelineClip::TransformKeyframe& keyframe) {
-                           return frames.contains(keyframe.frame);
-                       }),
-        clip.transformKeyframes.end());
-    if (clip.transformKeyframes.size() == originalSize) {
+    if (!jcut::keyframes::removeIf(
+            &clip.transformKeyframes,
+            [&frames](const TimelineClip::TransformKeyframe& keyframe) {
+                return frames.contains(keyframe.frame);
+            })) {
         return false;
     }
     normalizeClipTransformKeyframes(clip);

@@ -1,6 +1,7 @@
 #pragma once
 
-#include "editor_shared_core.h"
+#include "editor_playback_types.h"
+#include "editor_timeline_types.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QJsonObject>

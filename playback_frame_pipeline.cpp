@@ -1,5 +1,6 @@
 #include "playback_frame_pipeline.h"
 #include "debug_controls.h"
+#include "editor_shared_media.h"
 #include "editor_shared_timing.h"
 #include "frame_buffer_utils.h"
 

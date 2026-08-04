@@ -4,6 +4,7 @@
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
+#include "keyframe_sequence.h"
 #include "speaker_track_assignment_service.h"
 #include "speaker_framing_core.h"
 #include "speaker_framing_smoothing_core.h"
@@ -1579,113 +1580,60 @@ qreal sanitizeScaleValue(qreal value) {
 void normalizeClipTransformKeyframes(TimelineClip& clip) {
     clip.baseScaleX = sanitizeScaleValue(clip.baseScaleX);
     clip.baseScaleY = sanitizeScaleValue(clip.baseScaleY);
-    std::sort(clip.transformKeyframes.begin(), clip.transformKeyframes.end(),
-              [](const TimelineClip::TransformKeyframe& a, const TimelineClip::TransformKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-
-    QVector<TimelineClip::TransformKeyframe> normalized;
-    normalized.reserve(clip.transformKeyframes.size());
     const int64_t maxFrame = qMax<int64_t>(0, clip.durationFrames - 1);
-    for (TimelineClip::TransformKeyframe keyframe : clip.transformKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        keyframe.scaleX = sanitizeScaleValue(keyframe.scaleX);
-        keyframe.scaleY = sanitizeScaleValue(keyframe.scaleY);
-        if (!normalized.isEmpty() && normalized.constLast().frame == keyframe.frame) {
-            normalized.last() = keyframe;
-        } else {
-            normalized.push_back(keyframe);
-        }
-    }
+    jcut::keyframes::normalizeSequence(
+        &clip.transformKeyframes, maxFrame,
+        [](TimelineClip::TransformKeyframe& keyframe) {
+            keyframe.scaleX = sanitizeScaleValue(keyframe.scaleX);
+            keyframe.scaleY = sanitizeScaleValue(keyframe.scaleY);
+        });
     if (clipHasVisuals(clip)) {
-        if (normalized.isEmpty()) {
+        if (clip.transformKeyframes.isEmpty()) {
             TimelineClip::TransformKeyframe keyframe;
             keyframe.frame = 0;
-            normalized.push_back(keyframe);
-        } else if (normalized.constFirst().frame > 0) {
-            TimelineClip::TransformKeyframe firstKeyframe = normalized.constFirst();
+            clip.transformKeyframes.push_back(keyframe);
+        } else if (clip.transformKeyframes.constFirst().frame > 0) {
+            TimelineClip::TransformKeyframe firstKeyframe = clip.transformKeyframes.constFirst();
             firstKeyframe.frame = 0;
-            normalized.push_front(firstKeyframe);
+            clip.transformKeyframes.push_front(firstKeyframe);
         } else {
-            normalized.first().frame = 0;
+            clip.transformKeyframes.first().frame = 0;
         }
     }
-    clip.transformKeyframes = normalized;
 
-    std::sort(clip.speakerFramingEnabledKeyframes.begin(),
-              clip.speakerFramingEnabledKeyframes.end(),
-              [](const TimelineClip::BoolKeyframe& a, const TimelineClip::BoolKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-    QVector<TimelineClip::BoolKeyframe> normalizedSpeakerFramingEnabled;
-    normalizedSpeakerFramingEnabled.reserve(clip.speakerFramingEnabledKeyframes.size());
-    for (TimelineClip::BoolKeyframe keyframe : clip.speakerFramingEnabledKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        if (!normalizedSpeakerFramingEnabled.isEmpty() &&
-            normalizedSpeakerFramingEnabled.constLast().frame == keyframe.frame) {
-            normalizedSpeakerFramingEnabled.last() = keyframe;
-        } else {
-            normalizedSpeakerFramingEnabled.push_back(keyframe);
-        }
-    }
-    if (clipHasVisuals(clip) && !normalizedSpeakerFramingEnabled.isEmpty()) {
-        if (normalizedSpeakerFramingEnabled.constFirst().frame > 0) {
+    jcut::keyframes::normalizeSequence(&clip.speakerFramingEnabledKeyframes, maxFrame);
+    if (clipHasVisuals(clip) && !clip.speakerFramingEnabledKeyframes.isEmpty()) {
+        if (clip.speakerFramingEnabledKeyframes.constFirst().frame > 0) {
             TimelineClip::BoolKeyframe firstKeyframe;
             firstKeyframe.frame = 0;
             firstKeyframe.enabled = clip.speakerFramingEnabled;
-            normalizedSpeakerFramingEnabled.push_front(firstKeyframe);
+            clip.speakerFramingEnabledKeyframes.push_front(firstKeyframe);
         } else {
-            normalizedSpeakerFramingEnabled.first().frame = 0;
+            clip.speakerFramingEnabledKeyframes.first().frame = 0;
         }
     }
-    clip.speakerFramingEnabledKeyframes = normalizedSpeakerFramingEnabled;
 
-    std::sort(clip.speakerFramingKeyframes.begin(), clip.speakerFramingKeyframes.end(),
-              [](const TimelineClip::TransformKeyframe& a, const TimelineClip::TransformKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-    QVector<TimelineClip::TransformKeyframe> normalizedSpeakerFraming;
-    normalizedSpeakerFraming.reserve(clip.speakerFramingKeyframes.size());
-    for (TimelineClip::TransformKeyframe keyframe : clip.speakerFramingKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        keyframe.scaleX = sanitizeScaleValue(keyframe.scaleX);
-        keyframe.scaleY = sanitizeScaleValue(keyframe.scaleY);
-        keyframe.rotation = 0.0;
-        if (!normalizedSpeakerFraming.isEmpty() &&
-            normalizedSpeakerFraming.constLast().frame == keyframe.frame) {
-            normalizedSpeakerFraming.last() = keyframe;
-        } else {
-            normalizedSpeakerFraming.push_back(keyframe);
-        }
-    }
-    clip.speakerFramingKeyframes = normalizedSpeakerFraming;
-    std::sort(clip.speakerFramingTargetKeyframes.begin(),
-              clip.speakerFramingTargetKeyframes.end(),
-              [](const TimelineClip::TransformKeyframe& a, const TimelineClip::TransformKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-    QVector<TimelineClip::TransformKeyframe> normalizedSpeakerFramingTargets;
-    normalizedSpeakerFramingTargets.reserve(clip.speakerFramingTargetKeyframes.size());
-    for (TimelineClip::TransformKeyframe keyframe : clip.speakerFramingTargetKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        keyframe = normalizedSpeakerFramingTargetKeyframe(keyframe);
-        if (!normalizedSpeakerFramingTargets.isEmpty() &&
-            normalizedSpeakerFramingTargets.constLast().frame == keyframe.frame) {
-            normalizedSpeakerFramingTargets.last() = keyframe;
-        } else {
-            normalizedSpeakerFramingTargets.push_back(keyframe);
-        }
-    }
-    if (clipHasVisuals(clip) && !normalizedSpeakerFramingTargets.isEmpty()) {
-        if (normalizedSpeakerFramingTargets.constFirst().frame > 0) {
+    jcut::keyframes::normalizeSequence(
+        &clip.speakerFramingKeyframes, maxFrame,
+        [](TimelineClip::TransformKeyframe& keyframe) {
+            keyframe.scaleX = sanitizeScaleValue(keyframe.scaleX);
+            keyframe.scaleY = sanitizeScaleValue(keyframe.scaleY);
+            keyframe.rotation = 0.0;
+        });
+    jcut::keyframes::normalizeSequence(
+        &clip.speakerFramingTargetKeyframes, maxFrame,
+        [](TimelineClip::TransformKeyframe& keyframe) {
+            keyframe = normalizedSpeakerFramingTargetKeyframe(keyframe);
+        });
+    if (clipHasVisuals(clip) && !clip.speakerFramingTargetKeyframes.isEmpty()) {
+        if (clip.speakerFramingTargetKeyframes.constFirst().frame > 0) {
             TimelineClip::TransformKeyframe firstKeyframe = clipBaseSpeakerFramingTarget(clip);
             firstKeyframe.frame = 0;
-            normalizedSpeakerFramingTargets.push_front(firstKeyframe);
+            clip.speakerFramingTargetKeyframes.push_front(firstKeyframe);
         } else {
-            normalizedSpeakerFramingTargets.first().frame = 0;
+            clip.speakerFramingTargetKeyframes.first().frame = 0;
         }
     }
-    clip.speakerFramingTargetKeyframes = normalizedSpeakerFramingTargets;
     clip.speakerFramingBakedTargetXNorm = qBound<qreal>(0.0, clip.speakerFramingBakedTargetXNorm, 1.0);
     clip.speakerFramingBakedTargetYNorm = qBound<qreal>(0.0, clip.speakerFramingBakedTargetYNorm, 1.0);
     clip.speakerFramingBakedTargetBoxNorm = qBound<qreal>(-1.0, clip.speakerFramingBakedTargetBoxNorm, 1.0);
@@ -1715,26 +1663,17 @@ void normalizeClipTransformKeyframes(TimelineClip& clip) {
 }
 
 void normalizeClipGradingKeyframes(TimelineClip& clip) {
-    std::sort(clip.gradingKeyframes.begin(), clip.gradingKeyframes.end(),
-              [](const TimelineClip::GradingKeyframe& a, const TimelineClip::GradingKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-
-    QVector<TimelineClip::GradingKeyframe> normalized;
-    normalized.reserve(clip.gradingKeyframes.size());
     const int64_t maxFrame = qMax<int64_t>(0, clip.durationFrames - 1);
-    for (TimelineClip::GradingKeyframe keyframe : clip.gradingKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        keyframe.curvePointsR = sanitizeGradingCurvePoints(keyframe.curvePointsR);
-        keyframe.curvePointsG = sanitizeGradingCurvePoints(keyframe.curvePointsG);
-        keyframe.curvePointsB = sanitizeGradingCurvePoints(keyframe.curvePointsB);
-        keyframe.curvePointsLuma = sanitizeGradingCurvePoints(keyframe.curvePointsLuma);
-        if (!normalized.isEmpty() && normalized.constLast().frame == keyframe.frame) {
-            normalized.last() = keyframe;
-        } else {
-            normalized.push_back(keyframe);
-        }
-    }
+    jcut::keyframes::normalizeSequence(
+        &clip.gradingKeyframes, maxFrame,
+        [](TimelineClip::GradingKeyframe& keyframe) {
+            keyframe.curvePointsR = sanitizeGradingCurvePoints(keyframe.curvePointsR);
+            keyframe.curvePointsG = sanitizeGradingCurvePoints(keyframe.curvePointsG);
+            keyframe.curvePointsB = sanitizeGradingCurvePoints(keyframe.curvePointsB);
+            keyframe.curvePointsLuma = sanitizeGradingCurvePoints(keyframe.curvePointsLuma);
+        });
+
+    QVector<TimelineClip::GradingKeyframe>& normalized = clip.gradingKeyframes;
 
     if (clipHasVisuals(clip)) {
         if (normalized.isEmpty()) {
@@ -1802,7 +1741,6 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
         }
     }
 
-    clip.gradingKeyframes = normalized;
     if (!clip.gradingKeyframes.isEmpty()) {
         clip.brightness = clip.gradingKeyframes.constFirst().brightness;
         clip.contrast = clip.gradingKeyframes.constFirst().contrast;
@@ -1811,63 +1749,36 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
 }
 
 void normalizeClipOpacityKeyframes(TimelineClip& clip) {
-    std::sort(clip.opacityKeyframes.begin(), clip.opacityKeyframes.end(),
-              [](const TimelineClip::OpacityKeyframe& a, const TimelineClip::OpacityKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-
-    QVector<TimelineClip::OpacityKeyframe> normalized;
-    normalized.reserve(clip.opacityKeyframes.size());
     const int64_t maxFrame = qMax<int64_t>(0, clip.durationFrames - 1);
-    for (TimelineClip::OpacityKeyframe keyframe : clip.opacityKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        keyframe.opacity = qBound<qreal>(0.0, keyframe.opacity, 1.0);
-        if (!normalized.isEmpty() && normalized.constLast().frame == keyframe.frame) {
-            normalized.last() = keyframe;
-        } else {
-            normalized.push_back(keyframe);
-        }
-    }
+    jcut::keyframes::normalizeSequence(
+        &clip.opacityKeyframes, maxFrame,
+        [](TimelineClip::OpacityKeyframe& keyframe) {
+            keyframe.opacity = qBound<qreal>(0.0, keyframe.opacity, 1.0);
+        });
 
     if (clipHasVisuals(clip)) {
-        if (normalized.isEmpty()) {
+        if (clip.opacityKeyframes.isEmpty()) {
             TimelineClip::OpacityKeyframe keyframe;
             keyframe.frame = 0;
             keyframe.opacity = clip.opacity;
-            normalized.push_back(keyframe);
-        } else if (normalized.constFirst().frame > 0) {
-            TimelineClip::OpacityKeyframe firstKeyframe = normalized.constFirst();
+            clip.opacityKeyframes.push_back(keyframe);
+        } else if (clip.opacityKeyframes.constFirst().frame > 0) {
+            TimelineClip::OpacityKeyframe firstKeyframe = clip.opacityKeyframes.constFirst();
             firstKeyframe.frame = 0;
-            normalized.push_front(firstKeyframe);
+            clip.opacityKeyframes.push_front(firstKeyframe);
         } else {
-            normalized.first().frame = 0;
+            clip.opacityKeyframes.first().frame = 0;
         }
     }
 
-    clip.opacityKeyframes = normalized;
     if (!clip.opacityKeyframes.isEmpty()) {
         clip.opacity = clip.opacityKeyframes.constFirst().opacity;
     }
 }
 
 void normalizeClipTitleKeyframes(TimelineClip& clip) {
-    std::sort(clip.titleKeyframes.begin(), clip.titleKeyframes.end(),
-              [](const TimelineClip::TitleKeyframe& a, const TimelineClip::TitleKeyframe& b) {
-                  return a.frame < b.frame;
-              });
-
-    QVector<TimelineClip::TitleKeyframe> normalized;
-    normalized.reserve(clip.titleKeyframes.size());
     const int64_t maxFrame = qMax<int64_t>(0, clip.durationFrames - 1);
-    for (TimelineClip::TitleKeyframe keyframe : clip.titleKeyframes) {
-        keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
-        if (!normalized.isEmpty() && normalized.constLast().frame == keyframe.frame) {
-            normalized.last() = keyframe;
-        } else {
-            normalized.push_back(keyframe);
-        }
-    }
-    clip.titleKeyframes = normalized;
+    jcut::keyframes::normalizeSequence(&clip.titleKeyframes, maxFrame);
 }
 
 TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const TimelineClip& clip, int64_t timelineFrame) {

@@ -155,6 +155,7 @@ private slots:
     void onTranscriptSelectionChanged();
     void onFollowCurrentWordToggled(bool checked);
     void onOverlaySettingChanged();
+    void onOverlayEditingFinished();
     void onOverlayColorButtonClicked();
     void onCenterHorizontalClicked();
     void onCenterVerticalClicked();
@@ -341,6 +342,7 @@ private:
     int m_speechFilterFadeSamples = 300;
     bool m_speechFilterEnabled = false;
     QTimer m_deferredSeekTimer;
+    bool m_overlayEditPending = false;
     int64_t m_pendingSeekTimelineFrame = -1;
     int m_manualSelectionHoldMs = 1200;
     QElapsedTimer m_manualSelectionTimer;

@@ -2,6 +2,7 @@
 #include "decoder_context.h"
 #include "cpu_overlay_render_backend.h"
 #include "editor_shared_effects.h"
+#include "editor_shared_media.h"
 
 #include <QDeadlineTimer>
 #include <QFileInfo>

@@ -2,7 +2,8 @@
 
 #include "background_fill_effect_fwd.h"
 #include "core/offscreen_vulkan_frame.h"
-#include "editor_shared.h"
+#include "editor_playback_types.h"
+#include "editor_timeline_types.h"
 #include "playback_timing_context.h"
 #include "timeline_fps.h"
 

@@ -1,6 +1,7 @@
 // explorer_pane.cpp
 #include "explorer_pane.h"
 #include "decoder_context.h"
+#include "editor_shared_media.h"
 #include "media_drag_payload.h"
 #include "preview_surface.h"
 #include "render.h"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QLabel>
+#include <QSizePolicy>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -37,31 +38,50 @@ inline DisclosureSection createDisclosureSection(QWidget* parent,
     auto* container = new QWidget(parent);
     auto* outer = new QVBoxLayout(container);
     outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(4);
+    outer->setSpacing(3);
 
     auto* toggle = new QToolButton(container);
     toggle->setCheckable(true);
     toggle->setChecked(expanded);
-    toggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    toggle->setText(QStringLiteral("%1 %2").arg(
-        expanded ? QStringLiteral("▼") : QStringLiteral("▶"), title));
+    toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    toggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+    toggle->setText(title);
+    toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    toggle->setMinimumWidth(0);
+    toggle->setMinimumHeight(28);
     toggle->setStyleSheet(QStringLiteral(
-        "QToolButton { color: #9fb3c8; font-weight: 700; border: none; "
-        "text-align: left; padding: 2px 0; }"
-        "QToolButton:hover { color: #d6dee8; }"));
+        "QToolButton {"
+        "  color: #a9bdd2;"
+        "  font-weight: 700;"
+        "  border: 1px solid #1f2b38;"
+        "  border-radius: 8px;"
+        "  background: #111923;"
+        "  text-align: left;"
+        "  padding: 4px 8px;"
+        "}"
+        "QToolButton:hover {"
+        "  color: #dce8f5;"
+        "  background: #172231;"
+        "  border-color: #2e4054;"
+        "}"
+        "QToolButton:checked {"
+        "  color: #d6e7f8;"
+        "  background: #182536;"
+        "  border-color: #38516c;"
+        "}"));
     outer->addWidget(toggle);
 
     auto* content = new QWidget(container);
     content->setVisible(expanded);
     auto* body = new QVBoxLayout(content);
-    body->setContentsMargins(14, 2, 0, 2);
+    body->setContentsMargins(10, 5, 2, 5);
     body->setSpacing(6);
     outer->addWidget(content);
 
     QObject::connect(toggle, &QToolButton::toggled, content,
                      [toggle, title, content](bool checked) {
-        toggle->setText(QStringLiteral("%1 %2").arg(
-            checked ? QStringLiteral("▼") : QStringLiteral("▶"), title));
+        Q_UNUSED(title);
+        toggle->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
         content->setVisible(checked);
     });
 

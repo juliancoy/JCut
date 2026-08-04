@@ -2,6 +2,7 @@
 #include "playback_range_core.h"
 #include "audio_source_key.h"
 #include "debug_controls.h"
+#include "editor_shared_media.h"
 #include "playback_clock_coordinator.h"
 #include "playback_debug.h"
 

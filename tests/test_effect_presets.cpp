@@ -3351,6 +3351,11 @@ void TestEffectPresets::recursiveZoomTileUsesMaskBoundsAsRepeatDomain()
     QVERIFY(shaderSource.contains(QStringLiteral("vec2 exactDomainUv = fract(domainUv);")));
     QVERIFY(shaderSource.contains(QStringLiteral("float pixelRepeatLimit")));
     QVERIFY(shaderSource.contains(QStringLiteral("min(objectPixels.x, objectPixels.y)")));
+    QVERIFY(shaderSource.contains(QStringLiteral("float perceptualRecursiveTileZoomPhase(float zoomPhase)")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "Keep most of the response linear so keyframed effect zoom feels flat")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "float shapedPhase = perceptualRecursiveTileZoomPhase(zoomPhase);")));
     QVERIFY(shaderSource.contains(QStringLiteral("float childScale = exp2(log2(maxRepeat) * shapedPhase);")));
     QVERIFY(shaderSource.contains(QStringLiteral("return objectRecursiveZoomTileSample(uv);")));
     QVERIFY(shaderSource.contains(QStringLiteral("generatedEffectMaskDomainUv(childDomainUv)")));

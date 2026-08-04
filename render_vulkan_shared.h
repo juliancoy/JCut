@@ -3,6 +3,8 @@
 #include "background_fill_effect_fwd.h"
 #include "core/image_buffer.h"
 #include "editor_shared.h"
+#include "editor_shared_transcript_types.h"
+#include "editor_timeline_types.h"
 #include "frame_handle.h"
 #include "playback_timing_context.h"
 #include "titles.h"

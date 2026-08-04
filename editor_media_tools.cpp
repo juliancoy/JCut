@@ -2,6 +2,7 @@
 #include "auto_sync_plan.h"
 #include "decoder_context.h"
 #include "decoder_ffmpeg_utils.h"
+#include "editor_shared_media.h"
 #include "processing_job_manifest.h"
 #include "prompt_mask_job_core.h"
 #include "transcription_job_core.h"

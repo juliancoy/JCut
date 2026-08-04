@@ -22,6 +22,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 using namespace jcut::inspector;
@@ -395,6 +396,59 @@ QWidget *InspectorPane::buildTranscriptTab()
         return form;
     };
 
+    auto makeSectionHint = [](const QString& text, QWidget* parent) {
+        auto* label = new QLabel(text, parent);
+        label->setWordWrap(true);
+        label->setStyleSheet(QStringLiteral(
+            "QLabel { color: #7f93aa; font-size: 11px; line-height: 125%; }"));
+        return label;
+    };
+
+    auto* speechFilterCard = new QFrame(settingsContainer);
+    speechFilterCard->setObjectName(QStringLiteral("transcriptSpeechFilterCard"));
+    speechFilterCard->setFrameShape(QFrame::NoFrame);
+    speechFilterCard->setStyleSheet(QStringLiteral(
+        "QFrame#transcriptSpeechFilterCard {"
+        "  background: #101820;"
+        "  border: 1px solid #223047;"
+        "  border-radius: 12px;"
+        "}"
+        "QCheckBox {"
+        "  color: #d7e6f5;"
+        "  font-weight: 700;"
+        "  spacing: 8px;"
+        "}"
+        "QCheckBox::indicator {"
+        "  width: 38px;"
+        "  height: 20px;"
+        "  border-radius: 10px;"
+        "  background: #263345;"
+        "  border: 1px solid #3a4c63;"
+        "}"
+        "QCheckBox::indicator:checked {"
+        "  background: #3b82f6;"
+        "  border-color: #60a5fa;"
+        "}"));
+    auto* speechFilterCardLayout = new QHBoxLayout(speechFilterCard);
+    speechFilterCardLayout->setContentsMargins(10, 8, 10, 8);
+    speechFilterCardLayout->setSpacing(8);
+    auto* speechFilterCopy = new QWidget(speechFilterCard);
+    auto* speechFilterCopyLayout = new QVBoxLayout(speechFilterCopy);
+    speechFilterCopyLayout->setContentsMargins(0, 0, 0, 0);
+    speechFilterCopyLayout->setSpacing(1);
+    auto* speechFilterTitle = new QLabel(QStringLiteral("Speech Filter"), speechFilterCopy);
+    speechFilterTitle->setStyleSheet(QStringLiteral(
+        "QLabel { color: #e5eef8; font-size: 13px; font-weight: 800; }"));
+    auto* speechFilterSubtitle = new QLabel(
+        QStringLiteral("Use transcript skips for playback and render timing."), speechFilterCopy);
+    speechFilterSubtitle->setWordWrap(true);
+    speechFilterSubtitle->setStyleSheet(QStringLiteral(
+        "QLabel { color: #7f93aa; font-size: 10px; }"));
+    speechFilterCopyLayout->addWidget(speechFilterTitle);
+    speechFilterCopyLayout->addWidget(speechFilterSubtitle);
+    speechFilterCardLayout->addWidget(speechFilterCopy, 1);
+    speechFilterCardLayout->addWidget(m_speechFilterEnabledCheckBox, 0, Qt::AlignTop);
+
     auto sourceSection = createDisclosureSection(settingsContainer, QStringLiteral("Transcript Source"), false);
     sourceSection.body->addWidget(m_transcriptInspectorClipLabel);
     sourceSection.body->addWidget(m_transcriptInspectorDetailsLabel);
@@ -456,12 +510,10 @@ QWidget *InspectorPane::buildTranscriptTab()
     backgroundSection.body->addLayout(backgroundForm);
 
     auto subtitleEffectsSection = createDisclosureSection(
-        settingsContainer, QStringLiteral("Subtitle Rendering Effects"), false);
-    auto* subtitleEffectsHelp = new QLabel(
+        settingsContainer, QStringLiteral("Subtitle Effects"), false);
+    auto* subtitleEffectsHelp = makeSectionHint(
         QStringLiteral("Applies text-safe rendering effects to generated transcript subtitles using the shared effect preset fields. Edit the transcript source; the generated subtitle child remains locked."),
         subtitleEffectsSection.container);
-    subtitleEffectsHelp->setWordWrap(true);
-    subtitleEffectsHelp->setStyleSheet(QStringLiteral("color: #9aabc0; font-size: 11px;"));
     subtitleEffectsSection.body->addWidget(subtitleEffectsHelp);
     auto* subtitleEffectsForm = makeSettingsForm();
     subtitleEffectsForm->addRow(QStringLiteral("Effect"), m_transcriptSubtitleEffectPresetCombo);
@@ -485,12 +537,10 @@ QWidget *InspectorPane::buildTranscriptTab()
     contentSection.body->addLayout(contentForm);
 
     auto speakerTitlesSection = createDisclosureSection(
-        settingsContainer, QStringLiteral("Animated Speaker Introductions"), false);
-    auto* speakerTitlesHelp = new QLabel(
+        settingsContainer, QStringLiteral("Speaker Introductions"), false);
+    auto* speakerTitlesHelp = makeSectionHint(
         QStringLiteral("Transcript-owned title events generated at speaker introductions. They remain linked to this transcript clip and use the shared title renderer."),
         speakerTitlesSection.container);
-    speakerTitlesHelp->setWordWrap(true);
-    speakerTitlesHelp->setStyleSheet(QStringLiteral("color: #9aabc0; font-size: 11px;"));
     speakerTitlesSection.body->addWidget(speakerTitlesHelp);
     m_transcriptSpeakerTitlesContainer = new QWidget(speakerTitlesSection.container);
     auto* transcriptSpeakerTitlesLayout = new QVBoxLayout(m_transcriptSpeakerTitlesContainer);
@@ -519,11 +569,12 @@ QWidget *InspectorPane::buildTranscriptTab()
     frameTransitionSection.body->addLayout(frameTransitionForm);
 
     // --- Assemble settings layout ---
-    settingsLayout->addWidget(m_speechFilterEnabledCheckBox);
+    settingsLayout->addWidget(speechFilterCard);
     settingsLayout->addWidget(sourceSection.container);
     settingsLayout->addWidget(placementSection.container);
     settingsLayout->addWidget(typographySection.container);
     settingsLayout->addWidget(backgroundSection.container);
+    settingsLayout->addWidget(subtitleEffectsSection.container);
     settingsLayout->addWidget(contentSection.container);
     settingsLayout->addWidget(speakerTitlesSection.container);
     settingsLayout->addWidget(speechTimingSection.container);

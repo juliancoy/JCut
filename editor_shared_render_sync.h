@@ -1,6 +1,8 @@
 #pragma once
 
-#include "editor_shared_core.h"
+#include "editor_playback_types.h"
+#include "editor_shared_audio_constants.h"
+#include "editor_timeline_types.h"
 
 QString renderSyncActionToString(RenderSyncAction action);
 RenderSyncAction renderSyncActionFromString(const QString& value);

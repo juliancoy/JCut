@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QAbstractItemModel>
+#include <QAbstractSpinBox>
 #include <QColor>
 #include <QColorDialog>
 #include <QDebug>
@@ -900,6 +901,38 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptItalicCheckBox) {
         connect(m_widgets.transcriptItalicCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    const QList<QAbstractSpinBox*> continuousOverlayControls{
+        m_widgets.transcriptBackgroundOpacitySpin,
+        m_widgets.transcriptBackgroundCornerRadiusSpin,
+        m_widgets.transcriptTextOpacitySpin,
+        m_widgets.transcriptBackgroundPaddingSpin,
+        m_widgets.transcriptBackgroundFrameOpacitySpin,
+        m_widgets.transcriptBackgroundFrameWidthSpin,
+        m_widgets.transcriptBackgroundFrameGapSpin,
+        m_widgets.transcriptShadowOpacitySpin,
+        m_widgets.transcriptShadowOffsetXSpin,
+        m_widgets.transcriptShadowOffsetYSpin,
+        m_widgets.transcriptOutlineWidthSpin,
+        m_widgets.transcriptOutlineOpacitySpin,
+        m_widgets.transcriptTextExtrudeDepthSpin,
+        m_widgets.transcriptTextExtrudeBevelSpin,
+        m_widgets.transcriptSubtitleEffectRowsSpin,
+        m_widgets.transcriptSubtitleEffectSpeedSpin,
+        m_widgets.transcriptSubtitleEffectScaleSpin,
+        m_widgets.transcriptMaxLinesSpin,
+        m_widgets.transcriptMaxCharsSpin,
+        m_widgets.transcriptOverlayXSpin,
+        m_widgets.transcriptOverlayYSpin,
+        m_widgets.transcriptOverlayWidthSpin,
+        m_widgets.transcriptOverlayHeightSpin,
+        m_widgets.transcriptFontSizeSpin,
+    };
+    for (QAbstractSpinBox* spin : continuousOverlayControls) {
+        if (spin) {
+            connect(spin, &QAbstractSpinBox::editingFinished,
+                    this, &TranscriptTab::onOverlayEditingFinished);
+        }
     }
     if (m_widgets.transcriptPrependMsSpin) {
         connect(m_widgets.transcriptPrependMsSpin, qOverload<int>(&QSpinBox::valueChanged),

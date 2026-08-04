@@ -1,5 +1,6 @@
 #include "vulkan_preview_surface.h"
 #include "background_fill_effect.h"
+#include "editor_shared_render_sync.h"
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"

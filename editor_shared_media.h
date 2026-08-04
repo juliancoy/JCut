@@ -1,6 +1,11 @@
 #pragma once
 
-#include "editor_shared_core.h"
+#include "editor_shared_media_types.h"
+#include "editor_timeline_types.h"
+
+#include <QHash>
+#include <QStringList>
+#include <QVector>
 
 class ClipParentChildIndex {
 public:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cpu_overlay_render_backend.h"
+#include "editor_shared_transcript_types.h"
 #include "vulkan_resources.h"
 #include "title_mesh_extrusion.h"
 

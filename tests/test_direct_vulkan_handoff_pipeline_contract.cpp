@@ -72,6 +72,7 @@ private slots:
   void speechFilterFadeParametersOnlyShowWhenRelevant();
   void effectsExposeSpeechFilterSynchronizedMotion();
   void speechFilterFrameCrossfadeIsVisibleInDirectPreview();
+  void historyTrimmingAvoidsRecursiveJsonConversionOnUiPaths();
   void transcriptTimingEditsInvertDisplayPadding();
   void speechFilterBlendUsesPrecomputedSampleRanges();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
@@ -3654,6 +3655,32 @@ void TestDirectVulkanHandoffPipelineContract::
                inspector.contains(QStringLiteral("PlaybackFrameTransitionMode::SmootherStepSpeedThrough")) &&
                inspector.contains(QStringLiteral("frameTransitionForm->addRow(QStringLiteral(\"Length\"), m_speechFilterFrameCrossfadeFramesSpin)")),
            "speech-filter controls must expose one root switch and separate audio and video settings");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    historyTrimmingAvoidsRecursiveJsonConversionOnUiPaths() {
+  const QString projectState = readSourceFile(QStringLiteral("project_state.cpp"));
+  const QString startupState = readSourceFile(QStringLiteral("startup_project_state.cpp"));
+  const QString transcript = readSourceFile(QStringLiteral("transcript_tab.cpp"));
+  const QString transcriptOverlay = readSourceFile(QStringLiteral("transcript_tab_overlay.cpp"));
+  QVERIFY2(!projectState.isEmpty(), "project_state.cpp must be readable");
+  QVERIFY2(!startupState.isEmpty(), "startup_project_state.cpp must be readable");
+  QVERIFY2(!transcript.isEmpty(), "transcript_tab.cpp must be readable");
+  QVERIFY2(!transcriptOverlay.isEmpty(), "transcript_tab_overlay.cpp must be readable");
+
+  QVERIFY2(projectState.contains(QStringLiteral("QJsonDocument(historyRootFromEntries(entries, entries.size() - 1))")) &&
+               !projectState.contains(QStringLiteral("jcut::jsonio::serializeCompact(historyRootFromEntries")),
+           "interactive history sizing must use Qt's native serializer instead of recursively converting the full history");
+  QVERIFY2(startupState.contains(QStringLiteral("QJsonDocument(root).toJson(QJsonDocument::Compact).size()")) &&
+               !startupState.contains(QStringLiteral("jcut::jsonio::serializeCompact(root).size()")),
+           "startup history trimming must use the same native sizing path");
+  QVERIFY2(transcript.contains(QStringLiteral("&QAbstractSpinBox::editingFinished")) &&
+               transcriptOverlay.contains(QStringLiteral("m_overlayEditPending = true")) &&
+               transcriptOverlay.contains(QStringLiteral("applyOverlayFromInspector(false)")) &&
+               transcriptOverlay.contains(QStringLiteral("void TranscriptTab::onOverlayEditingFinished()")),
+           "continuous transcript overlay controls must use the same value-change and commit boundary as keyframe controls");
+  QVERIFY2(projectState.contains(QStringLiteral("m_historySaveTimer.start();")),
+           "history persistence debounce must restart after every new snapshot");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

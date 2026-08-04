@@ -1,5 +1,7 @@
 #include "editor.h"
 #include "debug_controls.h"
+#include "editor_shared_media.h"
+#include "editor_shared_render_sync.h"
 #include "editor_shared_timing.h"
 #include "playback_debug.h"
 

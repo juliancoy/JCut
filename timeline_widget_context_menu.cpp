@@ -1,5 +1,6 @@
 #include "timeline_widget.h"
 #include "editor_effect_presets.h"
+#include "editor_shared_media.h"
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "transcript_engine.h"

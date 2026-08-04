@@ -4,6 +4,7 @@
 #include "audio_speech_harmonic_isolator.h"
 #include "audio_source_key.h"
 #include "debug_controls.h"
+#include "editor_shared_render_sync.h"
 
 #include <QDateTime>
 #include <QDebug>

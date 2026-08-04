@@ -4,6 +4,7 @@
 #include "overlay_text_style.h"
 #include "overlay_style_ui.h"
 
+#include <QAbstractSpinBox>
 #include <QColorDialog>
 #include <QFont>
 #include <QPushButton>
@@ -215,6 +216,7 @@ void TranscriptTab::onOverlayColorButtonClicked()
     if (!updated) {
         return;
     }
+    m_overlayEditPending = false;
     setOverlayColorButtonSwatch(button, chosen);
     applyTabEditEffects(transcriptOverlayEditCallbacks(m_deps),
                         TabEditEffects{.pushHistory = true});
@@ -230,7 +232,25 @@ void TranscriptTab::onOverlaySettingChanged()
     if (transformEdited) {
         setTranscriptPlacementMode(true);
     }
+    const bool continuousEdit = qobject_cast<QAbstractSpinBox*>(sender()) != nullptr;
+    if (continuousEdit) {
+        m_overlayEditPending = true;
+        applyOverlayFromInspector(false);
+        return;
+    }
+    m_overlayEditPending = false;
     applyOverlayFromInspector(true);
+}
+
+void TranscriptTab::onOverlayEditingFinished()
+{
+    if (m_updating || !m_overlayEditPending) {
+        return;
+    }
+    m_overlayEditPending = false;
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
 }
 
 void TranscriptTab::onCenterHorizontalClicked()
@@ -242,6 +262,7 @@ void TranscriptTab::onCenterHorizontalClicked()
         QSignalBlocker block(m_widgets.transcriptOverlayXSpin);
         m_widgets.transcriptOverlayXSpin->setValue(0.0);
     }
+    m_overlayEditPending = false;
     setTranscriptPlacementMode(true);
     applyOverlayFromInspector(true);
 }
@@ -255,6 +276,7 @@ void TranscriptTab::onCenterVerticalClicked()
         QSignalBlocker block(m_widgets.transcriptOverlayYSpin);
         m_widgets.transcriptOverlayYSpin->setValue(0.0);
     }
+    m_overlayEditPending = false;
     setTranscriptPlacementMode(true);
     applyOverlayFromInspector(true);
 }

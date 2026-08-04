@@ -1,30 +1,21 @@
 #include "editor_title_opacity_keyframe_ops.h"
 
 #include "editor_shared_keyframes.h"
+#include "keyframe_sequence.h"
 
 #include <QtGlobal>
 
 #include <algorithm>
 
 int findTitleKeyframeIndex(const TimelineClip& clip, int64_t frame) {
-    for (int i = 0; i < clip.titleKeyframes.size(); ++i) {
-        if (clip.titleKeyframes[i].frame == frame) {
-            return i;
-        }
-    }
-    return -1;
+    return jcut::keyframes::findFrameIndex(clip.titleKeyframes, frame);
 }
 
 bool upsertStoredTitleKeyframe(TimelineClip& clip,
                                const TimelineClip::TitleKeyframe& keyframe) {
     TimelineClip::TitleKeyframe stored = keyframe;
     stored.frame = qBound<int64_t>(0, stored.frame, qMax<int64_t>(0, clip.durationFrames - 1));
-    const int index = findTitleKeyframeIndex(clip, stored.frame);
-    if (index >= 0) {
-        clip.titleKeyframes[index] = stored;
-    } else {
-        clip.titleKeyframes.push_back(stored);
-    }
+    jcut::keyframes::upsertByFrame(&clip.titleKeyframes, stored);
     normalizeClipTitleKeyframes(clip);
     return true;
 }
@@ -34,12 +25,7 @@ bool replaceStoredTitleKeyframeAtFrame(TimelineClip& clip,
                                        const TimelineClip::TitleKeyframe& keyframe) {
     TimelineClip::TitleKeyframe stored = keyframe;
     stored.frame = qBound<int64_t>(0, stored.frame, qMax<int64_t>(0, clip.durationFrames - 1));
-    const int index = findTitleKeyframeIndex(clip, originalFrame);
-    if (index >= 0) {
-        clip.titleKeyframes[index] = stored;
-    } else {
-        clip.titleKeyframes.push_back(stored);
-    }
+    jcut::keyframes::replaceAtFrame(&clip.titleKeyframes, originalFrame, stored);
     normalizeClipTitleKeyframes(clip);
     return true;
 }
@@ -60,15 +46,11 @@ bool removeStoredTitleKeyframes(TimelineClip& clip, const QSet<int64_t>& frames)
     if (frames.isEmpty()) {
         return false;
     }
-    const int originalSize = clip.titleKeyframes.size();
-    clip.titleKeyframes.erase(
-        std::remove_if(clip.titleKeyframes.begin(),
-                       clip.titleKeyframes.end(),
-                       [&frames](const TimelineClip::TitleKeyframe& keyframe) {
-                           return frames.contains(keyframe.frame);
-                       }),
-        clip.titleKeyframes.end());
-    if (clip.titleKeyframes.size() == originalSize) {
+    if (!jcut::keyframes::removeIf(
+            &clip.titleKeyframes,
+            [&frames](const TimelineClip::TitleKeyframe& keyframe) {
+                return frames.contains(keyframe.frame);
+            })) {
         return false;
     }
     normalizeClipTitleKeyframes(clip);
@@ -116,24 +98,14 @@ TimelineClip::TitleKeyframe interpolateStoredTitleKeyframe(
 }
 
 int findOpacityKeyframeIndex(const TimelineClip& clip, int64_t frame) {
-    for (int i = 0; i < clip.opacityKeyframes.size(); ++i) {
-        if (clip.opacityKeyframes[i].frame == frame) {
-            return i;
-        }
-    }
-    return -1;
+    return jcut::keyframes::findFrameIndex(clip.opacityKeyframes, frame);
 }
 
 bool upsertStoredOpacityKeyframe(TimelineClip& clip,
                                  const TimelineClip::OpacityKeyframe& keyframe) {
     TimelineClip::OpacityKeyframe stored = keyframe;
     stored.frame = qBound<int64_t>(0, stored.frame, qMax<int64_t>(0, clip.durationFrames - 1));
-    const int index = findOpacityKeyframeIndex(clip, stored.frame);
-    if (index >= 0) {
-        clip.opacityKeyframes[index] = stored;
-    } else {
-        clip.opacityKeyframes.push_back(stored);
-    }
+    jcut::keyframes::upsertByFrame(&clip.opacityKeyframes, stored);
     normalizeClipOpacityKeyframes(clip);
     return true;
 }
@@ -143,12 +115,7 @@ bool replaceStoredOpacityKeyframeAtFrame(TimelineClip& clip,
                                          const TimelineClip::OpacityKeyframe& keyframe) {
     TimelineClip::OpacityKeyframe stored = keyframe;
     stored.frame = qBound<int64_t>(0, stored.frame, qMax<int64_t>(0, clip.durationFrames - 1));
-    const int index = findOpacityKeyframeIndex(clip, originalFrame);
-    if (index >= 0) {
-        clip.opacityKeyframes[index] = stored;
-    } else {
-        clip.opacityKeyframes.push_back(stored);
-    }
+    jcut::keyframes::replaceAtFrame(&clip.opacityKeyframes, originalFrame, stored);
     normalizeClipOpacityKeyframes(clip);
     return true;
 }
@@ -184,16 +151,12 @@ bool removeStoredOpacityKeyframes(TimelineClip& clip,
     if (frames.isEmpty()) {
         return false;
     }
-    const int originalSize = clip.opacityKeyframes.size();
-    clip.opacityKeyframes.erase(
-        std::remove_if(clip.opacityKeyframes.begin(),
-                       clip.opacityKeyframes.end(),
-                       [&frames, keepFrameZero](const TimelineClip::OpacityKeyframe& keyframe) {
-                           return (!keepFrameZero || keyframe.frame > 0) &&
-                                  frames.contains(keyframe.frame);
-                       }),
-        clip.opacityKeyframes.end());
-    if (clip.opacityKeyframes.size() == originalSize) {
+    if (!jcut::keyframes::removeIf(
+            &clip.opacityKeyframes,
+            [&frames, keepFrameZero](const TimelineClip::OpacityKeyframe& keyframe) {
+                return (!keepFrameZero || keyframe.frame > 0) &&
+                       frames.contains(keyframe.frame);
+            })) {
         return false;
     }
     normalizeClipOpacityKeyframes(clip);

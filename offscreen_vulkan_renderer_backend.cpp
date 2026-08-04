@@ -3,6 +3,8 @@
 #include "background_fill_effect.h"
 #include "cpu_overlay_render_backend.h"
 #include "editor_shared_effects.h"
+#include "editor_shared_media.h"
+#include "editor_shared_render_sync.h"
 #include "editor_shared_timing.h"
 #include "offscreen_vulkan_renderer_helpers.h"
 #include "preview_view_transform.h"

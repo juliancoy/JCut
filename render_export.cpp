@@ -1,6 +1,7 @@
 #include "render_internal.h"
 #include "clip_serialization.h"
 #include "cpu_overlay_render_backend.h"
+#include "editor_shared_media.h"
 #include "export_timing.h"
 #include "render_backend.h"
 #include "render_runtime_controls.h"

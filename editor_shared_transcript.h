@@ -1,11 +1,16 @@
 #pragma once
 
-#include "editor_shared_core.h"
+#include "editor_playback_types.h"
+#include "editor_shared_transcript_types.h"
 #include "editor_timeline_types.h"
 
 #include <QColor>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointF>
+#include <QRectF>
+
+#include <memory>
 
 struct TranscriptSourceKey {
     QString sourcePath;

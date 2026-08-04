@@ -1,6 +1,6 @@
 #pragma once
 
-#include "editor_shared_core.h"
+#include "editor_shared_transcript_types.h"
 
 #include <QString>
 

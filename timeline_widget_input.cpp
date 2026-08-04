@@ -1,6 +1,9 @@
 #include "timeline_widget.h"
 #include "editor_effect_presets.h"
+#include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
 #include "editor_shared_timing.h"
+#include "editor_shared_transcript.h"
 #include "timeline_clip_title.h"
 #include "titles.h"
 

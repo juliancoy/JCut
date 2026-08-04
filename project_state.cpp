@@ -212,7 +212,9 @@ QJsonArray historyEntriesFromRoot(const QJsonObject& root)
 
 qsizetype historyEntriesCompactSize(const QJsonArray& entries)
 {
-    return jcut::jsonio::serializeCompact(historyRootFromEntries(entries, entries.size() - 1)).size();
+    return QJsonDocument(historyRootFromEntries(entries, entries.size() - 1))
+        .toJson(QJsonDocument::Compact)
+        .size();
 }
 
 void trimHistoryEntriesInPlace(QJsonArray* entries,
@@ -1341,9 +1343,7 @@ void EditorWindow::pushHistorySnapshot()
                               &m_historyIndex,
                               m_historyMaxEntries,
                               m_historyMaxMegabytes);
-    if (!m_historySaveTimer.isActive()) {
-        m_historySaveTimer.start();
-    }
+    m_historySaveTimer.start();
 }
 
 void EditorWindow::setupAutosaveTimer()

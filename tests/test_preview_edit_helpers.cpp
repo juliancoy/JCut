@@ -2,6 +2,7 @@
 
 #include "../editor_preview_edit_helpers.h"
 #include "../editor_shared_keyframes.h"
+#include "../keyframe_sequence.h"
 
 class TestPreviewEditHelpers : public QObject {
     Q_OBJECT
@@ -13,6 +14,7 @@ private slots:
     void testPreviewMovePreservesTemporalScale();
     void testTitlePreviewMoveUsesRegularTransformKeyframes();
     void testMaskMattePreviewTransformOwnerRequiresVideoMediaParent();
+    void testSharedKeyframeSequenceOperations();
 };
 
 namespace {
@@ -236,6 +238,35 @@ void TestPreviewEditHelpers::testMaskMattePreviewTransformOwnerRequiresVideoMedi
     QVERIFY(previewTransformOwnerClipId({invalidParent, matte}, matte.id).isEmpty());
 
     QVERIFY(previewTransformOwnerClipId({matte}, matte.id).isEmpty());
+}
+
+void TestPreviewEditHelpers::testSharedKeyframeSequenceOperations() {
+    struct TestKeyframe {
+        int64_t frame = 0;
+        double value = 0.0;
+    };
+
+    QVector<TestKeyframe> keyframes{{12, 1.0}, {-5, 2.0}, {12, 3.0}, {80, 4.0}};
+    jcut::keyframes::normalizeSequence(
+        &keyframes, 30,
+        [](TestKeyframe& keyframe) { keyframe.value = qBound(0.0, keyframe.value, 3.5); });
+
+    QCOMPARE(keyframes.size(), 3);
+    QCOMPARE(keyframes[0].frame, int64_t{0});
+    QCOMPARE(keyframes[1].frame, int64_t{12});
+    QCOMPARE(keyframes[1].value, 3.0);
+    QCOMPARE(keyframes[2].frame, int64_t{30});
+    QCOMPARE(keyframes[2].value, 3.5);
+    QCOMPARE(jcut::keyframes::findFrameIndex(keyframes, 12), 1);
+
+    jcut::keyframes::upsertByFrame(&keyframes, TestKeyframe{12, 9.0});
+    QCOMPARE(keyframes[1].value, 9.0);
+    jcut::keyframes::replaceAtFrame(&keyframes, 12, TestKeyframe{18, 7.0});
+    QCOMPARE(jcut::keyframes::findFrameIndex(keyframes, 12), -1);
+    QCOMPARE(jcut::keyframes::findFrameIndex(keyframes, 18), 1);
+    QVERIFY(jcut::keyframes::removeIf(
+        &keyframes, [](const TestKeyframe& keyframe) { return keyframe.frame == 18; }));
+    QCOMPARE(keyframes.size(), 2);
 }
 
 QTEST_MAIN(TestPreviewEditHelpers)

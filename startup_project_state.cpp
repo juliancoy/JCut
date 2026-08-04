@@ -6,6 +6,7 @@
 
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QSignalBlocker>
 
 namespace {
@@ -109,7 +110,7 @@ qsizetype historyEntriesCompactSize(const QJsonArray& entries)
 {
     QJsonObject root;
     root[QStringLiteral("entries")] = entries;
-    return jcut::jsonio::serializeCompact(root).size();
+    return QJsonDocument(root).toJson(QJsonDocument::Compact).size();
 }
 
 void trimHistoryEntriesInPlace(QJsonArray* entries, int* historyIndex)

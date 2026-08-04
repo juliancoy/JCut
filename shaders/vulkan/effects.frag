@@ -673,6 +673,15 @@ vec2 recursiveZoomVariantUv(vec2 uv,
     return fract(centered * scale + vec2(0.5));
 }
 
+float perceptualRecursiveTileZoomPhase(float zoomPhase) {
+    float phase = clamp(zoomPhase, 0.0, 1.0);
+    float eased = phase * phase * (3.0 - 2.0 * phase);
+    // Keep most of the response linear so keyframed effect zoom feels flat,
+    // but temper the endpoints enough to prevent visible popping at the exact
+    // source-image anchors.
+    return mix(phase, eased, 0.28);
+}
+
 vec4 objectRecursiveZoomTileSample(vec2 uv) {
     vec2 domainUv = generatedEffectDomainUv(uv);
     float density = clamp(frame.effectParams.y, 1.0, 96.0);
@@ -688,7 +697,7 @@ vec4 objectRecursiveZoomTileSample(vec2 uv) {
     float continuousZoom = max(frame.effectParams.x, 0.0);
     float zoomPhase = fract(continuousZoom);
     float motionPhase = frame.effectParams.z * 0.012;
-    float shapedPhase = pow(zoomPhase, 0.62);
+    float shapedPhase = perceptualRecursiveTileZoomPhase(zoomPhase);
     float childScale = exp2(log2(maxRepeat) * shapedPhase);
     float parentScale = maxRepeat;
     vec2 drift = vec2(motionPhase * 0.13 * spacing,

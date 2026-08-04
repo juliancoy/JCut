@@ -4,6 +4,7 @@
 #include "audio_source_key.h"
 #include "audio_time_stretch.h"
 #include "decoder_ffmpeg_utils.h"
+#include "editor_shared_render_sync.h"
 
 #include <QDebug>
 #include <cmath>
