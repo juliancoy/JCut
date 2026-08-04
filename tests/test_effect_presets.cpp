@@ -367,10 +367,18 @@ void TestEffectPresets::textExtrudeModesSerializeAndMigrate()
     clip.titleKeyframes = {keyframe};
     clip.transcriptOverlay.textExtrudeMode = Mode::StackedCopies;
     clip.transcriptOverlay.textExtrudeDepth = 0.42;
+    clip.transcriptOverlay.subtitleEffectPreset = ClipEffectPreset::RgbSplit;
+    clip.transcriptOverlay.subtitleEffectRows = 11;
+    clip.transcriptOverlay.subtitleEffectSpeed = 2.5;
+    clip.transcriptOverlay.subtitleEffectScale = 3.25;
     const TimelineClip loaded = editor::clipFromJson(editor::clipToJson(clip));
     QCOMPARE(loaded.titleKeyframes.constFirst().textExtrudeMode, Mode::ErodedSolid);
     QCOMPARE(loaded.transcriptOverlay.textExtrudeMode, Mode::StackedCopies);
     QCOMPARE(loaded.transcriptOverlay.textExtrudeDepth, 0.42);
+    QCOMPARE(loaded.transcriptOverlay.subtitleEffectPreset, ClipEffectPreset::RgbSplit);
+    QCOMPARE(loaded.transcriptOverlay.subtitleEffectRows, 11);
+    QCOMPARE(loaded.transcriptOverlay.subtitleEffectSpeed, 2.5);
+    QCOMPARE(loaded.transcriptOverlay.subtitleEffectScale, 3.25);
 
     QJsonObject legacy = editor::clipToJson(clip);
     QJsonArray keyframes = legacy.value(QStringLiteral("titleKeyframes")).toArray();
@@ -2818,6 +2826,19 @@ void TestEffectPresets::renderedEffectClipsDoNotFadeAtSpeechFilterFrameCrossfade
     TimelineClip mediaClip;
     mediaClip.clipRole = ClipRole::Media;
     QVERIFY(clipShouldApplySpeechFilterFrameCrossfade(mediaClip));
+
+    TimelineClip transcriptHostClip = mediaClip;
+    transcriptHostClip.hasAudio = true;
+    transcriptHostClip.transcriptOverlay.enabled = true;
+    QVERIFY(!clipShouldApplySpeechFilterFrameCrossfade(transcriptHostClip));
+
+    TimelineClip subtitleClip = transcriptHostClip;
+    subtitleClip.clipRole = ClipRole::TranscriptSubtitle;
+    QVERIFY(!clipShouldApplySpeechFilterFrameCrossfade(subtitleClip));
+
+    TimelineClip textTitleClip = mediaClip;
+    textTitleClip.mediaType = ClipMediaType::Title;
+    QVERIFY(!clipShouldApplySpeechFilterFrameCrossfade(textTitleClip));
 
     TimelineClip drosteMediaClip = mediaClip;
     drosteMediaClip.effectPreset = ClipEffectPreset::Droste;

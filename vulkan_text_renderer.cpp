@@ -467,6 +467,73 @@ QColor colorWithMultipliedOpacity(QColor color, qreal opacityMultiplier)
     return color;
 }
 
+bool transcriptSubtitleEffectSupported(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::RgbSplit:
+    case ClipEffectPreset::NeonGlow:
+    case ClipEffectPreset::SobelEdges:
+    case ClipEffectPreset::HalftoneMosaic:
+    case ClipEffectPreset::GlassRefraction:
+        return true;
+    case ClipEffectPreset::None:
+    case ClipEffectPreset::NewsLogoTicker:
+    case ClipEffectPreset::PersonOrbit:
+    case ClipEffectPreset::AlternatingMotionBackground:
+    case ClipEffectPreset::FreezePattern:
+    case ClipEffectPreset::StepRepeat:
+    case ClipEffectPreset::StepRepeatFill:
+    case ClipEffectPreset::SourceMosaicGrid:
+    case ClipEffectPreset::SourceMosaicStagger:
+    case ClipEffectPreset::SourceMosaicHex:
+    case ClipEffectPreset::SourceMosaicRadial:
+    case ClipEffectPreset::SourceMosaicFlow:
+    case ClipEffectPreset::DirectionalTrimTicker:
+    case ClipEffectPreset::SourceTile:
+    case ClipEffectPreset::Vulkan3DSynth:
+    case ClipEffectPreset::DifferenceMatte:
+    case ClipEffectPreset::TemporalEcho:
+    case ClipEffectPreset::MirrorRing:
+    case ClipEffectPreset::Tessellation:
+    case ClipEffectPreset::Kaleidoscope:
+    case ClipEffectPreset::HexagonalPrism:
+    case ClipEffectPreset::Droste:
+    case ClipEffectPreset::RecursiveZoomTile:
+    case ClipEffectPreset::RecursiveZoomTunnel:
+    case ClipEffectPreset::RecursiveZoomMirrorBox:
+    case ClipEffectPreset::RecursiveZoomSpiral:
+    case ClipEffectPreset::RecursiveZoomKaleidoscope:
+    case ClipEffectPreset::RecursiveZoomRadialRepeat:
+    case ClipEffectPreset::RecursiveZoomPixelMosaic:
+    case ClipEffectPreset::PolarTunnel:
+    case ClipEffectPreset::TinyPlanet:
+    case ClipEffectPreset::InfiniteMirror:
+    case ClipEffectPreset::QuadMirror:
+    case ClipEffectPreset::SlitScan:
+    case ClipEffectPreset::DisplacementMap:
+    case ClipEffectPreset::TwirlVortex:
+    case ClipEffectPreset::RippleShockwave:
+    case ClipEffectPreset::PixelSorting:
+    case ClipEffectPreset::DatamoshGlitch:
+    case ClipEffectPreset::SpeakerMaskDilation:
+    case ClipEffectPreset::SpeakerMaskDilationPulse:
+    case ClipEffectPreset::SpeakerMaskDilationRings:
+    case ClipEffectPreset::DirectionalFrameEcho:
+        return false;
+    }
+    return false;
+}
+
+QColor colorWithRgb(qreal red, qreal green, qreal blue, qreal alpha)
+{
+    QColor color;
+    color.setRgbF(qBound<qreal>(0.0, red, 1.0),
+                  qBound<qreal>(0.0, green, 1.0),
+                  qBound<qreal>(0.0, blue, 1.0),
+                  qBound<qreal>(0.0, alpha, 1.0));
+    return color;
+}
+
 int materialStyleId(TitleMaterialStyle style)
 {
     switch (style) {
@@ -2691,6 +2758,65 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
             const qreal offset = transcriptExtrusion.at(layerIndex);
             drawGlyph(commandBuffer, swapSize,
                       mapRect(glyph.rect.translated(offset, offset * 0.58)), uv, side);
+        }
+    }
+
+    const ClipEffectPreset subtitleEffect =
+        transcriptSubtitleEffectSupported(textSettings.subtitleEffectPreset)
+            ? textSettings.subtitleEffectPreset
+            : ClipEffectPreset::None;
+    const qreal effectScale = qBound<qreal>(0.0, textSettings.subtitleEffectScale, 16.0);
+    const qreal effectSpeed = qBound<qreal>(-32.0, textSettings.subtitleEffectSpeed, 32.0);
+    const int effectRows = qBound(1, textSettings.subtitleEffectRows, 128);
+    if (subtitleEffect == ClipEffectPreset::NeonGlow) {
+        const int glowPasses = qBound(4, effectRows, 18);
+        const qreal radiusStep = qMax<qreal>(0.8, effectScale * 0.9);
+        for (int pass = glowPasses; pass >= 1; --pass) {
+            const qreal angle = (pass % 6) * M_PI / 3.0;
+            const QPointF offset(std::cos(angle) * radiusStep * pass,
+                                 std::sin(angle) * radiusStep * pass);
+            const qreal alpha = overlayOpacity * qBound<qreal>(0.04, 0.34 / pass, 0.34);
+            const QColor glow = colorWithRgb(0.10, 0.95, 1.00, alpha);
+            for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
+                drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(offset)), glyph.uv, glow);
+            }
+        }
+    } else if (subtitleEffect == ClipEffectPreset::RgbSplit) {
+        const qreal offset = qMax<qreal>(0.75, effectScale * 2.2 + std::abs(effectSpeed) * 0.35);
+        const QColor red = colorWithRgb(1.0, 0.05, 0.02, overlayOpacity * 0.55);
+        const QColor cyan = colorWithRgb(0.0, 0.90, 1.0, overlayOpacity * 0.55);
+        for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
+            drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(-offset, 0.0)), glyph.uv, red);
+            drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(offset, 0.0)), glyph.uv, cyan);
+        }
+    } else if (subtitleEffect == ClipEffectPreset::SobelEdges) {
+        const qreal radius = qMax<qreal>(1.0, effectScale * 1.35);
+        const QColor edge = colorWithRgb(0.0, 0.0, 0.0, overlayOpacity * 0.72);
+        const QVector<QPointF> offsets{
+            {-radius, 0.0}, {radius, 0.0}, {0.0, -radius}, {0.0, radius},
+            {-radius, -radius}, {radius, -radius}, {-radius, radius}, {radius, radius}};
+        for (const QPointF& offset : offsets) {
+            for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
+                drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(offset)), glyph.uv, edge);
+            }
+        }
+    } else if (subtitleEffect == ClipEffectPreset::HalftoneMosaic) {
+        const qreal offset = qMax<qreal>(1.0, 0.45 * effectRows);
+        const QColor dotShadow = colorWithRgb(1.0, 1.0, 1.0, overlayOpacity * qBound<qreal>(0.12, effectScale * 0.12, 0.45));
+        for (int i = 0; i < cachedLayout->glyphs.size(); ++i) {
+            const LaidOutGlyph& glyph = cachedLayout->glyphs.at(i);
+            const QPointF step((i % 2 == 0 ? -offset : offset), (i % 3 - 1) * offset * 0.45);
+            drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(step)), glyph.uv, dotShadow);
+        }
+    } else if (subtitleEffect == ClipEffectPreset::GlassRefraction) {
+        const qreal offset = qMax<qreal>(0.75, effectScale * 1.8);
+        const QColor refractA = colorWithRgb(0.85, 0.95, 1.0, overlayOpacity * 0.30);
+        const QColor refractB = colorWithRgb(1.0, 0.85, 0.95, overlayOpacity * 0.22);
+        for (int i = 0; i < cachedLayout->glyphs.size(); ++i) {
+            const LaidOutGlyph& glyph = cachedLayout->glyphs.at(i);
+            const qreal wobble = std::sin((i + 1) * 0.73 + effectSpeed) * offset;
+            drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(wobble, -offset * 0.45)), glyph.uv, refractA);
+            drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect.translated(-wobble * 0.6, offset * 0.35)), glyph.uv, refractB);
         }
     }
     for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {

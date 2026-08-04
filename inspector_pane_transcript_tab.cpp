@@ -2,6 +2,7 @@
 #include "inspector_pane_tab_helpers.h"
 #include "audio_engine.h"
 #include "editor_shared_core.h"
+#include "editor_timeline_types.h"
 #include "playback_timing_context.h"
 
 #include <QCheckBox>
@@ -164,6 +165,35 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptTextExtrudeBevelSpin = new QDoubleSpinBox(settingsContainer);
     m_transcriptTextExtrudeBevelSpin->setRange(0.0, 2.0);
     m_transcriptTextExtrudeBevelSpin->setValue(0.7);
+    m_transcriptSubtitleEffectPresetCombo = new QComboBox(settingsContainer);
+    m_transcriptSubtitleEffectPresetCombo->addItem(QStringLiteral("Off"), static_cast<int>(ClipEffectPreset::None));
+    m_transcriptSubtitleEffectPresetCombo->addItem(
+        QStringLiteral("RGB split / chromatic aberration"), static_cast<int>(ClipEffectPreset::RgbSplit));
+    m_transcriptSubtitleEffectPresetCombo->addItem(QStringLiteral("Neon glow"), static_cast<int>(ClipEffectPreset::NeonGlow));
+    m_transcriptSubtitleEffectPresetCombo->addItem(QStringLiteral("Sobel edge filter"), static_cast<int>(ClipEffectPreset::SobelEdges));
+    m_transcriptSubtitleEffectPresetCombo->addItem(QStringLiteral("Halftone mosaic"), static_cast<int>(ClipEffectPreset::HalftoneMosaic));
+    m_transcriptSubtitleEffectPresetCombo->addItem(QStringLiteral("Glass / refraction"), static_cast<int>(ClipEffectPreset::GlassRefraction));
+    m_transcriptSubtitleEffectPresetCombo->setToolTip(QStringLiteral(
+        "Rendering effect applied to generated transcript subtitle text. These settings live on the transcript source and regenerate onto the immutable subtitle child."));
+    m_transcriptSubtitleEffectRowsSpin = new QSpinBox(settingsContainer);
+    m_transcriptSubtitleEffectRowsSpin->setRange(1, 128);
+    m_transcriptSubtitleEffectRowsSpin->setValue(6);
+    m_transcriptSubtitleEffectRowsSpin->setToolTip(QStringLiteral(
+        "Effect density or pass count for subtitle rendering effects."));
+    m_transcriptSubtitleEffectSpeedSpin = new QDoubleSpinBox(settingsContainer);
+    m_transcriptSubtitleEffectSpeedSpin->setRange(-32.0, 32.0);
+    m_transcriptSubtitleEffectSpeedSpin->setDecimals(2);
+    m_transcriptSubtitleEffectSpeedSpin->setSingleStep(0.05);
+    m_transcriptSubtitleEffectSpeedSpin->setValue(1.0);
+    m_transcriptSubtitleEffectSpeedSpin->setToolTip(QStringLiteral(
+        "Effect offset or motion strength used by subtitle rendering effects."));
+    m_transcriptSubtitleEffectScaleSpin = new QDoubleSpinBox(settingsContainer);
+    m_transcriptSubtitleEffectScaleSpin->setRange(0.0, 16.0);
+    m_transcriptSubtitleEffectScaleSpin->setDecimals(2);
+    m_transcriptSubtitleEffectScaleSpin->setSingleStep(0.05);
+    m_transcriptSubtitleEffectScaleSpin->setValue(1.0);
+    m_transcriptSubtitleEffectScaleSpin->setToolTip(QStringLiteral(
+        "Effect intensity for subtitle rendering effects."));
     m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Inline Speaker Label"), settingsContainer);
     m_transcriptShowSpeakerTitleCheckBox->setToolTip(
         QStringLiteral("Show a static speaker label inside the transcript caption. Animated speaker introductions are configured below."));
@@ -424,6 +454,21 @@ QWidget *InspectorPane::buildTranscriptTab()
     backgroundForm->addRow(QStringLiteral("Extrude Depth"), m_transcriptTextExtrudeDepthSpin);
     backgroundForm->addRow(QStringLiteral("Extrude Bevel"), m_transcriptTextExtrudeBevelSpin);
     backgroundSection.body->addLayout(backgroundForm);
+
+    auto subtitleEffectsSection = createDisclosureSection(
+        settingsContainer, QStringLiteral("Subtitle Rendering Effects"), false);
+    auto* subtitleEffectsHelp = new QLabel(
+        QStringLiteral("Applies text-safe rendering effects to generated transcript subtitles using the shared effect preset fields. Edit the transcript source; the generated subtitle child remains locked."),
+        subtitleEffectsSection.container);
+    subtitleEffectsHelp->setWordWrap(true);
+    subtitleEffectsHelp->setStyleSheet(QStringLiteral("color: #9aabc0; font-size: 11px;"));
+    subtitleEffectsSection.body->addWidget(subtitleEffectsHelp);
+    auto* subtitleEffectsForm = makeSettingsForm();
+    subtitleEffectsForm->addRow(QStringLiteral("Effect"), m_transcriptSubtitleEffectPresetCombo);
+    subtitleEffectsForm->addRow(QStringLiteral("Density"), m_transcriptSubtitleEffectRowsSpin);
+    subtitleEffectsForm->addRow(QStringLiteral("Offset / Speed"), m_transcriptSubtitleEffectSpeedSpin);
+    subtitleEffectsForm->addRow(QStringLiteral("Intensity"), m_transcriptSubtitleEffectScaleSpin);
+    subtitleEffectsSection.body->addLayout(subtitleEffectsForm);
 
     auto contentSection = createDisclosureSection(settingsContainer, QStringLiteral("Transcript Behavior"), false);
     auto* contentForm = makeSettingsForm();

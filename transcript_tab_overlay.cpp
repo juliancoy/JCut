@@ -76,6 +76,23 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
             ? m_widgets.transcriptTextExtrudeDepthSpin->value() : 0.16;
         clip.transcriptOverlay.textExtrudeBevelScale = m_widgets.transcriptTextExtrudeBevelSpin
             ? m_widgets.transcriptTextExtrudeBevelSpin->value() : 0.7;
+        if (m_widgets.transcriptSubtitleEffectPresetCombo) {
+            const QVariant presetData = m_widgets.transcriptSubtitleEffectPresetCombo->currentData();
+            clip.transcriptOverlay.subtitleEffectPreset = static_cast<ClipEffectPreset>(
+                presetData.isValid() ? presetData.toInt() : static_cast<int>(ClipEffectPreset::None));
+        }
+        if (m_widgets.transcriptSubtitleEffectRowsSpin) {
+            clip.transcriptOverlay.subtitleEffectRows =
+                qBound(1, m_widgets.transcriptSubtitleEffectRowsSpin->value(), 128);
+        }
+        if (m_widgets.transcriptSubtitleEffectSpeedSpin) {
+            clip.transcriptOverlay.subtitleEffectSpeed = qBound<qreal>(
+                -32.0, m_widgets.transcriptSubtitleEffectSpeedSpin->value(), 32.0);
+        }
+        if (m_widgets.transcriptSubtitleEffectScaleSpin) {
+            clip.transcriptOverlay.subtitleEffectScale = qBound<qreal>(
+                0.0, m_widgets.transcriptSubtitleEffectScaleSpin->value(), 16.0);
+        }
         clip.transcriptOverlay.showSpeakerTitle = m_widgets.transcriptShowSpeakerTitleCheckBox &&
                                                   m_widgets.transcriptShowSpeakerTitleCheckBox->isChecked();
         clip.transcriptOverlay.highlightCurrentWord =
@@ -292,6 +309,10 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     QSignalBlocker fontSizeBlock(m_widgets.transcriptFontSizeSpin);
     QSignalBlocker boldBlock(m_widgets.transcriptBoldCheckBox);
     QSignalBlocker italicBlock(m_widgets.transcriptItalicCheckBox);
+    QSignalBlocker subtitleEffectPresetBlock(m_widgets.transcriptSubtitleEffectPresetCombo);
+    QSignalBlocker subtitleEffectRowsBlock(m_widgets.transcriptSubtitleEffectRowsSpin);
+    QSignalBlocker subtitleEffectSpeedBlock(m_widgets.transcriptSubtitleEffectSpeedSpin);
+    QSignalBlocker subtitleEffectScaleBlock(m_widgets.transcriptSubtitleEffectScaleSpin);
 
     m_widgets.transcriptOverlayEnabledCheckBox->setChecked(clip.transcriptOverlay.enabled);
     if (m_widgets.transcriptPlacementModeCombo) {
@@ -364,6 +385,23 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     }
     if (m_widgets.transcriptTextExtrudeBevelSpin) {
         m_widgets.transcriptTextExtrudeBevelSpin->setValue(clip.transcriptOverlay.textExtrudeBevelScale);
+    }
+    if (m_widgets.transcriptSubtitleEffectPresetCombo) {
+        const ClipEffectPreset preset = clip.transcriptOverlay.subtitleEffectPreset;
+        const int index = m_widgets.transcriptSubtitleEffectPresetCombo->findData(static_cast<int>(preset));
+        m_widgets.transcriptSubtitleEffectPresetCombo->setCurrentIndex(qMax(0, index));
+    }
+    if (m_widgets.transcriptSubtitleEffectRowsSpin) {
+        m_widgets.transcriptSubtitleEffectRowsSpin->setValue(
+            qBound(1, clip.transcriptOverlay.subtitleEffectRows, 128));
+    }
+    if (m_widgets.transcriptSubtitleEffectSpeedSpin) {
+        m_widgets.transcriptSubtitleEffectSpeedSpin->setValue(
+            qBound<qreal>(-32.0, clip.transcriptOverlay.subtitleEffectSpeed, 32.0));
+    }
+    if (m_widgets.transcriptSubtitleEffectScaleSpin) {
+        m_widgets.transcriptSubtitleEffectScaleSpin->setValue(
+            qBound<qreal>(0.0, clip.transcriptOverlay.subtitleEffectScale, 16.0));
     }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         m_widgets.transcriptShowSpeakerTitleCheckBox->setChecked(clip.transcriptOverlay.showSpeakerTitle);

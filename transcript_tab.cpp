@@ -824,6 +824,23 @@ void TranscriptTab::wire()
                     this, &TranscriptTab::onOverlaySettingChanged);
         }
     }
+    if (m_widgets.transcriptSubtitleEffectPresetCombo) {
+        connect(m_widgets.transcriptSubtitleEffectPresetCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptSubtitleEffectRowsSpin) {
+        connect(m_widgets.transcriptSubtitleEffectRowsSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    for (QDoubleSpinBox* spin : {m_widgets.transcriptSubtitleEffectSpeedSpin,
+                                 m_widgets.transcriptSubtitleEffectScaleSpin}) {
+        if (spin) {
+            connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                    this, &TranscriptTab::onOverlaySettingChanged);
+        }
+    }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         connect(m_widgets.transcriptShowSpeakerTitleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);

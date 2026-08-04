@@ -288,6 +288,10 @@ struct TimelineClip {
             TitleKeyframe::TextExtrudeMode::None;
         qreal textExtrudeDepth = 0.16;
         qreal textExtrudeBevelScale = 0.7;
+        ClipEffectPreset subtitleEffectPreset = ClipEffectPreset::None;
+        int subtitleEffectRows = 6;
+        qreal subtitleEffectSpeed = 1.0;
+        qreal subtitleEffectScale = 1.0;
         bool showSpeakerTitle = false;
         bool highlightCurrentWord = true;
         bool autoScroll = false;
@@ -331,6 +335,9 @@ struct TimelineClip {
             textOutlineOpacity = qBound<qreal>(0.0, textOutlineOpacity, 1.0);
             textExtrudeDepth = qBound<qreal>(0.0, textExtrudeDepth, 2.0);
             textExtrudeBevelScale = qBound<qreal>(0.0, textExtrudeBevelScale, 2.0);
+            subtitleEffectRows = qBound(1, subtitleEffectRows, 128);
+            subtitleEffectSpeed = qBound<qreal>(-32.0, subtitleEffectSpeed, 32.0);
+            subtitleEffectScale = qBound<qreal>(0.0, subtitleEffectScale, 16.0);
         }
     };
 

@@ -1411,6 +1411,10 @@ void EditorWindow::createTranscriptTab()
     transcriptWidgets.transcriptTextExtrudeModeCombo = m_inspectorPane->transcriptTextExtrudeModeCombo();
     transcriptWidgets.transcriptTextExtrudeDepthSpin = m_inspectorPane->transcriptTextExtrudeDepthSpin();
     transcriptWidgets.transcriptTextExtrudeBevelSpin = m_inspectorPane->transcriptTextExtrudeBevelSpin();
+    transcriptWidgets.transcriptSubtitleEffectPresetCombo = m_inspectorPane->transcriptSubtitleEffectPresetCombo();
+    transcriptWidgets.transcriptSubtitleEffectRowsSpin = m_inspectorPane->transcriptSubtitleEffectRowsSpin();
+    transcriptWidgets.transcriptSubtitleEffectSpeedSpin = m_inspectorPane->transcriptSubtitleEffectSpeedSpin();
+    transcriptWidgets.transcriptSubtitleEffectScaleSpin = m_inspectorPane->transcriptSubtitleEffectScaleSpin();
     transcriptWidgets.transcriptShowSpeakerTitleCheckBox = m_inspectorPane->transcriptShowSpeakerTitleCheckBox();
     transcriptWidgets.transcriptHighlightCurrentWordCheckBox = m_inspectorPane->transcriptHighlightCurrentWordCheckBox();
     transcriptWidgets.transcriptMaxLinesSpin = m_transcriptMaxLinesSpin;

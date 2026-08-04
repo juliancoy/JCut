@@ -9,6 +9,8 @@
 #include <QDir>
 #include <QTemporaryDir>
 
+#include <cmath>
+
 #include "../editor_shared.h"
 #include "../render_internal.h"
 #include "mask_sidecar_test_utils.h"
@@ -220,6 +222,30 @@ double subtitleRegionAverageAlpha(const QImage& frame)
     return samples > 0 ? total / static_cast<double>(samples) : 0.0;
 }
 
+double subtitleRegionAverageColorDistance(const QImage& a, const QImage& b)
+{
+    if (a.size() != b.size()) {
+        return 1.0;
+    }
+    const QRect roi(a.width() * 0.08,
+                    a.height() * 0.22,
+                    a.width() * 0.84,
+                    a.height() * 0.56);
+    double total = 0.0;
+    int samples = 0;
+    for (int y = qMax(0, roi.top()); y < qMin(a.height(), roi.bottom()); ++y) {
+        for (int x = qMax(0, roi.left()); x < qMin(a.width(), roi.right()); ++x) {
+            const QColor ca = a.pixelColor(x, y);
+            const QColor cb = b.pixelColor(x, y);
+            total += std::abs(ca.redF() - cb.redF());
+            total += std::abs(ca.greenF() - cb.greenF());
+            total += std::abs(ca.blueF() - cb.blueF());
+            ++samples;
+        }
+    }
+    return samples > 0 ? total / static_cast<double>(samples) : 0.0;
+}
+
 } // namespace
 
 class TestVulkanSubtitleRender : public QObject {
@@ -230,6 +256,7 @@ private slots:
     void cleanup() { clearAllActiveTranscriptPaths(); }
     void testOffscreenVulkanSubtitleTextPixels_data();
     void testOffscreenVulkanSubtitleTextPixels();
+    void testOffscreenVulkanSubtitleRenderingEffectChangesPixels();
     void testMasterOutputSubtitleOffsetIsIndependentAndSigned();
     void testMasterOutputSubtitleOffsetRetimesFinalVulkanText();
     void testOffscreenVulkanTranscriptOpacityFadePixels();
@@ -408,6 +435,75 @@ void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels()
             QStringLiteral("vulkan_subtitle_raw_bgra_%1.png").arg(artifactSuffix));
     QVERIFY2(rawImage.copy().save(rawArtifactPath),
              qPrintable(QStringLiteral("Failed to save %1").arg(rawArtifactPath)));
+}
+
+void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleRenderingEffectChangesPixels()
+{
+    const QSize outputSize(720, 720);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString clipPath = dir.filePath(QStringLiteral("clip.mp4"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+    const QString transcriptPath = dir.filePath(QStringLiteral("clip_editable.json"));
+    QVERIFY(writeTranscript(transcriptPath));
+    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
+
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+
+    auto renderClip = [&](const TimelineClip& clip) {
+        RenderRequest request;
+        request.masterOutputSubtitleOffsetMs = 0;
+        request.outputPath = QStringLiteral("test://vulkan-subtitle-effect");
+        request.outputFormat = QStringLiteral("preview");
+        request.outputSize = outputSize;
+        request.correctionsEnabled = true;
+        request.clips = QVector<TimelineClip>{clip};
+        request.exportStartFrame = 15;
+        request.exportEndFrame = 15;
+
+        QVector<TimelineClip> orderedClips = request.clips;
+        QHash<QString, editor::DecoderContext*> decoders;
+        render_detail::RenderPreparedFrameQueue asyncCache;
+        qint64 decodeMs = 0;
+        qint64 textureMs = 0;
+        qint64 compositeMs = 0;
+        qint64 readbackMs = 0;
+        return renderer.renderFrame(request,
+                                    15,
+                                    decoders,
+                                    nullptr,
+                                    &asyncCache,
+                                    orderedClips,
+                                    nullptr,
+                                    &decodeMs,
+                                    &textureMs,
+                                    &compositeMs,
+                                    &readbackMs,
+                                    nullptr,
+                                    nullptr);
+    };
+
+    TimelineClip base = makeTranscriptClip(clipPath, outputSize);
+    base.effectPreset = ClipEffectPreset::None;
+    base.effectEnabled = false;
+    TimelineClip effected = base;
+    effected.transcriptOverlay.subtitleEffectPreset = ClipEffectPreset::RgbSplit;
+    effected.transcriptOverlay.subtitleEffectRows = 10;
+    effected.transcriptOverlay.subtitleEffectSpeed = 3.0;
+    effected.transcriptOverlay.subtitleEffectScale = 3.0;
+
+    const QImage baseFrame = renderClip(base);
+    const QImage effectFrame = renderClip(effected);
+    QVERIFY2(!baseFrame.isNull(), "Base subtitle frame did not render");
+    QVERIFY2(!effectFrame.isNull(), "Effected subtitle frame did not render");
+    QVERIFY2(countSubtitlePixels(baseFrame).brightText > 0, "Base subtitles must be visible before comparing effects");
+    QVERIFY2(countSubtitlePixels(effectFrame).brightText > 0, "Effected subtitles must retain visible text");
+    QVERIFY2(subtitleRegionAverageColorDistance(baseFrame, effectFrame) > 0.0005,
+             "Subtitle rendering effect should visibly change pixels in the subtitle region");
 }
 
 void TestVulkanSubtitleRender::testOffscreenVulkanTranscriptOpacityFadePixels()

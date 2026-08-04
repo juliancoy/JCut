@@ -63,6 +63,10 @@ public:
         QComboBox* transcriptTextExtrudeModeCombo = nullptr;
         QDoubleSpinBox* transcriptTextExtrudeDepthSpin = nullptr;
         QDoubleSpinBox* transcriptTextExtrudeBevelSpin = nullptr;
+        QComboBox* transcriptSubtitleEffectPresetCombo = nullptr;
+        QSpinBox* transcriptSubtitleEffectRowsSpin = nullptr;
+        QDoubleSpinBox* transcriptSubtitleEffectSpeedSpin = nullptr;
+        QDoubleSpinBox* transcriptSubtitleEffectScaleSpin = nullptr;
         QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
         QCheckBox* transcriptHighlightCurrentWordCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;

@@ -113,6 +113,10 @@ public:
     QComboBox *transcriptTextExtrudeModeCombo() const { return m_transcriptTextExtrudeModeCombo; }
     QDoubleSpinBox *transcriptTextExtrudeDepthSpin() const { return m_transcriptTextExtrudeDepthSpin; }
     QDoubleSpinBox *transcriptTextExtrudeBevelSpin() const { return m_transcriptTextExtrudeBevelSpin; }
+    QComboBox *transcriptSubtitleEffectPresetCombo() const { return m_transcriptSubtitleEffectPresetCombo; }
+    QSpinBox *transcriptSubtitleEffectRowsSpin() const { return m_transcriptSubtitleEffectRowsSpin; }
+    QDoubleSpinBox *transcriptSubtitleEffectSpeedSpin() const { return m_transcriptSubtitleEffectSpeedSpin; }
+    QDoubleSpinBox *transcriptSubtitleEffectScaleSpin() const { return m_transcriptSubtitleEffectScaleSpin; }
     QCheckBox *transcriptShowSpeakerTitleCheckBox() const { return m_transcriptShowSpeakerTitleCheckBox; }
     QCheckBox *transcriptHighlightCurrentWordCheckBox() const { return m_transcriptHighlightCurrentWordCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
@@ -975,6 +979,10 @@ private:
     QComboBox *m_transcriptTextExtrudeModeCombo = nullptr;
     QDoubleSpinBox *m_transcriptTextExtrudeDepthSpin = nullptr;
     QDoubleSpinBox *m_transcriptTextExtrudeBevelSpin = nullptr;
+    QComboBox *m_transcriptSubtitleEffectPresetCombo = nullptr;
+    QSpinBox *m_transcriptSubtitleEffectRowsSpin = nullptr;
+    QDoubleSpinBox *m_transcriptSubtitleEffectSpeedSpin = nullptr;
+    QDoubleSpinBox *m_transcriptSubtitleEffectScaleSpin = nullptr;
     QCheckBox *m_transcriptShowSpeakerTitleCheckBox = nullptr;
     QCheckBox *m_transcriptHighlightCurrentWordCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;

@@ -68,6 +68,11 @@ bool effectPresetSupportedForClipRole(ClipEffectPreset preset, ClipRole role)
 
 bool clipShouldApplySpeechFilterFrameCrossfade(const TimelineClip& clip)
 {
+    if (clip.clipRole == ClipRole::TranscriptSubtitle ||
+        clip.mediaType == ClipMediaType::Title ||
+        clip.transcriptOverlay.enabled) {
+        return false;
+    }
     // Active GPU effects may use speech-filter-aware clocks for motion
     // continuity, but their rendered output must not fade out/in with the
     // transcript filter's frame transition. Otherwise persistent effect layers

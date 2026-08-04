@@ -3,7 +3,7 @@
 QString transcriptOverlayStyleCacheMaterial(const TimelineClip& clip)
 {
     const auto& overlay = clip.transcriptOverlay;
-    return QStringLiteral("transcript-style-v4|") +
+    return QStringLiteral("transcript-style-v5|") +
         QString::number(overlay.showBackground ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.backgroundOpacity, 'f', 4) + QLatin1Char('|') +
         QString::number(overlay.backgroundCornerRadius, 'f', 2) + QLatin1Char('|') +
@@ -25,6 +25,10 @@ QString transcriptOverlayStyleCacheMaterial(const TimelineClip& clip)
         QString::number(static_cast<int>(overlay.textExtrudeMode)) + QLatin1Char('|') +
         QString::number(overlay.textExtrudeDepth, 'f', 3) + QLatin1Char('|') +
         QString::number(overlay.textExtrudeBevelScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(static_cast<int>(overlay.subtitleEffectPreset)) + QLatin1Char('|') +
+        QString::number(overlay.subtitleEffectRows) + QLatin1Char('|') +
+        QString::number(overlay.subtitleEffectSpeed, 'f', 3) + QLatin1Char('|') +
+        QString::number(overlay.subtitleEffectScale, 'f', 3) + QLatin1Char('|') +
         QString::number(overlay.showSpeakerTitle ? 1 : 0) + QLatin1Char('|') +
         QString::number(overlay.highlightCurrentWord ? 1 : 0) + QLatin1Char('|') +
         overlay.fontFamily + QLatin1Char('|') +

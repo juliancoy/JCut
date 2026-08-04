@@ -195,6 +195,7 @@ private slots:
     void testTranscriptTableUsesStableRowGeometryForMouseActivation();
     void testContextMenuSkipPreservesExistingMultiSelection();
     void testOverlayTransformEditsUpdatePreviewImmediately();
+    void testSubtitleRenderingEffectControlsUpdateTranscriptOwner();
     void testDeleteCurrentTranscriptionRemovesSelectedVersion();
     void testSpeechFilterRootCheckboxControlsEnabledState();
 };
@@ -1192,6 +1193,85 @@ void TestTranscriptTabFollow::testOverlayTransformEditsUpdatePreviewImmediately(
     overlayHeight.setValue(260);
     QCOMPARE(clip.transcriptOverlay.boxHeight, 260.0);
     QVERIFY(clip.transcriptOverlay.useManualPlacement);
+    QCOMPARE(previewUpdateCount, 4);
+}
+
+void TestTranscriptTabFollow::testSubtitleRenderingEffectControlsUpdateTranscriptOwner()
+{
+    TimelineClip clip = makeAudioClip(QStringLiteral("clip-subtitle-effects"), QStringLiteral("/tmp/subtitle-effects.wav"));
+    clip.transcriptOverlay.enabled = true;
+    clip.effectPreset = ClipEffectPreset::None;
+    clip.effectEnabled = false;
+    clip.transcriptOverlay.subtitleEffectPreset = ClipEffectPreset::None;
+    clip.transcriptOverlay.subtitleEffectRows = 4;
+    clip.transcriptOverlay.subtitleEffectSpeed = 1.0;
+    clip.transcriptOverlay.subtitleEffectScale = 1.0;
+
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    QComboBox effectPreset;
+    effectPreset.addItem(QStringLiteral("Off"), static_cast<int>(ClipEffectPreset::None));
+    effectPreset.addItem(QStringLiteral("RGB split / chromatic aberration"), static_cast<int>(ClipEffectPreset::RgbSplit));
+    effectPreset.addItem(QStringLiteral("Neon glow"), static_cast<int>(ClipEffectPreset::NeonGlow));
+    QSpinBox effectRows;
+    effectRows.setRange(1, 128);
+    effectRows.setValue(4);
+    QDoubleSpinBox effectSpeed;
+    effectSpeed.setRange(-32.0, 32.0);
+    effectSpeed.setValue(1.0);
+    QDoubleSpinBox effectScale;
+    effectScale.setRange(0.0, 16.0);
+    effectScale.setValue(1.0);
+
+    int previewUpdateCount = 0;
+    int saveCount = 0;
+    int historyCount = 0;
+
+    TranscriptTab::Widgets widgets{};
+    widgets.transcriptInspectorClipLabel = &clipLabel;
+    widgets.transcriptInspectorDetailsLabel = &detailsLabel;
+    widgets.transcriptTable = &table;
+    widgets.transcriptSubtitleEffectPresetCombo = &effectPreset;
+    widgets.transcriptSubtitleEffectRowsSpin = &effectRows;
+    widgets.transcriptSubtitleEffectSpeedSpin = &effectSpeed;
+    widgets.transcriptSubtitleEffectScaleSpin = &effectScale;
+
+    TranscriptTab tab(
+        widgets,
+        TranscriptTab::Dependencies{
+            [&clip]() -> const TimelineClip* { return &clip; },
+            [&clip](const QString& id, const std::function<void(TimelineClip&)>& updater) {
+                if (id != clip.id) {
+                    return false;
+                }
+                updater(clip);
+                return true;
+            },
+            [&saveCount]() { ++saveCount; },
+            [&historyCount]() { ++historyCount; },
+            []() {},
+            [&previewUpdateCount]() { ++previewUpdateCount; },
+            {},
+            {}});
+    tab.wire();
+
+    effectPreset.setCurrentIndex(1);
+    QCOMPARE(clip.transcriptOverlay.subtitleEffectPreset, ClipEffectPreset::RgbSplit);
+    QCOMPARE(clip.effectPreset, ClipEffectPreset::None);
+    QVERIFY(!clip.effectEnabled);
+    QCOMPARE(previewUpdateCount, 1);
+    QCOMPARE(saveCount, 1);
+    QCOMPARE(historyCount, 1);
+
+    effectRows.setValue(12);
+    QCOMPARE(clip.transcriptOverlay.subtitleEffectRows, 12);
+    QCOMPARE(previewUpdateCount, 2);
+
+    effectSpeed.setValue(2.5);
+    QCOMPARE(clip.transcriptOverlay.subtitleEffectSpeed, 2.5);
+    effectScale.setValue(3.25);
+    QCOMPARE(clip.transcriptOverlay.subtitleEffectScale, 3.25);
     QCOMPARE(previewUpdateCount, 4);
 }
 

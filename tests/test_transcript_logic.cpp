@@ -1678,6 +1678,14 @@ void TestTranscriptLogic::testTranscriptOverlayStyleCacheMaterialIncludesTransfo
     extruded.transcriptOverlay.textExtrudeDepth = 0.42;
     QVERIFY2(transcriptOverlayStyleCacheMaterial(extruded) != baseMaterial,
              "Transcript overlay cache material must change when extrusion styling changes.");
+
+    TimelineClip subtitleEffected = clip;
+    subtitleEffected.transcriptOverlay.subtitleEffectPreset = ClipEffectPreset::RgbSplit;
+    subtitleEffected.transcriptOverlay.subtitleEffectRows = 12;
+    subtitleEffected.transcriptOverlay.subtitleEffectSpeed = 2.5;
+    subtitleEffected.transcriptOverlay.subtitleEffectScale = 3.25;
+    QVERIFY2(transcriptOverlayStyleCacheMaterial(subtitleEffected) != baseMaterial,
+             "Transcript overlay cache material must change when subtitle rendering effects change.");
 }
 
 void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry() {

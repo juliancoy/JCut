@@ -866,6 +866,14 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("textExtrudeDepth")] = clip.transcriptOverlay.textExtrudeDepth;
         transcriptOverlayObj[QStringLiteral("textExtrudeBevelScale")] =
             clip.transcriptOverlay.textExtrudeBevelScale;
+        transcriptOverlayObj[QStringLiteral("subtitleEffectPreset")] =
+            effectPresetToJson(clip.transcriptOverlay.subtitleEffectPreset);
+        transcriptOverlayObj[QStringLiteral("subtitleEffectRows")] =
+            clip.transcriptOverlay.subtitleEffectRows;
+        transcriptOverlayObj[QStringLiteral("subtitleEffectSpeed")] =
+            clip.transcriptOverlay.subtitleEffectSpeed;
+        transcriptOverlayObj[QStringLiteral("subtitleEffectScale")] =
+            clip.transcriptOverlay.subtitleEffectScale;
         transcriptOverlayObj[QStringLiteral("showSpeakerTitle")] = clip.transcriptOverlay.showSpeakerTitle;
         transcriptOverlayObj[QStringLiteral("highlightCurrentWord")] = clip.transcriptOverlay.highlightCurrentWord;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
@@ -1446,6 +1454,14 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             0.0, transcriptOverlayObj.value(QStringLiteral("textExtrudeDepth")).toDouble(0.16), 2.0);
         clip.transcriptOverlay.textExtrudeBevelScale = qBound<qreal>(
             0.0, transcriptOverlayObj.value(QStringLiteral("textExtrudeBevelScale")).toDouble(0.7), 2.0);
+        clip.transcriptOverlay.subtitleEffectPreset = effectPresetFromJson(
+            transcriptOverlayObj.value(QStringLiteral("subtitleEffectPreset")).toString(QStringLiteral("none")));
+        clip.transcriptOverlay.subtitleEffectRows =
+            qBound(1, transcriptOverlayObj.value(QStringLiteral("subtitleEffectRows")).toInt(6), 128);
+        clip.transcriptOverlay.subtitleEffectSpeed = qBound<qreal>(
+            -32.0, transcriptOverlayObj.value(QStringLiteral("subtitleEffectSpeed")).toDouble(1.0), 32.0);
+        clip.transcriptOverlay.subtitleEffectScale = qBound<qreal>(
+            0.0, transcriptOverlayObj.value(QStringLiteral("subtitleEffectScale")).toDouble(1.0), 16.0);
         clip.transcriptOverlay.showSpeakerTitle =
             transcriptOverlayObj.value(QStringLiteral("showSpeakerTitle")).toBool(false);
         clip.transcriptOverlay.highlightCurrentWord =
