@@ -3015,7 +3015,7 @@ void TestEditorRuntime::testScaleToFillHelperReusesUndoableTransformCommand()
 
 void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQtBounds()
 {
-    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(41));
+    QCOMPARE(jcut::kEditorEffectPresetIds.size(), std::size_t(48));
     QFile inspector(QStringLiteral(JCUT_SOURCE_DIR "/inspector_pane_visual_tabs.cpp"));
     QVERIFY(inspector.open(QIODevice::ReadOnly));
     const QString inspectorSource = QString::fromUtf8(inspector.readAll());
@@ -3042,7 +3042,7 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
             neutralPresetIds.end());
 
     std::vector<std::string> qtPresetIds;
-    const int lastQtPreset = static_cast<int>(ClipEffectPreset::SpeakerMaskDilationRings);
+    const int lastQtPreset = static_cast<int>(ClipEffectPreset::DirectionalFrameEcho);
     qtPresetIds.reserve(static_cast<std::size_t>(lastQtPreset + 1));
     for (int value = 0; value <= lastQtPreset; ++value) {
         qtPresetIds.push_back(
@@ -3110,6 +3110,34 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QVERIFY(runtime.execute(jcut::EditorCommand{
         jcut::UpsertEffectEnabledKeyframeCommand{
             1, {48, false}}}).applied);
+    jcut::EditorEffectParameterKeyframe effectKey;
+    effectKey.frame = 24;
+    effectKey.effectPreset = "recursive_zoom_spiral";
+    effectKey.effectPresetKeyframed = true;
+    effectKey.effectRows = 17;
+    effectKey.effectSpeed = -2.5;
+    effectKey.effectScale = 3.25;
+    effectKey.effectAlternateDirection = false;
+    effectKey.differenceReferenceFrames = 9;
+    effectKey.differenceThreshold = 0.31;
+    effectKey.differenceSoftness = 0.17;
+    effectKey.temporalEchoCount = 7;
+    effectKey.temporalEchoSpacingFrames = 11;
+    effectKey.temporalEchoDecay = 0.42;
+    effectKey.tilingPattern = "spiral_xy";
+    effectKey.tilingSpacing = 2.75;
+    effectKey.tilingWrap = false;
+    effectKey.tilingUseMaskBounds = true;
+    effectKey.tilingMaskIslandSigma = 6.5;
+    effectKey.effectModulationMode = "steady_increase";
+    effectKey.effectModulationTarget = "spacing";
+    effectKey.effectModulationAmount = 4.5;
+    effectKey.effectModulationRate = 2.25;
+    effectKey.effectModulationPhaseDegrees = -135.0;
+    effectKey.effectSkipAwareTiming = true;
+    effectKey.linearInterpolation = false;
+    QVERIFY(runtime.execute(jcut::EditorCommand{
+        jcut::UpsertEffectParameterKeyframeCommand{1, effectKey}}).applied);
     jcut::SetClipMaskCommand temporalMaskCommand;
     temporalMaskCommand.clipId = 1;
     temporalMaskCommand.maskEnabled = true;
@@ -3141,6 +3169,39 @@ void TestEditorRuntime::testEffectsInspectorUsesCompleteNeutralPresetCatalogAndQ
     QCOMPARE(
         roundTripped->clips.front().effectEnabledKeyframes.size(),
         std::size_t{2});
+    QCOMPARE(roundTripped->clips.front().effectParameterKeyframes.size(),
+             std::size_t{1});
+    const jcut::EditorEffectParameterKeyframe& savedEffectKey =
+        roundTripped->clips.front().effectParameterKeyframes.front();
+    QCOMPARE(savedEffectKey.effectPreset,
+             std::string("recursive_zoom_spiral"));
+    QCOMPARE(savedEffectKey.effectPresetKeyframed, true);
+    QCOMPARE(savedEffectKey.tilingUseMaskBounds, true);
+    QCOMPARE(savedEffectKey.tilingMaskIslandSigma, 6.5);
+    QCOMPARE(savedEffectKey.effectModulationMode,
+             std::string("steady_increase"));
+    QCOMPARE(savedEffectKey.effectModulationTarget,
+             std::string("spacing"));
+    QCOMPARE(savedEffectKey.effectModulationAmount, 4.5);
+    QCOMPARE(savedEffectKey.effectModulationRate, 2.25);
+    QCOMPARE(savedEffectKey.effectModulationPhaseDegrees, -135.0);
+    QCOMPARE(savedEffectKey.effectSkipAwareTiming, true);
+    QCOMPARE(savedEffectKey.linearInterpolation, false);
+    const nlohmann::json canonicalState =
+        jcut::toLegacyStateJson(*roundTripped);
+    const nlohmann::json persistedEffectKey =
+        canonicalState.at("timeline").at(0)
+            .at("effectParameterKeyframes").at(0);
+    QCOMPARE(QString::fromStdString(
+                 persistedEffectKey.value("effectPreset", std::string{})),
+             QStringLiteral("recursive_zoom_spiral"));
+    QCOMPARE(persistedEffectKey.value("effectPresetKeyframed", false), true);
+    QCOMPARE(persistedEffectKey.value("tilingUseMaskBounds", false), true);
+    QCOMPARE(persistedEffectKey.value("tilingMaskIslandSigma", 0.0), 6.5);
+    QCOMPARE(QString::fromStdString(persistedEffectKey.value(
+                 "effectModulationMode", std::string{})),
+             QStringLiteral("steady_increase"));
+    QCOMPARE(persistedEffectKey.value("effectSkipAwareTiming", false), true);
     QCOMPARE(roundTripped->clips.front().maskTemporalStabilizeEnabled, true);
     QCOMPARE(roundTripped->clips.front().maskTemporalStabilizeStrength, 0.6);
     QCOMPARE(roundTripped->clips.front().maskTemporalStabilizeMotionRadius, 9);
@@ -5694,6 +5755,7 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     request.incrementalExport = false;
     request.incrementalChunkFrames = 1234;
     request.masterOutputAudioDelayMs = -156;
+    request.masterOutputSubtitleOffsetMs = -275;
     request.instagramSafeAreaGuides = true;
     request.alignmentGridGuides = true;
 
@@ -5704,6 +5766,7 @@ void TestEditorRuntime::testQtRenderRequestPreservesPlaybackSpeed()
     QCOMPARE(core.incrementalExport, false);
     QCOMPARE(core.incrementalChunkFrames, 1234);
     QCOMPARE(core.masterOutputAudioDelayMs, -156);
+    QCOMPARE(core.masterOutputSubtitleOffsetMs, -275);
     QCOMPARE(core.instagramSafeAreaGuides, true);
     QCOMPARE(core.alignmentGridGuides, true);
 }
@@ -5971,6 +6034,7 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     original.exportRequest.incrementalExport = true;
     original.exportRequest.incrementalChunkFrames = 1234;
     original.exportRequest.masterOutputAudioDelayMs = 156;
+    original.exportRequest.masterOutputSubtitleOffsetMs = -180;
     original.exportRequest.transcriptPrependMs = 210;
     original.exportRequest.transcriptPostpendMs = 95;
     original.exportRequest.transcriptOffsetMs = -30;
@@ -6005,6 +6069,7 @@ void TestEditorRuntime::testCoreDocumentJsonRoundTrips()
     QCOMPARE(reparsed->exportRequest.incrementalExport, true);
     QCOMPARE(reparsed->exportRequest.incrementalChunkFrames, 1234);
     QCOMPARE(reparsed->exportRequest.masterOutputAudioDelayMs, 156);
+    QCOMPARE(reparsed->exportRequest.masterOutputSubtitleOffsetMs, -180);
     QCOMPARE(reparsed->exportRequest.transcriptPrependMs, 210);
     QCOMPARE(reparsed->exportRequest.transcriptPostpendMs, 95);
     QCOMPARE(reparsed->exportRequest.transcriptOffsetMs, -30);

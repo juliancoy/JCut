@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QPainterPath>
+#include <QSet>
 #include <QtMath>
 
 #include <algorithm>
@@ -308,17 +309,27 @@ VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewInterac
         }
         return sizes;
     }();
+    QSet<QString> emittedInteractionClipIds;
 
     for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
         if (!status.active || status.drawSuppressed) {
             continue;
         }
-        const TimelineClip* clip = clipForId(state, status.clipId);
+        const QString mediaOwnerClipId = status.mediaOwnerClipId.trimmed();
+        const QString interactionClipId =
+            status.maskClipSource && !mediaOwnerClipId.isEmpty()
+                ? mediaOwnerClipId
+                : status.clipId;
+        if (interactionClipId.isEmpty() ||
+            emittedInteractionClipIds.contains(interactionClipId)) {
+            continue;
+        }
+        const TimelineClip* clip = clipForId(state, interactionClipId);
         const QRectF fitted = viewTransform.fittedClipRect(
-            sourceSizes.value(status.clipId),
+            sourceSizes.value(interactionClipId),
             status.frameSize);
         const TimelineClip::TransformKeyframe transform =
-            transformWithTransientOverride(state, status.clipId, status.transform);
+            transformWithTransientOverride(state, interactionClipId, status.transform);
         const PreviewClipGeometry geometry = PreviewViewTransform::clipGeometry(
             fitted,
             previewScale,
@@ -328,6 +339,16 @@ VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewInterac
         const QRectF overlayBounds = [&]() {
             if (!clip) {
                 return geometry.bounds;
+            }
+            if (clip->mediaType == ClipMediaType::Title &&
+                status.targetRect.isValid() && !status.targetRect.isEmpty()) {
+                const QPointF center =
+                    viewTransform.outputToScreen(status.targetRect.center());
+                return QRectF(
+                    center.x() - status.targetRect.width() * previewScale.x() * 0.5,
+                    center.y() - status.targetRect.height() * previewScale.y() * 0.5,
+                    status.targetRect.width() * previewScale.x(),
+                    status.targetRect.height() * previewScale.y());
             }
             if (clipSupportsTranscriptOverlay(*clip) && state->transcriptOverlayInteractionEnabled) {
                 const QRectF candidate = transcriptOverlayBoundsForClip(state, *clip, viewTransform);
@@ -342,7 +363,7 @@ VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewInterac
             overlayBounds != geometry.bounds &&
             (clip && clipSupportsTranscriptOverlay(*clip) && state->transcriptOverlayInteractionEnabled);
         infos.push_back(VulkanInteractionOverlayInfo{
-            status.clipId,
+            interactionClipId,
             overlayBounds,
             handles.right,
             handles.bottom,
@@ -355,6 +376,7 @@ VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewInterac
             transform,
             geometry.clipPixelSize,
             surfaceRect});
+        emittedInteractionClipIds.insert(interactionClipId);
     }
     return infos;
 }
@@ -697,19 +719,6 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
     }
     for (const TimelineClip& clip : state->clips) {
         if (clip.id == clipId) {
-            if (clip.mediaType == ClipMediaType::Title) {
-                const int64_t localFrame = qMax<int64_t>(0,
-                    static_cast<int64_t>(state->currentFramePosition) - clip.startFrame);
-                const EvaluatedTitle evaluated = evaluateTitleAtTimelinePosition(
-                    clip, state->currentFramePosition, state->playbackTiming);
-                TimelineClip::TransformKeyframe keyframe;
-                keyframe.frame = qBound<int64_t>(0, localFrame, qMax<int64_t>(0, clip.durationFrames - 1));
-                keyframe.translationX = evaluated.x;
-                keyframe.translationY = evaluated.y;
-                keyframe.scaleX = 1.0;
-                keyframe.scaleY = 1.0;
-                return transformWithTransientOverride(state, clipId, keyframe);
-            }
             if (clip.sourceTransformLocked && !clip.linkedSourceClipId.trimmed().isEmpty()) {
                 return transformWithTransientOverride(
                     state,

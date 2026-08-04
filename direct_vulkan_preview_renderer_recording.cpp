@@ -621,30 +621,36 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             stats->lastTranscriptPresentedMediaSourceFrame =
                 transcriptCollectionStats.lastPreparedPresentedMediaSourceFrame;
         }
-        QSet<QString> activeTitleClipIds;
         int titleCandidateCount = 0;
         int titlePreparedCount = 0;
         QString lastTitleSkipReason;
         QString lastTitleClipId;
+        for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
+            if (!status.active || status.drawSuppressed ||
+                status.textInputs.title3D.isEmpty()) {
+                continue;
+            }
+            ++titleCandidateCount;
+            lastTitleClipId = status.clipId;
+            prepared3DTitleOverlays.insert(
+                status.clipId, status.textInputs.title3D.constFirst());
+            ++titlePreparedCount;
+        }
         for (const TimelineClip& clip : state->clips) {
             if (clip.titleKeyframes.isEmpty()) {
+                continue;
+            }
+            if (clip.mediaType == ClipMediaType::Title) {
                 continue;
             }
             const bool inClipRange =
                 state->currentFramePosition >= static_cast<qreal>(clip.startFrame) &&
                 state->currentFramePosition < static_cast<qreal>(clip.startFrame + clip.durationFrames);
-            const bool standaloneTitle = clip.mediaType == ClipMediaType::Title;
-            if (!inClipRange ||
-                (standaloneTitle && !clipVisualPlaybackEnabled(clip, state->tracks))) {
+            if (!inClipRange) {
                 continue;
             }
             ++titleCandidateCount;
-            activeTitleClipIds.insert(clip.id);
             lastTitleClipId = clip.id;
-            if (clip.titleKeyframes.isEmpty()) {
-                lastTitleSkipReason = QStringLiteral("title_keyframes_empty");
-                continue;
-            }
             const EffectiveVisualEffects effects =
                 evaluateEffectiveVisualEffectsAtPosition(
                     clip,
@@ -1036,22 +1042,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         std::max(1, std::min(swapSize.width(), swapSize.height()) / 360));
         QSet<QString> drawnTitleOverlayClipIds;
         for (const TimelineClip& clip : state->clips) {
-            if (clip.mediaType == ClipMediaType::Title) {
-                if (drawPreparedTitleOverlayForClip(clip.id, compositeRect)) {
-                    drawnTitleOverlayClipIds.insert(clip.id);
-                }
-                if (clip.id == state->selectedClipId && state->titleOverlayInteractionOnly) {
-                    const int selectionThickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 360);
-                    clearBoxOutline(m_devFuncs,
-                                    cb,
-                                    selectionOutlineColor(),
-                                    clearRectFromQRect(compositeRect, swapSize),
-                                    selectionThickness);
-                }
-                continue;
-            }
             const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
             if (!status || !status->active || status->drawSuppressed) {
+                if (clip.mediaType == ClipMediaType::Title &&
+                    drawPreparedTitleOverlayForClip(clip.id, compositeRect)) {
+                    drawnTitleOverlayClipIds.insert(clip.id);
+                }
                 continue;
             }
             if (requestedSourceFrame < 0) {
@@ -1072,6 +1068,32 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 }
             }
             const bool selected = !state->selectedClipId.isEmpty() && clip.id == state->selectedClipId;
+            if (clip.mediaType == ClipMediaType::Title) {
+                if (drawPreparedTitleOverlayForClip(clip.id, compositeRect)) {
+                    drawnTitleOverlayClipIds.insert(clip.id);
+                }
+                if (selected) {
+                    const int selectionThickness = std::max(
+                        2, std::min(swapSize.width(), swapSize.height()) / 360);
+                    const QRectF titleOutputBounds =
+                        status->targetRect.isEmpty()
+                            ? QRectF(QPointF(0.0, 0.0), QSizeF(state->outputSize))
+                            : status->targetRect;
+                    const QPointF titleCenter =
+                        viewTransform.outputToScreen(titleOutputBounds.center());
+                    const QRectF titleScreenBounds(
+                        titleCenter.x() - titleOutputBounds.width() * previewScale.x() * 0.5,
+                        titleCenter.y() - titleOutputBounds.height() * previewScale.y() * 0.5,
+                        titleOutputBounds.width() * previewScale.x(),
+                        titleOutputBounds.height() * previewScale.y());
+                    clearBoxOutline(m_devFuncs,
+                                    cb,
+                                    selectionOutlineColor(),
+                                    clearRectFromQRect(titleScreenBounds, swapSize),
+                                    selectionThickness);
+                }
+                continue;
+            }
             VkClearAttachment attachment{};
             attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             attachment.colorAttachment = 0;
@@ -1369,15 +1391,20 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 if (sampledResources) {
                     sampledResources->updateFrameUniform(compositeRect.size().toSize());
                 }
-                auto uniformOffsetForDraw = [&](const float* effectParams = nullptr) {
-                    if (sampledResources && effectParams &&
+                auto uniformOffsetForDraw = [&](const float* effectParams = nullptr,
+                                                const float* effectDomain = nullptr,
+                                                const float* effectMaskDomain = nullptr) {
+                    if (sampledResources &&
+                        (effectParams || effectDomain || effectMaskDomain) &&
                         sampledResources->updateFrameUniform(
                             compositeRect.size().toSize(),
                             nullptr,
                             nullptr,
                             nullptr,
                             nullptr,
-                            effectParams)) {
+                            effectParams,
+                            effectDomain,
+                            effectMaskDomain)) {
                         return sampledResources->frameUniformDynamicOffset();
                     }
                     return sampledResources ? sampledResources->frameUniformDynamicOffset() : 0u;
@@ -1512,7 +1539,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                 effectPush.opacity *= static_cast<float>(
                                     std::clamp(status->maskOpacity, 0.0, 1.0));
                             }
-                            if (!status || !status->maskClipSource) {
+                            const bool generatedMaskDomainDraw =
+                                status && status->maskClipSource &&
+                                effectDraw.effectDomain[3] < 0.0f;
+                            if (!status || !status->maskClipSource ||
+                                generatedMaskDomainDraw) {
                                 effectPush.shadows[3] = effectDraw.shaderMode;
                             }
                             if (effectDraw.shaderMode >= render_detail::kVulkanEffectModeSpeakerMaskDilation &&
@@ -1553,7 +1584,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             uint32_t effectUniformOffset =
                                 sampledResources ? sampledResources->frameUniformDynamicOffset() : 0;
                             if (sampledResources && sampledResources->updateFrameUniform(
-                                    swapSize, nullptr, nullptr, nullptr, effectDraw.effectParams)) {
+                                    swapSize,
+                                    nullptr,
+                                    nullptr,
+                                    nullptr,
+                                    nullptr,
+                                    effectDraw.effectParams,
+                                    effectDraw.effectDomain,
+                                    effectDraw.effectMaskDomain)) {
                                 effectUniformOffset = sampledResources->frameUniformDynamicOffset();
                             }
                             m_pipeline->bindAndDraw(cb,
@@ -1904,6 +1942,35 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 geometry.localRect,
                 swapSize);
             clearBoxOutline(m_devFuncs, cb, facedetectionsOverlayColor(state, overlay), boxRect, qMax(1, thickness - 1));
+        }
+        VkClearValue maskBoundingBoxColor{};
+        maskBoundingBoxColor.color.float32[0] = 1.0f;
+        maskBoundingBoxColor.color.float32[1] = 0.82f;
+        maskBoundingBoxColor.color.float32[2] = 0.25f;
+        maskBoundingBoxColor.color.float32[3] = 1.0f;
+        for (const TimelineClip& clip : state->clips) {
+            const VulkanPreviewClipFrameStatus* status =
+                frameStatusForClip(state, clip.id);
+            if (!status || !status->maskBoundingBoxPreview ||
+                !status->maskBoundingBoxNorm.isValid()) {
+                continue;
+            }
+            const auto it = activeClipGeometry.constFind(clip.id);
+            if (it == activeClipGeometry.constEnd()) {
+                continue;
+            }
+            const PreviewClipGeometry& geometry = it.value();
+            const VkClearRect boxRect = faceDetectionBoxToSwapchainRect(
+                status->maskBoundingBoxNorm,
+                geometry.clipToScreen,
+                geometry.localRect,
+                swapSize);
+            clearBoxOutline(
+                m_devFuncs,
+                cb,
+                maskBoundingBoxColor,
+                boxRect,
+                qMax(2, thickness));
         }
         if (const TimelineClip* selectedClip = selectedClipForTargetBox(state)) {
             const TimelineClip::TransformKeyframe targetState =

@@ -147,11 +147,18 @@ QVector<EffectPresetUiOption> effectPresetUiOptions()
         {QStringLiteral("Slit scan"), ClipEffectPreset::SlitScan, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Freeze pattern"), ClipEffectPreset::FreezePattern, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Step repeater"), ClipEffectPreset::StepRepeat, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Step repeat fill"), ClipEffectPreset::StepRepeatFill, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Source mosaic grid"), ClipEffectPreset::SourceMosaicGrid, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Source mosaic stagger"), ClipEffectPreset::SourceMosaicStagger, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Source mosaic hex"), ClipEffectPreset::SourceMosaicHex, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Source mosaic radial"), ClipEffectPreset::SourceMosaicRadial, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Source mosaic flow"), ClipEffectPreset::SourceMosaicFlow, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Source image tiling"), ClipEffectPreset::SourceTile, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Logo ticker rows"), ClipEffectPreset::NewsLogoTicker, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Directional trim ticker"), ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Alternating motion background"), ClipEffectPreset::AlternatingMotionBackground, QStringLiteral("Time & Repeat")},
         {QStringLiteral("Encircle person"), ClipEffectPreset::PersonOrbit, QStringLiteral("Time & Repeat")},
+        {QStringLiteral("Directional frame echo"), ClipEffectPreset::DirectionalFrameEcho, QStringLiteral("Time & Repeat")},
 
         {QStringLiteral("Pixel sorting"), ClipEffectPreset::PixelSorting, QStringLiteral("Glitch & Stylize")},
         {QStringLiteral("Datamosh / glitch blocks"), ClipEffectPreset::DatamoshGlitch, QStringLiteral("Glitch & Stylize")},
@@ -194,6 +201,12 @@ bool effectPresetUsesDirectionalControl(ClipEffectPreset preset)
     case ClipEffectPreset::PersonOrbit:
     case ClipEffectPreset::FreezePattern:
     case ClipEffectPreset::StepRepeat:
+    case ClipEffectPreset::StepRepeatFill:
+    case ClipEffectPreset::SourceMosaicGrid:
+    case ClipEffectPreset::SourceMosaicStagger:
+    case ClipEffectPreset::SourceMosaicHex:
+    case ClipEffectPreset::SourceMosaicRadial:
+    case ClipEffectPreset::SourceMosaicFlow:
     case ClipEffectPreset::DifferenceMatte:
     case ClipEffectPreset::TemporalEcho:
     case ClipEffectPreset::MirrorRing:

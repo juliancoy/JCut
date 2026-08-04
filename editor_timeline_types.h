@@ -46,6 +46,12 @@ enum class ClipEffectPreset {
     AlternatingMotionBackground,
     FreezePattern,
     StepRepeat,
+    StepRepeatFill,
+    SourceMosaicGrid,
+    SourceMosaicStagger,
+    SourceMosaicHex,
+    SourceMosaicRadial,
+    SourceMosaicFlow,
     DirectionalTrimTicker,
     SourceTile,
     Vulkan3DSynth,
@@ -81,6 +87,7 @@ enum class ClipEffectPreset {
     SpeakerMaskDilation,
     SpeakerMaskDilationPulse,
     SpeakerMaskDilationRings,
+    DirectionalFrameEcho,
 };
 
 enum class ClipTilingPattern {
@@ -177,6 +184,8 @@ struct TimelineClip {
         ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
         qreal tilingSpacing = 1.0;
         bool tilingWrap = true;
+        bool tilingUseMaskBounds = false;
+        qreal tilingMaskIslandSigma = 0.0;
         QString effectModulationMode = QStringLiteral("none");
         QString effectModulationTarget = QStringLiteral("scale");
         qreal effectModulationAmount = 0.0;
@@ -519,6 +528,9 @@ struct TimelineClip {
     ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
     qreal tilingSpacing = 1.0;
     bool tilingWrap = true;
+    bool tilingUseMaskBounds = false;
+    qreal tilingMaskIslandSigma = 0.0;
+    bool maskBoundingBoxPreview = false;
     QJsonObject effectParameterSets;
     QVector<CorrectionPolygon> correctionPolygons;
 };
@@ -556,5 +568,7 @@ struct TimelineTrack {
     ClipTilingPattern tilingPattern = ClipTilingPattern::Grid;
     qreal tilingSpacing = 1.0;
     bool tilingWrap = true;
+    bool tilingUseMaskBounds = false;
+    qreal tilingMaskIslandSigma = 0.0;
     QJsonObject effectParameterSets;
 };

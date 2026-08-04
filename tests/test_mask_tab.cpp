@@ -110,8 +110,8 @@ class TestMaskTab final : public QObject
 
 private slots:
     void inactiveRefreshNeverMaterializesOrSelects();
-    void activeRefreshMaterializesAndSelectsChildReentrantly();
-    void failedMaterializationLeavesOnlyDiscoveryControlsEnabled();
+    void activeRefreshPreservesSourceSelection();
+    void sourceRefreshLeavesOnlyDiscoveryControlsEnabled();
     void unavailableChildPreservesEnabledIntentAndReportsAvailability();
     void onlyExplicitZEditsFreezeAutomaticOrdering();
     void treatmentEditsApplyOnlyToSelectedMaskChild();
@@ -151,7 +151,7 @@ void TestMaskTab::inactiveRefreshNeverMaterializesOrSelects()
     QVERIFY(!controls.feather.isEnabled());
 }
 
-void TestMaskTab::activeRefreshMaterializesAndSelectsChildReentrantly()
+void TestMaskTab::activeRefreshPreservesSourceSelection()
 {
     const QString sidecarDirectory = QStringLiteral("/missing/source_alpha");
     const TimelineClip source = makeSourceClip();
@@ -161,42 +161,37 @@ void TestMaskTab::activeRefreshMaterializesAndSelectsChildReentrantly()
     int materializeCalls = 0;
     int selectCalls = 0;
     MaskWidgets controls;
-    MaskTab* tabPointer = nullptr;
 
     MaskTab::Dependencies deps;
     deps.getSelectedClip = [&selected]() { return &selected; };
     deps.clipHasVisuals = [](const TimelineClip&) { return true; };
     deps.findMaskMatteChildForSidecar =
-        [](const QString&, const QString&) { return QString(); };
+        [&](const QString&, const QString&) { return child.id; };
     deps.materializeMaskMatteForSidecar =
-        [&](const QString&, const QString&) {
+        [&materializeCalls](const QString&, const QString&) {
             ++materializeCalls;
-            selected = child;
-            tabPointer->refresh();
-            return child.id;
+            return QStringLiteral("unexpected-child");
         };
     deps.selectClipById = [&](const QString& clipId) {
         ++selectCalls;
-        QCOMPARE(clipId, child.id);
-        selected = child;
+        Q_UNUSED(clipId);
     };
     deps.isMaskInspectorActive = []() { return true; };
 
     MaskTab tab(controls.dependencies(), deps);
-    tabPointer = &tab;
     tab.refresh();
 
-    QCOMPARE(materializeCalls, 1);
-    QCOMPARE(selectCalls, 1);
-    QCOMPARE(selected.id, child.id);
-    QVERIFY(controls.enabled.isEnabled());
-    QVERIFY(controls.zLevel.isEnabled());
-    QVERIFY(controls.feather.isEnabled());
+    QCOMPARE(materializeCalls, 0);
+    QCOMPARE(selectCalls, 0);
+    QCOMPARE(selected.id, source.id);
+    QVERIFY(!controls.enabled.isEnabled());
+    QVERIFY(!controls.zLevel.isEnabled());
+    QVERIFY(!controls.feather.isEnabled());
     QCOMPARE(controls.directory.text(), sidecarDirectory);
     QCOMPARE(controls.sidecars.currentData().toString(), sidecarDirectory);
 }
 
-void TestMaskTab::failedMaterializationLeavesOnlyDiscoveryControlsEnabled()
+void TestMaskTab::sourceRefreshLeavesOnlyDiscoveryControlsEnabled()
 {
     TimelineClip selected = makeSourceClip();
     selected.maskFramesDir = QStringLiteral("/missing/source_alpha");
@@ -216,7 +211,7 @@ void TestMaskTab::failedMaterializationLeavesOnlyDiscoveryControlsEnabled()
     MaskTab tab(controls.dependencies(), deps);
     tab.refresh();
 
-    QCOMPARE(materializeCalls, 1);
+    QCOMPARE(materializeCalls, 0);
     QVERIFY(controls.browse.isEnabled());
     QVERIFY(controls.prompt.isEnabled());
     QVERIFY(controls.directory.isEnabled());

@@ -1184,12 +1184,15 @@ render::RenderResultCore exportTimelineToFile(const ExportRenderRequest& request
                     playbackSpeed);
             const double clampedFramePosition =
                 exportFrameTiming.timelineFramePosition;
-            const TimelineRenderResult frameResult = renderer.renderFrame({
-                request.document,
-                exportRequest.outputSize,
-                clampedFramePosition,
-                request.rootDirectory,
-                request.decoderPolicy});
+            TimelineRenderRequest frameRequest;
+            frameRequest.document = request.document;
+            frameRequest.outputSize = exportRequest.outputSize;
+            frameRequest.timelineFrame = clampedFramePosition;
+            frameRequest.rootDirectory = request.rootDirectory;
+            frameRequest.decoderPolicy = request.decoderPolicy;
+            frameRequest.applyMasterOutputSubtitleOffset = true;
+            const TimelineRenderResult frameResult =
+                renderer.renderFrame(frameRequest);
             if (!frameResult.success || frameResult.image.empty()) {
                 result.message = frameResult.message.empty()
                     ? "failed to render export frame"

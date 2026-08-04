@@ -5,10 +5,12 @@
 #include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDial>
 #include <QPushButton>
 #include <QPoint>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QWidget>
 #include <functional>
 
 #include "editor_shared.h"
@@ -27,7 +29,10 @@ public:
         QDoubleSpinBox* edgeFillOpacitySpin = nullptr;
         QDoubleSpinBox* edgeFillBrightnessSpin = nullptr;
         QDoubleSpinBox* edgeFillSaturationSpin = nullptr;
+        QComboBox* effectPresetCategoryCombo = nullptr;
         QComboBox* effectPresetCombo = nullptr;
+        QPushButton* effectPresetPreviousButton = nullptr;
+        QPushButton* effectPresetNextButton = nullptr;
         QLabel* effectPresetSpecificHelpLabel = nullptr;
         QSpinBox* effectRowsSpin = nullptr;
         QDoubleSpinBox* effectSpeedSpin = nullptr;
@@ -55,6 +60,26 @@ public:
         QComboBox* tilingPatternCombo = nullptr;
         QDoubleSpinBox* tilingSpacingSpin = nullptr;
         QCheckBox* tilingWrapCheck = nullptr;
+        QWidget* maskBoundingBoxSection = nullptr;
+        QCheckBox* tilingUseMaskBoundsCheck = nullptr;
+        QDoubleSpinBox* tilingMaskIslandSigmaSpin = nullptr;
+        QCheckBox* maskBoundingBoxPreviewCheck = nullptr;
+        QWidget* directionalEchoControlsWidget = nullptr;
+        QDial* directionalEchoDirectionDial = nullptr;
+        QLabel* directionalEchoDirectionValueLabel = nullptr;
+        QDial* directionalEchoSpreadDial = nullptr;
+        QLabel* directionalEchoSpreadValueLabel = nullptr;
+        QDial* directionalEchoHueDial = nullptr;
+        QLabel* directionalEchoHueValueLabel = nullptr;
+        QLabel* directionalEchoSummaryLabel = nullptr;
+        QWidget* stepRepeatFillControlsWidget = nullptr;
+        QDial* stepRepeatFillGuideScaleDial = nullptr;
+        QLabel* stepRepeatFillGuideScaleValueLabel = nullptr;
+        QDial* stepRepeatFillLumaMatchDial = nullptr;
+        QLabel* stepRepeatFillLumaMatchValueLabel = nullptr;
+        QDial* stepRepeatFillHueMatchDial = nullptr;
+        QLabel* stepRepeatFillHueMatchValueLabel = nullptr;
+        QLabel* stepRepeatFillSummaryLabel = nullptr;
         QPushButton* applyButton = nullptr;
     };
 
@@ -92,6 +117,7 @@ signals:
 private slots:
     void onApplyClicked();
     void onEditingFinished();
+    void onEffectPresetCategoryChanged(int index);
     void onEffectPresetChanged(int index);
     void onEffectControlChanged();
     void onEffectKeyframeTableItemClicked(QTableWidgetItem* item);
@@ -101,6 +127,7 @@ private slots:
 
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void stepEffectPreset(int delta);
     Widgets m_widgets;
     Dependencies m_deps;
     bool m_updating = false;

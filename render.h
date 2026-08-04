@@ -15,6 +15,7 @@
 #include <QVector>
 
 #include "master_output_audio_delay.h"
+#include "output_subtitle_timing.h"
 
 #include <functional>
 #include <atomic>
@@ -90,6 +91,8 @@ struct RenderRequest {
     bool incrementalExport = false;
     int incrementalChunkFrames = 900;
     int masterOutputAudioDelayMs = jcut::audio::kDefaultMasterOutputAudioDelayMs;
+    int masterOutputSubtitleOffsetMs =
+        jcut::subtitle::kDefaultMasterOutputOffsetMs;
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;
     bool losslessIntermediateAudio = false;

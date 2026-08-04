@@ -23,6 +23,7 @@ struct TimelineRenderRequest {
     bool allowCpuFallback = true;
     bool transparentBackground = false;
     bool deferLayerComposition = false;
+    bool applyMasterOutputSubtitleOffset = false;
 };
 
 struct StandaloneDecodeBenchmarkResult {

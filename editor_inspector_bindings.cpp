@@ -220,6 +220,8 @@ void EditorWindow::bindInspectorWidgets()
     m_outputWidthSpin = m_inspectorPane->outputWidthSpin();
     m_masterOutputAudioDelayMsSpin =
         m_inspectorPane->masterOutputAudioDelayMsSpin();
+    m_masterOutputSubtitleOffsetMsSpin =
+        m_inspectorPane->masterOutputSubtitleOffsetMsSpin();
     m_outputHeightSpin = m_inspectorPane->outputHeightSpin();
     m_outputFpsSpin = m_inspectorPane->outputFpsSpin();
     m_exportStartSpin = m_inspectorPane->exportStartSpin();
@@ -230,6 +232,8 @@ void EditorWindow::bindInspectorWidgets()
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     const auto outputRenderControls = m_inspectorPane->outputRenderControls();
     m_incrementalRenderCheckBox = outputRenderControls.incrementalRender;
+    m_segmentPrewarmAutotuneCheckBox =
+        outputRenderControls.segmentPrewarmAutotune;
     m_instagramSafeAreaGuidesCheckBox = outputRenderControls.instagramSafeAreaGuides;
     m_alignmentGridGuidesCheckBox = outputRenderControls.alignmentGridGuides;
     m_renderCachePathLabel = outputRenderControls.renderCachePath;

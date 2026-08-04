@@ -1,5 +1,6 @@
 #include "output_tab.h"
 #include "debug_controls.h"
+#include "render_runtime_controls.h"
 
 #include <QDir>
 #include <QFileDialog>
@@ -95,6 +96,16 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
                            "them into the final video. Disable for one "
                            "continuous export without chunk checkpoints."));
     }
+    if (m_widgets.segmentPrewarmAutotuneCheckBox) {
+        m_widgets.segmentPrewarmAutotuneCheckBox->setText(
+            QStringLiteral("Auto-tune segment prewarming"));
+        m_widgets.segmentPrewarmAutotuneCheckBox->setChecked(
+            render_detail::renderSegmentDecodeLookaheadAutotuneEnabled());
+        m_widgets.segmentPrewarmAutotuneCheckBox->setToolTip(
+            QStringLiteral("Adjust export decode lookahead from observed "
+                           "segment-boundary waits. Changes apply to an active "
+                           "render at subsequent segment boundaries."));
+    }
     if (m_widgets.instagramSafeAreaGuidesCheckBox) {
         m_widgets.instagramSafeAreaGuidesCheckBox->setText(
             QStringLiteral("Render Instagram 250px safe-area guides"));
@@ -151,11 +162,21 @@ void OutputTab::wire()
         connect(m_widgets.incrementalRenderCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onIncrementalRenderToggled);
     }
+    if (m_widgets.segmentPrewarmAutotuneCheckBox) {
+        connect(m_widgets.segmentPrewarmAutotuneCheckBox, &QCheckBox::toggled,
+                this, &OutputTab::onSegmentPrewarmAutotuneToggled);
+    }
     if (m_widgets.masterOutputAudioDelayMsSpin) {
         connect(m_widgets.masterOutputAudioDelayMsSpin,
                 qOverload<int>(&QSpinBox::valueChanged),
                 this,
                 &OutputTab::onMasterOutputAudioDelayMsChanged);
+    }
+    if (m_widgets.masterOutputSubtitleOffsetMsSpin) {
+        connect(m_widgets.masterOutputSubtitleOffsetMsSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                &OutputTab::onMasterOutputSubtitleOffsetMsChanged);
     }
     if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
         connect(m_widgets.outputPlaybackCacheFallbackCheckBox, &QCheckBox::toggled,
@@ -315,6 +336,11 @@ void OutputTab::refresh()
     if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
         QSignalBlocker blocker(m_widgets.outputPlaybackCacheFallbackCheckBox);
         m_widgets.outputPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
+    }
+    if (m_widgets.segmentPrewarmAutotuneCheckBox) {
+        QSignalBlocker blocker(m_widgets.segmentPrewarmAutotuneCheckBox);
+        m_widgets.segmentPrewarmAutotuneCheckBox->setChecked(
+            render_detail::renderSegmentDecodeLookaheadAutotuneEnabled());
     }
     if (m_widgets.outputLeadPrefetchEnabledCheckBox) {
         QSignalBlocker blocker(m_widgets.outputLeadPrefetchEnabledCheckBox);
@@ -492,6 +518,10 @@ void OutputTab::renderFromInspector()
         m_widgets.masterOutputAudioDelayMsSpin
         ? m_widgets.masterOutputAudioDelayMsSpin->value()
         : jcut::audio::kDefaultMasterOutputAudioDelayMs;
+    request.masterOutputSubtitleOffsetMs =
+        m_widgets.masterOutputSubtitleOffsetMsSpin
+        ? m_widgets.masterOutputSubtitleOffsetMsSpin->value()
+        : jcut::subtitle::kDefaultMasterOutputOffsetMs;
     request.instagramSafeAreaGuides =
         m_widgets.instagramSafeAreaGuidesCheckBox &&
         m_widgets.instagramSafeAreaGuidesCheckBox->isChecked();
@@ -596,11 +626,25 @@ void OutputTab::onIncrementalRenderToggled(bool checked)
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
 
+void OutputTab::onSegmentPrewarmAutotuneToggled(bool checked)
+{
+    if (m_updating) return;
+    render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(checked);
+}
+
 void OutputTab::onMasterOutputAudioDelayMsChanged(int value)
 {
     Q_UNUSED(value);
     if (m_updating) return;
     updateIncrementalRenderAvailability();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onMasterOutputSubtitleOffsetMsChanged(int value)
+{
+    Q_UNUSED(value);
+    if (m_updating) return;
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }

@@ -216,64 +216,6 @@ bool createPreviewKeyframeAtTimelineFrame(TimelineClip& clip, int64_t timelineFr
         timelineFrame - clip.startFrame,
         qMax<int64_t>(0, clip.durationFrames - 1));
 
-    if (clip.mediaType == ClipMediaType::Title) {
-        if (clip.titleKeyframes.isEmpty()) {
-            return false;
-        }
-
-        const EvaluatedTitle evaluated = evaluateTitleAtLocalFrame(clip, localFrame);
-        if (!evaluated.valid) {
-            return false;
-        }
-
-        TimelineClip::TitleKeyframe keyframe = clip.titleKeyframes.constFirst();
-        keyframe.frame = localFrame;
-        keyframe.text = evaluated.text;
-        keyframe.translationX = evaluated.x;
-        keyframe.translationY = evaluated.y;
-        keyframe.fontSize = evaluated.fontSize;
-        keyframe.opacity = evaluated.opacity;
-        keyframe.fontFamily = evaluated.fontFamily;
-        keyframe.bold = evaluated.bold;
-        keyframe.italic = evaluated.italic;
-        keyframe.color = evaluated.color;
-        keyframe.dropShadowEnabled = evaluated.dropShadowEnabled;
-        keyframe.dropShadowColor = evaluated.dropShadowColor;
-        keyframe.dropShadowOpacity = evaluated.dropShadowOpacity;
-        keyframe.dropShadowOffsetX = evaluated.dropShadowOffsetX;
-        keyframe.dropShadowOffsetY = evaluated.dropShadowOffsetY;
-        keyframe.windowEnabled = evaluated.windowEnabled;
-        keyframe.windowColor = evaluated.windowColor;
-        keyframe.windowOpacity = evaluated.windowOpacity;
-        keyframe.windowPadding = evaluated.windowPadding;
-        keyframe.windowWidth = evaluated.windowWidth;
-        keyframe.windowFrameEnabled = evaluated.windowFrameEnabled;
-        keyframe.windowFrameColor = evaluated.windowFrameColor;
-        keyframe.windowFrameOpacity = evaluated.windowFrameOpacity;
-        keyframe.windowFrameWidth = evaluated.windowFrameWidth;
-        keyframe.windowFrameGap = evaluated.windowFrameGap;
-        for (const TimelineClip::TitleKeyframe& existing : clip.titleKeyframes) {
-            if (existing.frame > localFrame) {
-                keyframe.linearInterpolation = existing.linearInterpolation;
-                break;
-            }
-        }
-
-        bool replaced = false;
-        for (TimelineClip::TitleKeyframe& existing : clip.titleKeyframes) {
-            if (existing.frame == localFrame) {
-                existing = keyframe;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            clip.titleKeyframes.push_back(keyframe);
-        }
-        normalizeClipTitleKeyframes(clip);
-        return true;
-    }
-
     if (!clipHasVisuals(clip)) {
         return false;
     }
@@ -303,10 +245,6 @@ bool stagePreviewMove(TimelineClip& clip,
                       int64_t keyframeTimelineFrame,
                       qreal translationX,
                       qreal translationY) {
-    if (clip.mediaType == ClipMediaType::Title) {
-        return stagePreviewTitleMoveKeyframe(
-            clip, keyframeTimelineFrame, translationX, translationY);
-    }
     Q_UNUSED(keyframeTimelineFrame);
     return applyStaticPreviewVisualTransform(
         clip,
@@ -328,10 +266,6 @@ bool commitPreviewMove(TimelineClip& clip,
         clip.transcriptOverlay.translationY = translationY;
         clip.transcriptOverlay.useManualPlacement = true;
         return true;
-    }
-    if (clip.mediaType == ClipMediaType::Title) {
-        return commitPreviewTitleMoveKeyframe(
-            clip, keyframeTimelineFrame, translationX, translationY);
     }
     const TimelineClip::TransformKeyframe current =
         evaluateClipTransformAtFrame(clip, keyframeTimelineFrame);

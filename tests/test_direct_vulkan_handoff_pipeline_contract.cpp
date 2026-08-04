@@ -30,6 +30,7 @@ private slots:
   void mediaOwnerPlanDeduplicatesHiddenParentChildren();
   void mediaOwnerPayloadReuseFailsClosed();
   void maskChildrenUseExplicitOwners();
+  void maskChildHitTestingSelectsMediaOwner();
   void descriptorUpdatesFollowAcquiredSwapchainOwnership();
   void maskChildrenFailClosedWithoutAMatte();
   void maskSidecarsPrefetchWithPlaybackWindow();
@@ -83,6 +84,7 @@ private slots:
   void incrementalExportCheckpointsAndLosslesslyRemuxes();
   void outputTabClearsOnlyResolvedIncrementalRenderCacheRoot();
   void exportCompositionNeverPublishesPartialLayers();
+  void standaloneTitlesUseSharedGpuTextPackets();
 };
 
 namespace {
@@ -206,6 +208,28 @@ void TestDirectVulkanHandoffPipelineContract::maskChildrenUseExplicitOwners() {
                exportBackend.contains(QStringLiteral(
                    "const TimelineClip &matteOwner = clip")),
            "export must apply the same parent/parent/child/child ownership rule");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    maskChildHitTestingSelectsMediaOwner()
+{
+  const QString interaction = readSourceFile(
+      QStringLiteral("direct_vulkan_preview_interaction.cpp"));
+  QVERIFY2(!interaction.isEmpty(),
+           "direct Vulkan preview interaction source must be readable");
+  QVERIFY2(interaction.contains(QStringLiteral(
+               "status.maskClipSource && !mediaOwnerClipId.isEmpty()")) &&
+               interaction.contains(QStringLiteral(
+                   "emittedInteractionClipIds.contains(interactionClipId)")) &&
+               interaction.contains(QStringLiteral(
+                   "emittedInteractionClipIds.insert(interactionClipId)")) &&
+               interaction.contains(QStringLiteral(
+                   "const TimelineClip* clip = clipForId(state, interactionClipId)")) &&
+               interaction.contains(QStringLiteral(
+                   "VulkanInteractionOverlayInfo{\n            interactionClipId")),
+           "mask-child preview hit regions must collapse onto their canonical "
+           "media owner so an overlapping child cannot steal selection from "
+           "the master clip");
 }
 
 void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentContract() {
@@ -1012,12 +1036,14 @@ void TestDirectVulkanHandoffPipelineContract::
   hiddenParent.clipId = QStringLiteral("source");
   hiddenParent.mediaOwnerClipId = hiddenParent.clipId;
   hiddenParent.active = true;
+  hiddenParent.hasFrame = true;
   hiddenParent.drawSuppressed = true;
 
   VulkanPreviewClipFrameStatus alphaChild;
   alphaChild.clipId = QStringLiteral("alpha");
   alphaChild.mediaOwnerClipId = hiddenParent.clipId;
   alphaChild.active = true;
+  alphaChild.hasFrame = true;
 
   VulkanPreviewClipFrameStatus personChild = alphaChild;
   personChild.clipId = QStringLiteral("person");
@@ -1030,6 +1056,7 @@ void TestDirectVulkanHandoffPipelineContract::
   independentClip.clipId = QStringLiteral("other-source");
   independentClip.mediaOwnerClipId = independentClip.clipId;
   independentClip.active = true;
+  independentClip.hasFrame = true;
 
   const QVector<VulkanPreviewClipFrameStatus> statuses = {
       hiddenParent, alphaChild, personChild, unavailableChild, independentClip};
@@ -1051,6 +1078,13 @@ void TestDirectVulkanHandoffPipelineContract::
   QCOMPARE(parentOmittedPlan.at(0).mediaOwnerClipId, QStringLiteral("source"));
   QCOMPARE(parentOmittedPlan.at(0).providerStatusIndex, 0);
   QCOMPARE(parentOmittedPlan.at(0).consumerStatusIndices.size(), 2);
+
+  VulkanPreviewClipFrameStatus textOnly;
+  textOnly.clipId = QStringLiteral("gpu-title");
+  textOnly.mediaOwnerClipId = textOnly.clipId;
+  textOnly.active = true;
+  textOnly.textInputs.title3D.push_back(EvaluatedTitle{});
+  QVERIFY(jcut::direct_vulkan_preview::mediaOwnerHandoffPlan({textOnly}).isEmpty());
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -3645,13 +3679,15 @@ void TestDirectVulkanHandoffPipelineContract::
       "EffectsTab widget wiring must include the speech-filter motion sync checkbox");
   QVERIFY2(
       effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck")) &&
-          effects.contains(QStringLiteral("clip->effectSkipAwareTiming")) &&
-          effects.contains(QStringLiteral("clip.effectSkipAwareTiming = speechSync")) &&
+          effects.contains(QStringLiteral("keyframe.effectSkipAwareTiming")) &&
+          effects.contains(QStringLiteral("fallbackClip.effectSkipAwareTiming")) &&
+          effects.contains(QStringLiteral("const bool speechSync")) &&
           effects.contains(QStringLiteral("m_widgets.effectSpeechSyncCheck->setEnabled(false)")) &&
           effects.contains(QStringLiteral(
               "imagePresetCapable && imagePresetActive &&\n"
               "            (steadyIncrease || !progressiveEdgePreset)")) &&
-          effects.contains(QStringLiteral("preset != ClipEffectPreset::None")),
+          (effects.contains(QStringLiteral("preset != ClipEffectPreset::None")) ||
+           effects.contains(QStringLiteral("clipPreset != ClipEffectPreset::None"))),
       "Effects tab must round-trip the checkbox through the effect-specific "
       "effectSkipAwareTiming render flag and enable it for active visual "
       "effect presets, including transcript-aware steady-increase motion");
@@ -4697,8 +4733,9 @@ void TestDirectVulkanHandoffPipelineContract::
                    "return retryDecoder->decodeFrame(frameNumber)")),
            "a transient decoder failure must receive one clean reopen retry "
            "before the render is stopped");
-  QVERIFY2(backend.contains(QStringLiteral(
-               "const bool titleClip = clip.mediaType == ClipMediaType::Title")) &&
+  QVERIFY2(backend.contains(QStringLiteral("const bool titleClip")) &&
+               backend.contains(QStringLiteral(
+                   "clip.mediaType == ClipMediaType::Title")) &&
                backend.contains(QStringLiteral(
                    "const TimelineClip &activeRangeClip = titleClip ? clip : timingSource")) &&
                backend.contains(QStringLiteral(
@@ -4716,6 +4753,46 @@ void TestDirectVulkanHandoffPipelineContract::
            "3D title mesh generation must cache resolved font bytes and build "
            "FreeType memory faces instead of reopening the font file during "
            "render-frame composition");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    standaloneTitlesUseSharedGpuTextPackets()
+{
+  const QString surface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  const QString previewRenderer = readSourceFile(
+      QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"));
+  const QString exportBackend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(!surface.isEmpty() && !previewRenderer.isEmpty() &&
+               !exportBackend.isEmpty(),
+           "preview and export title sources must be readable");
+  QVERIFY2(surface.contains(QStringLiteral(
+               "static_cast<qreal>(titleTimelineFrame)")) &&
+               surface.contains(QStringLiteral(
+                   "prepareRenderableTitleForVulkanText")) &&
+               surface.contains(QStringLiteral(
+                   "status.textInputs.title3D.push_back(title)")) &&
+               surface.contains(QStringLiteral("gpu-title-draw")) &&
+               surface.contains(QStringLiteral(
+                   "status.targetRect = titleRenderBounds")) &&
+               !surface.contains(QStringLiteral("renderTitleOverlay(")) &&
+               previewRenderer.contains(QStringLiteral(
+                   "status.textInputs.title3D.constFirst()")) &&
+               previewRenderer.contains(QStringLiteral(
+                   "drawTitleOverlay3D")) &&
+               exportBackend.contains(QStringLiteral(
+                   "prepareRenderableTitleForVulkanText")) &&
+               exportBackend.contains(QStringLiteral(
+                   "textInputs.title3D.push_back(title)")) &&
+               !exportBackend.contains(QStringLiteral(
+                   "renderTitleOverlay(request.outputSize")) &&
+               exportBackend.contains(QStringLiteral(
+                   "static_cast<qreal>(timelineFrame)")),
+           "preview and output must evaluate standalone titles at the same "
+           "timeline frame, submit reusable Vulkan text draw packets without "
+           "full-resolution CPU rasterization, and retain content-sized "
+           "interaction bounds");
 }
 
 QTEST_MAIN(TestDirectVulkanHandoffPipelineContract)

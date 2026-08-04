@@ -23,6 +23,18 @@ QString effectPresetToJson(ClipEffectPreset preset)
         return QStringLiteral("freeze_pattern");
     case ClipEffectPreset::StepRepeat:
         return QStringLiteral("step_repeat");
+    case ClipEffectPreset::StepRepeatFill:
+        return QStringLiteral("step_repeat_fill");
+    case ClipEffectPreset::SourceMosaicGrid:
+        return QStringLiteral("source_mosaic_grid");
+    case ClipEffectPreset::SourceMosaicStagger:
+        return QStringLiteral("source_mosaic_stagger");
+    case ClipEffectPreset::SourceMosaicHex:
+        return QStringLiteral("source_mosaic_hex");
+    case ClipEffectPreset::SourceMosaicRadial:
+        return QStringLiteral("source_mosaic_radial");
+    case ClipEffectPreset::SourceMosaicFlow:
+        return QStringLiteral("source_mosaic_flow");
     case ClipEffectPreset::DirectionalTrimTicker:
         return QStringLiteral("directional_trim_ticker");
     case ClipEffectPreset::SourceTile:
@@ -65,6 +77,7 @@ QString effectPresetToJson(ClipEffectPreset preset)
     case ClipEffectPreset::SpeakerMaskDilation: return QStringLiteral("speaker_mask_dilation");
     case ClipEffectPreset::SpeakerMaskDilationPulse: return QStringLiteral("speaker_mask_dilation_pulse");
     case ClipEffectPreset::SpeakerMaskDilationRings: return QStringLiteral("speaker_mask_dilation_rings");
+    case ClipEffectPreset::DirectionalFrameEcho: return QStringLiteral("directional_frame_echo");
     case ClipEffectPreset::None:
     default:
         return QStringLiteral("none");
@@ -99,6 +112,32 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
         normalized == QStringLiteral("repeater") ||
         normalized == QStringLiteral("video_arpeggiator")) {
         return ClipEffectPreset::StepRepeat;
+    }
+    if (normalized == QStringLiteral("step_repeat_fill") ||
+        normalized == QStringLiteral("mosaic_echo_fill") ||
+        normalized == QStringLiteral("repeat_fill")) {
+        return ClipEffectPreset::StepRepeatFill;
+    }
+    if (normalized == QStringLiteral("source_mosaic_grid") ||
+        normalized == QStringLiteral("photomosaic_grid") ||
+        normalized == QStringLiteral("macro_tile_mosaic")) {
+        return ClipEffectPreset::SourceMosaicGrid;
+    }
+    if (normalized == QStringLiteral("source_mosaic_stagger") ||
+        normalized == QStringLiteral("photomosaic_stagger")) {
+        return ClipEffectPreset::SourceMosaicStagger;
+    }
+    if (normalized == QStringLiteral("source_mosaic_hex") ||
+        normalized == QStringLiteral("photomosaic_hex")) {
+        return ClipEffectPreset::SourceMosaicHex;
+    }
+    if (normalized == QStringLiteral("source_mosaic_radial") ||
+        normalized == QStringLiteral("photomosaic_radial")) {
+        return ClipEffectPreset::SourceMosaicRadial;
+    }
+    if (normalized == QStringLiteral("source_mosaic_flow") ||
+        normalized == QStringLiteral("photomosaic_flow")) {
+        return ClipEffectPreset::SourceMosaicFlow;
     }
     if (normalized == QStringLiteral("directional_trim_ticker") ||
         normalized == QStringLiteral("trim_ticker") ||
@@ -186,6 +225,7 @@ ClipEffectPreset effectPresetFromJson(const QString& value)
     if (normalized == QStringLiteral("speaker_mask_dilation")) return ClipEffectPreset::SpeakerMaskDilation;
     if (normalized == QStringLiteral("speaker_mask_dilation_pulse")) return ClipEffectPreset::SpeakerMaskDilationPulse;
     if (normalized == QStringLiteral("speaker_mask_dilation_rings")) return ClipEffectPreset::SpeakerMaskDilationRings;
+    if (normalized == QStringLiteral("directional_frame_echo")) return ClipEffectPreset::DirectionalFrameEcho;
     return ClipEffectPreset::None;
 }
 
@@ -943,6 +983,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
                 {QStringLiteral("tilingPattern"), tilingPatternToJson(keyframe.tilingPattern)},
                 {QStringLiteral("tilingSpacing"), keyframe.tilingSpacing},
                 {QStringLiteral("tilingWrap"), keyframe.tilingWrap},
+                {QStringLiteral("tilingUseMaskBounds"), keyframe.tilingUseMaskBounds},
+                {QStringLiteral("tilingMaskIslandSigma"), keyframe.tilingMaskIslandSigma},
                 {QStringLiteral("effectModulationMode"), keyframe.effectModulationMode},
                 {QStringLiteral("effectModulationTarget"), keyframe.effectModulationTarget},
                 {QStringLiteral("effectModulationAmount"), keyframe.effectModulationAmount},
@@ -971,6 +1013,9 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("tilingPattern")] = tilingPatternToJson(clip.tilingPattern);
         obj[QStringLiteral("tilingSpacing")] = clip.tilingSpacing;
         obj[QStringLiteral("tilingWrap")] = clip.tilingWrap;
+        obj[QStringLiteral("tilingUseMaskBounds")] = clip.tilingUseMaskBounds;
+        obj[QStringLiteral("tilingMaskIslandSigma")] = clip.tilingMaskIslandSigma;
+        obj[QStringLiteral("maskBoundingBoxPreview")] = clip.maskBoundingBoxPreview;
         obj[QStringLiteral("effectParameterSets")] = clip.effectParameterSets;
         QJsonArray correctionPolygons;
         for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
@@ -1604,6 +1649,10 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.tilingSpacing = qBound<qreal>(
                 0.1, keyframeObj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
             keyframe.tilingWrap = keyframeObj.value(QStringLiteral("tilingWrap")).toBool(true);
+            keyframe.tilingUseMaskBounds =
+                keyframeObj.value(QStringLiteral("tilingUseMaskBounds")).toBool(false);
+            keyframe.tilingMaskIslandSigma = qBound<qreal>(
+                0.0, keyframeObj.value(QStringLiteral("tilingMaskIslandSigma")).toDouble(0.0), 100.0);
             keyframe.effectModulationMode =
                 keyframeObj.value(QStringLiteral("effectModulationMode")).toString(QStringLiteral("none"));
             keyframe.effectModulationTarget =
@@ -1663,6 +1712,11 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.tilingSpacing =
             qBound<qreal>(0.1, obj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
         clip.tilingWrap = obj.value(QStringLiteral("tilingWrap")).toBool(true);
+        clip.tilingUseMaskBounds = obj.value(QStringLiteral("tilingUseMaskBounds")).toBool(false);
+        clip.tilingMaskIslandSigma = qBound<qreal>(
+            0.0, obj.value(QStringLiteral("tilingMaskIslandSigma")).toDouble(0.0), 100.0);
+        clip.maskBoundingBoxPreview =
+            obj.value(QStringLiteral("maskBoundingBoxPreview")).toBool(false);
         clip.effectParameterSets = obj.value(QStringLiteral("effectParameterSets")).toObject();
         if (clip.clipRole == ClipRole::MaskMatte) {
             clip.maskShowOnly = false;

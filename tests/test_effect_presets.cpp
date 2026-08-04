@@ -107,10 +107,17 @@ private slots:
     void tickerPresetProducesAlternatingRowsAcrossOutput();
     void alternatingMotionBackgroundCoversOutputWithMovingRows();
     void sourceTilingPresetCoversOutputWithGrid();
+    void sourceTilingPresetCanConstrainLayoutToMaskBounds();
+    void maskContentBoundsCanExcludeConfiguredOutsidePixelPercentage();
     void sourceTilingPresetSupportsGeometricPatterns();
     void orbitPresetProducesRequestedCopiesAroundCenter();
     void freezePatternProducesHeldGridCopies();
     void stepRepeatProducesSequencedCopies();
+    void stepRepeatFillUsesGuideAdaptedTileDraws();
+    void sourceMosaicVariantsUseSinglePassGuideAdaptedShaderModes();
+    void generatedMaskEffectsKeepFullFrameDomainAndSampleSourceMatte();
+    void recursiveZoomVariantsUseKeyframedZoomIndependentOfEffectClock();
+    void directionalFrameEchoProducesBalancedHueShiftedInstances();
     void directionalTrimTickerAnimatesWidthAndDirection();
     void vulkan3dSynthProducesDepthSortedShaderDraws();
     void newsLowerThirdPresetBuildsFlyInHoldFlyOutKeyframes();
@@ -183,6 +190,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     clip.tilingPattern = ClipTilingPattern::SpiralXY;
     clip.tilingSpacing = 1.4;
     clip.tilingWrap = false;
+    clip.tilingUseMaskBounds = true;
+    clip.tilingMaskIslandSigma = 2.5;
+    clip.maskBoundingBoxPreview = true;
     clip.differenceReferenceFrames = 17;
     clip.differenceThreshold = 0.22;
     clip.differenceSoftness = 0.04;
@@ -219,6 +229,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(json.value(QStringLiteral("tilingPattern")).toString(), QStringLiteral("spiral"));
     QVERIFY(std::abs(json.value(QStringLiteral("tilingSpacing")).toDouble() - 1.4) < 0.000001);
     QCOMPARE(json.value(QStringLiteral("tilingWrap")).toBool(), false);
+    QCOMPARE(json.value(QStringLiteral("tilingUseMaskBounds")).toBool(), true);
+    QCOMPARE(json.value(QStringLiteral("tilingMaskIslandSigma")).toDouble(), 2.5);
+    QCOMPARE(json.value(QStringLiteral("maskBoundingBoxPreview")).toBool(), true);
     QCOMPARE(json.value(QStringLiteral("differenceReferenceFrames")).toInt(), 17);
     QCOMPARE(json.value(QStringLiteral("temporalEchoCount")).toInt(), 7);
 
@@ -261,6 +274,9 @@ void TestEffectPresets::clipSerializationPersistsEffectPresetState()
     QCOMPARE(loaded.tilingPattern, ClipTilingPattern::SpiralXY);
     QVERIFY(std::abs(loaded.tilingSpacing - 1.4) < 0.000001);
     QCOMPARE(loaded.tilingWrap, false);
+    QCOMPARE(loaded.tilingUseMaskBounds, true);
+    QCOMPARE(loaded.tilingMaskIslandSigma, 2.5);
+    QCOMPARE(loaded.maskBoundingBoxPreview, true);
     QCOMPARE(loaded.differenceReferenceFrames, 17);
     QVERIFY(std::abs(loaded.differenceThreshold - 0.22) < 0.000001);
     QVERIFY(std::abs(loaded.differenceSoftness - 0.04) < 0.000001);
@@ -1352,6 +1368,13 @@ void TestEffectPresets::clipSerializationPersistsArpeggiatorEffectPresets()
 
     roundTripPreset(ClipEffectPreset::FreezePattern, QStringLiteral("freeze_pattern"));
     roundTripPreset(ClipEffectPreset::StepRepeat, QStringLiteral("step_repeat"));
+    roundTripPreset(ClipEffectPreset::StepRepeatFill, QStringLiteral("step_repeat_fill"));
+    roundTripPreset(ClipEffectPreset::SourceMosaicGrid, QStringLiteral("source_mosaic_grid"));
+    roundTripPreset(ClipEffectPreset::SourceMosaicStagger, QStringLiteral("source_mosaic_stagger"));
+    roundTripPreset(ClipEffectPreset::SourceMosaicHex, QStringLiteral("source_mosaic_hex"));
+    roundTripPreset(ClipEffectPreset::SourceMosaicRadial, QStringLiteral("source_mosaic_radial"));
+    roundTripPreset(ClipEffectPreset::SourceMosaicFlow, QStringLiteral("source_mosaic_flow"));
+    roundTripPreset(ClipEffectPreset::DirectionalFrameEcho, QStringLiteral("directional_frame_echo"));
     roundTripPreset(ClipEffectPreset::DirectionalTrimTicker, QStringLiteral("directional_trim_ticker"));
     roundTripPreset(ClipEffectPreset::SourceTile, QStringLiteral("source_tile"));
     roundTripPreset(ClipEffectPreset::Vulkan3DSynth, QStringLiteral("vulkan_3d_synth"));
@@ -1408,6 +1431,13 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
         ClipEffectPreset::AlternatingMotionBackground,
         ClipEffectPreset::FreezePattern,
         ClipEffectPreset::StepRepeat,
+        ClipEffectPreset::StepRepeatFill,
+        ClipEffectPreset::SourceMosaicGrid,
+        ClipEffectPreset::SourceMosaicStagger,
+        ClipEffectPreset::SourceMosaicHex,
+        ClipEffectPreset::SourceMosaicRadial,
+        ClipEffectPreset::SourceMosaicFlow,
+        ClipEffectPreset::DirectionalFrameEcho,
         ClipEffectPreset::DirectionalTrimTicker,
         ClipEffectPreset::SourceTile,
         ClipEffectPreset::Vulkan3DSynth,
@@ -1513,6 +1543,10 @@ void TestEffectPresets::effectPresetMetadataCoversSerializedSynthPresets()
     const QString shaderSource = QString::fromUtf8(shader.readAll());
     QVERIFY(shaderSource.contains(QStringLiteral("recursiveZoomTileSample")));
     QVERIFY(shaderSource.contains(QStringLiteral("recursiveZoomVariantSample")));
+    QVERIFY(shaderSource.contains(QStringLiteral("periodicOriginalWeight")));
+    QVERIFY(shaderSource.contains(QStringLiteral("Zoom phase comes from the effect zoom parameter")));
+    QVERIFY(shaderSource.contains(QStringLiteral("float continuousZoom = max(frame.effectParams.x")));
+    QVERIFY(shaderSource.contains(QStringLiteral("periodicOriginalWeight(continuousZoom)")));
     QVERIFY(shaderSource.contains(QStringLiteral("artisticMode >= 30 && artisticMode <= 36")));
     const QVector<QPair<ClipEffectPreset, float>> recursiveVariants{
         {ClipEffectPreset::RecursiveZoomTunnel,
@@ -3217,6 +3251,82 @@ void TestEffectPresets::sourceTilingPresetCoversOutputWithGrid()
     QVERIFY(moved.constFirst().topLeft() != rects.constFirst().topLeft());
 }
 
+void TestEffectPresets::sourceTilingPresetCanConstrainLayoutToMaskBounds()
+{
+    TimelineClip clip;
+    clip.clipRole = ClipRole::EffectSynth;
+    clip.effectPreset = ClipEffectPreset::SourceTile;
+    clip.effectRows = 2;
+    clip.effectSpeed = 0.0;
+    clip.effectScale = 1.0;
+    clip.tilingSpacing = 1.0;
+    clip.tilingWrap = false;
+    clip.tilingUseMaskBounds = true;
+
+    const QRectF output(0.0, 0.0, 100.0, 100.0);
+    const QRectF maskBounds(25.0, 25.0, 50.0, 50.0);
+    const render_detail::VulkanEffectPipelinePlan constrained =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(100, 100), 0.0, -1.0, {}, maskBounds);
+    QVERIFY(constrained.usesGeneratedDraws());
+    QVERIFY(!constrained.generatedDraws.isEmpty());
+    for (const render_detail::VulkanEffectPipelinePlan::DrawPass& draw :
+         constrained.generatedDraws) {
+        QVERIFY(draw.outputRect.left() >= maskBounds.left() - 0.001);
+        QVERIFY(draw.outputRect.top() >= maskBounds.top() - 0.001);
+        QVERIFY(draw.outputRect.right() <= maskBounds.right() + 0.001);
+        QVERIFY(draw.outputRect.bottom() <= maskBounds.bottom() + 0.001);
+    }
+
+    clip.tilingUseMaskBounds = false;
+    const render_detail::VulkanEffectPipelinePlan unconstrained =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(100, 100), 0.0, -1.0, {}, maskBounds);
+    QVERIFY(unconstrained.usesGeneratedDraws());
+    QVERIFY(unconstrained.generatedDraws.constFirst().outputRect.width() >
+            constrained.generatedDraws.constFirst().outputRect.width());
+}
+
+void TestEffectPresets::maskContentBoundsCanExcludeConfiguredOutsidePixelPercentage()
+{
+    jcut::core::ImageBuffer mask;
+    mask.format = jcut::core::PixelFormat::Gray8;
+    mask.size = {10, 10};
+    mask.strideBytes = 10;
+    mask.bytes.assign(100, 0);
+
+    auto setMask = [&mask](int x, int y) {
+        mask.bytes[static_cast<std::size_t>(y * mask.strideBytes + x)] = 255;
+    };
+    setMask(0, 0);
+    for (int y = 2; y < 6; ++y) {
+        for (int x = 4; x < 8; ++x) {
+            setMask(x, y);
+        }
+    }
+
+    const QRectF allBounds =
+        render_detail::normalizedMaskContentBounds(mask, 0.0, false);
+    QCOMPARE(allBounds.left(), 0.0);
+    QCOMPARE(allBounds.top(), 0.0);
+    QCOMPARE(allBounds.width(), 0.8);
+    QCOMPARE(allBounds.height(), 0.6);
+
+    const QRectF tooTightBounds =
+        render_detail::normalizedMaskContentBounds(mask, 5.0, false);
+    QCOMPARE(tooTightBounds.left(), 0.0);
+    QCOMPARE(tooTightBounds.top(), 0.0);
+    QCOMPARE(tooTightBounds.width(), 0.8);
+    QCOMPARE(tooTightBounds.height(), 0.6);
+
+    const QRectF filteredBounds =
+        render_detail::normalizedMaskContentBounds(mask, 6.0, false);
+    QCOMPARE(filteredBounds.left(), 0.4);
+    QCOMPARE(filteredBounds.top(), 0.2);
+    QCOMPARE(filteredBounds.width(), 0.4);
+    QCOMPARE(filteredBounds.height(), 0.4);
+}
+
 void TestEffectPresets::sourceTilingPresetSupportsGeometricPatterns()
 {
     TimelineClip clip;
@@ -3354,6 +3464,339 @@ void TestEffectPresets::stepRepeatProducesSequencedCopies()
         render_detail::vulkanPresetEffectRects(clip, output, QSize(120, 60), 0.0);
     QCOMPARE(reverse.size(), 6);
     QVERIFY(reverse.constFirst().x() > frame0.constFirst().x());
+}
+
+void TestEffectPresets::stepRepeatFillUsesGuideAdaptedTileDraws()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::StepRepeatFill;
+    clip.effectRows = 6;
+    clip.effectSpeed = 6.0;
+    clip.effectScale = 4.0;
+    clip.tilingSpacing = 5.0;
+
+    const QRectF output(0.0, 0.0, 600.0, 400.0);
+    const render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(120, 60), 0.0);
+
+    QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::GeneratedDraws);
+    QVERIFY(plan.generatedDraws.size() > clip.effectRows);
+    const auto& first = plan.generatedDraws.constFirst();
+    QCOMPARE(first.shaderMode, render_detail::kVulkanEffectModeStepRepeatFill);
+    QCOMPARE(first.effectParams[0], 5.0f);
+    QCOMPARE(first.effectParams[1], 0.75f);
+    QCOMPARE(first.effectParams[2], 0.5f);
+    QVERIFY(first.outputRect.width() > 0.0);
+    QVERIFY(first.outputRect.height() > 0.0);
+
+    TimelineClip stepClip;
+    stepClip.effectPreset = ClipEffectPreset::StepRepeat;
+    stepClip.effectRows = 6;
+    const render_detail::VulkanEffectPipelinePlan stepPlan =
+        render_detail::vulkanEffectPipelinePlan(
+            stepClip, output, QSize(120, 60), 0.0);
+    QCOMPARE(stepPlan.generatedDraws.size(), 6);
+    QVERIFY(stepPlan.generatedDraws.constFirst().shaderMode !=
+            render_detail::kVulkanEffectModeStepRepeatFill);
+}
+
+void TestEffectPresets::sourceMosaicVariantsUseSinglePassGuideAdaptedShaderModes()
+{
+    struct Case {
+        ClipEffectPreset preset;
+        float mode;
+    };
+    const QVector<Case> cases{
+        {ClipEffectPreset::SourceMosaicGrid, render_detail::kVulkanEffectModeSourceMosaicGrid},
+        {ClipEffectPreset::SourceMosaicStagger, render_detail::kVulkanEffectModeSourceMosaicStagger},
+        {ClipEffectPreset::SourceMosaicHex, render_detail::kVulkanEffectModeSourceMosaicHex},
+        {ClipEffectPreset::SourceMosaicRadial, render_detail::kVulkanEffectModeSourceMosaicRadial},
+        {ClipEffectPreset::SourceMosaicFlow, render_detail::kVulkanEffectModeSourceMosaicFlow},
+    };
+
+    for (const Case& testCase : cases) {
+        TimelineClip clip;
+        clip.effectPreset = testCase.preset;
+        clip.effectRows = 24;
+        clip.effectSpeed = 5.6;
+        clip.effectScale = 3.2;
+        clip.tilingSpacing = 6.0;
+
+        const render_detail::VulkanEffectPipelinePlan plan =
+            render_detail::vulkanEffectPipelinePlan(
+                clip, QRectF(0.0, 0.0, 1280.0, 720.0), QSize(320, 180), 12.0);
+
+        QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::GeneratedDraws);
+        QCOMPARE(plan.generatedDraws.size(), 1);
+        const auto& pass = plan.generatedDraws.constFirst();
+        QCOMPARE(pass.shaderMode, testCase.mode);
+        QCOMPARE(pass.outputRect, QRectF(0.0, 0.0, 1280.0, 720.0));
+        QCOMPARE(pass.effectParams[0], 6.0f);
+        QVERIFY(qAbs(pass.effectParams[1] - 0.7f) < 0.0001f);
+        QVERIFY(qAbs(pass.effectParams[2] - 0.4f) < 0.0001f);
+        QCOMPARE(pass.effectParams[3], 24.0f);
+    }
+}
+
+void TestEffectPresets::generatedMaskEffectsKeepFullFrameDomainAndSampleSourceMatte()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::RecursiveZoomTunnel;
+    clip.effectRows = 10;
+    clip.effectScale = 1.3;
+    clip.effectSpeed = 0.75;
+    clip.tilingSpacing = 1.0;
+
+    const QRectF output(0.0, 0.0, 1000.0, 500.0);
+    render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(100, 50), 30.0);
+    QVERIFY(plan.usesGeneratedDraws());
+    QCOMPARE(plan.generatedDraws.size(), 1);
+
+    render_detail::applyGeneratedEffectMaskDomain(
+        plan, QRectF(250.0, 100.0, 500.0, 300.0), output, true);
+    const auto& recursivePass = plan.generatedDraws.constFirst();
+    QCOMPARE(recursivePass.outputRect, output);
+    QCOMPARE(recursivePass.shaderMode,
+             render_detail::kVulkanEffectModeRecursiveZoomTunnel);
+    QCOMPARE(recursivePass.effectDomain[0], 0.0f);
+    QCOMPARE(recursivePass.effectDomain[1], 0.0f);
+    QCOMPARE(recursivePass.effectDomain[2], 1.0f);
+    QCOMPARE(recursivePass.effectDomain[3], -1.0f);
+    QCOMPARE(recursivePass.effectMaskDomain[0], 0.0f);
+    QCOMPARE(recursivePass.effectMaskDomain[1], 0.0f);
+    QCOMPARE(recursivePass.effectMaskDomain[2], 1.0f);
+    QCOMPARE(recursivePass.effectMaskDomain[3], 1.0f);
+
+    jcut::core::ImageBuffer mask;
+    mask.format = jcut::core::PixelFormat::Gray8;
+    mask.size = {10, 10};
+    mask.strideBytes = 10;
+    mask.bytes.assign(100, 0);
+    for (int y = 2; y < 8; ++y) {
+        for (int x = 3; x < 7; ++x) {
+            mask.bytes[static_cast<std::size_t>(y * mask.strideBytes + x)] = 255;
+        }
+    }
+    const QTransform identity;
+    const QRectF mapped = render_detail::mappedMaskContentBounds(
+        mask, identity, output, output, 0.0, false);
+    QCOMPARE(mapped, QRectF(300.0, 100.0, 400.0, 300.0));
+    render_detail::applyGeneratedEffectMaskDomain(
+        plan, mapped, output, true, QRectF(0.3, 0.2, 0.4, 0.6));
+    QCOMPARE(plan.generatedDraws.constFirst().effectDomain[0], 0.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectDomain[1], 0.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectDomain[2], 1.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectDomain[3], -1.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectMaskDomain[0], 0.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectMaskDomain[1], 0.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectMaskDomain[2], 1.0f);
+    QCOMPARE(plan.generatedDraws.constFirst().effectMaskDomain[3], 1.0f);
+
+    clip.effectPreset = ClipEffectPreset::SourceMosaicHex;
+    plan = render_detail::vulkanEffectPipelinePlan(
+        clip, output, QSize(100, 50), 30.0);
+    render_detail::applyGeneratedEffectMaskDomain(plan, mapped, output, true);
+    const auto& mosaicPass = plan.generatedDraws.constFirst();
+    QCOMPARE(mosaicPass.shaderMode,
+             render_detail::kVulkanEffectModeSourceMosaicHex);
+    QCOMPARE(mosaicPass.outputRect, output);
+    QVERIFY(mosaicPass.effectDomain[3] < 0.0f);
+
+    QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+    QVERIFY(shader.open(QIODevice::ReadOnly));
+    const QString shaderSource = QString::fromUtf8(shader.readAll());
+    QVERIFY(shaderSource.contains(QStringLiteral("generatedEffectDomainUv")));
+    QVERIFY(shaderSource.contains(QStringLiteral("generatedEffectAppliesMaskMatte")));
+    QVERIFY(shaderSource.contains(QStringLiteral("generatedEffectMaskUv")));
+    QVERIFY(!shaderSource.contains(QStringLiteral(
+        "earlyMaskOverlay || earlyMaskOnly || generatedEffectAppliesMaskMatte()")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "effectUv = generatedEffectDomainSourceUv(")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "sourceMosaicMicroUv(generatedEffectDomainUv(v_texCoord)")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "sourceAlpha *= treatedMaskValue(textureInteriorClamp(effectUv))")));
+}
+
+void TestEffectPresets::recursiveZoomVariantsUseKeyframedZoomIndependentOfEffectClock()
+{
+    struct Case {
+        ClipEffectPreset preset;
+        float mode;
+    };
+    const QVector<Case> cases{
+        {ClipEffectPreset::RecursiveZoomTile,
+         render_detail::kVulkanEffectModeRecursiveZoomTile},
+        {ClipEffectPreset::RecursiveZoomTunnel,
+         render_detail::kVulkanEffectModeRecursiveZoomTunnel},
+        {ClipEffectPreset::RecursiveZoomMirrorBox,
+         render_detail::kVulkanEffectModeRecursiveZoomMirrorBox},
+        {ClipEffectPreset::RecursiveZoomSpiral,
+         render_detail::kVulkanEffectModeRecursiveZoomSpiral},
+        {ClipEffectPreset::RecursiveZoomKaleidoscope,
+         render_detail::kVulkanEffectModeRecursiveZoomKaleidoscope},
+        {ClipEffectPreset::RecursiveZoomRadialRepeat,
+         render_detail::kVulkanEffectModeRecursiveZoomRadialRepeat},
+        {ClipEffectPreset::RecursiveZoomPixelMosaic,
+         render_detail::kVulkanEffectModeRecursiveZoomPixelMosaic},
+    };
+
+    const QRectF output(0.0, 0.0, 1920.0, 1080.0);
+    const QSize sourceSize(1920, 1080);
+    for (const Case& testCase : cases) {
+        TimelineClip clip;
+        clip.effectPreset = testCase.preset;
+        clip.effectRows = 18;
+        clip.effectSpeed = 0.75;
+        clip.effectScale = 0.25;
+        clip.tilingSpacing = 1.4;
+
+        const auto startPlan =
+            render_detail::vulkanEffectPipelinePlan(
+                clip, output, sourceSize, 12.0, 0.0);
+        const auto latePlan =
+            render_detail::vulkanEffectPipelinePlan(
+                clip, output, sourceSize, 12.0, 120.0);
+        QVERIFY(startPlan.usesGeneratedDraws());
+        QVERIFY(latePlan.usesGeneratedDraws());
+        const auto& start = startPlan.generatedDraws.constFirst();
+        const auto& late = latePlan.generatedDraws.constFirst();
+        QCOMPARE(start.shaderMode, testCase.mode);
+        QCOMPARE(late.shaderMode, testCase.mode);
+        QCOMPARE(start.effectParams[0], 0.25f);
+        QCOMPARE(late.effectParams[0], 0.25f);
+        QCOMPARE(start.effectParams[1], 18.0f);
+        QCOMPARE(late.effectParams[1], 18.0f);
+        QCOMPARE(start.effectParams[3], 1.4f);
+        QCOMPARE(late.effectParams[3], 1.4f);
+        QCOMPARE(start.effectParams[2], 0.0f);
+        QCOMPARE(late.effectParams[2], 90.0f);
+
+        clip.effectScale = 1.0;
+        const auto integerOnePlan =
+            render_detail::vulkanEffectPipelinePlan(
+                clip, output, sourceSize, 12.0, 120.0);
+        QCOMPARE(integerOnePlan.generatedDraws.constFirst().effectParams[0], 1.0f);
+        QCOMPARE(integerOnePlan.generatedDraws.constFirst().effectParams[2], 90.0f);
+
+        clip.effectScale = 2.0;
+        const auto integerTwoPlan =
+            render_detail::vulkanEffectPipelinePlan(
+                clip, output, sourceSize, 12.0, 120.0);
+        QCOMPARE(integerTwoPlan.generatedDraws.constFirst().effectParams[0], 2.0f);
+        QCOMPARE(integerTwoPlan.generatedDraws.constFirst().effectParams[2], 90.0f);
+    }
+
+    TimelineClip keyed;
+    keyed.id = QStringLiteral("recursive-zoom-keyed");
+    keyed.clipRole = ClipRole::Media;
+    keyed.mediaType = ClipMediaType::Video;
+    keyed.startFrame = 100;
+    keyed.durationFrames = 101;
+    keyed.effectPreset = ClipEffectPreset::RecursiveZoomTunnel;
+    keyed.effectRows = 10;
+    keyed.effectSpeed = 0.5;
+    keyed.effectScale = 1.0;
+    keyed.tilingSpacing = 1.0;
+
+    TimelineClip::EffectParameterKeyframe first;
+    first.frame = 0;
+    first.effectPreset = ClipEffectPreset::RecursiveZoomTunnel;
+    first.effectPresetKeyframed = true;
+    first.effectRows = 10;
+    first.effectSpeed = 0.5;
+    first.effectScale = 1.0;
+    first.tilingSpacing = 1.0;
+
+    TimelineClip::EffectParameterKeyframe second = first;
+    second.frame = 100;
+    second.effectScale = 2.0;
+
+    keyed.effectParameterKeyframes = {first, second};
+    const TimelineClip evaluated =
+        evaluateClipEffectAnimationAtPosition(keyed, 150.0);
+    QCOMPARE(evaluated.effectPreset, ClipEffectPreset::RecursiveZoomTunnel);
+    QCOMPARE(evaluated.effectScale, 1.5);
+
+    const auto keyedPlan = render_detail::vulkanEffectPipelinePlan(
+        evaluated, output, sourceSize, 150.0, 50.0);
+    QVERIFY(keyedPlan.usesGeneratedDraws());
+    QCOMPARE(keyedPlan.generatedDraws.constFirst().shaderMode,
+             render_detail::kVulkanEffectModeRecursiveZoomTunnel);
+    QCOMPARE(keyedPlan.generatedDraws.constFirst().effectParams[0], 1.5f);
+
+    QFile shader(QStringLiteral(JCUT_SOURCE_DIR "/shaders/vulkan/effects.frag"));
+    QVERIFY(shader.open(QIODevice::ReadOnly));
+    const QString shaderSource = QString::fromUtf8(shader.readAll());
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "Zoom phase comes from the effect zoom parameter")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "periodicOriginalWeight(continuousZoom)")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "textureInteriorClamp(generatedEffectDomainSourceUv(domainUv))")));
+    QVERIFY(shaderSource.contains(QStringLiteral("bool exactTileMode = mode == 30")));
+    QVERIFY(shaderSource.contains(QStringLiteral(
+        "? childScale * recursionBase")));
+}
+
+void TestEffectPresets::directionalFrameEchoProducesBalancedHueShiftedInstances()
+{
+    TimelineClip clip;
+    clip.effectPreset = ClipEffectPreset::DirectionalFrameEcho;
+    clip.effectRows = 5;
+    clip.effectSpeed = 0.0;
+    clip.effectScale = 4.0;
+    clip.tilingSpacing = 1.0;
+
+    const QRectF output(10.0, 20.0, 200.0, 100.0);
+    const render_detail::VulkanEffectPipelinePlan plan =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(200, 100), 0.0);
+
+    QVERIFY(plan.mode == render_detail::VulkanEffectPipelinePlan::Mode::GeneratedDraws);
+    QCOMPARE(plan.generatedDraws.size(), 5);
+    const auto& first = plan.generatedDraws.constFirst();
+    const auto& middle = plan.generatedDraws.at(2);
+    const auto& last = plan.generatedDraws.constLast();
+    QCOMPARE(first.shaderMode, render_detail::kVulkanEffectModeDirectionalFrameEcho);
+    QCOMPARE(middle.shaderMode, render_detail::kVulkanEffectModeDirectionalFrameEcho);
+    QCOMPARE(last.shaderMode, render_detail::kVulkanEffectModeDirectionalFrameEcho);
+    QCOMPARE(middle.outputRect, output);
+    QCOMPARE(first.outputRect.y(), output.y());
+    QCOMPARE(last.outputRect.y(), output.y());
+    QVERIFY(first.outputRect.x() < output.x());
+    QVERIFY(last.outputRect.x() > output.x());
+    QVERIFY(qFuzzyCompare(output.x() - first.outputRect.x(),
+                         last.outputRect.x() - output.x()));
+    QVERIFY(first.effectParams[0] < 0.0f);
+    QVERIFY(qAbs(middle.effectParams[0]) < 0.0001f);
+    QVERIFY(last.effectParams[0] > 0.0f);
+    QVERIFY(qFuzzyCompare(-first.effectParams[0], last.effectParams[0]));
+    QVERIFY(middle.opacityMultiplier > first.opacityMultiplier);
+
+    clip.effectSpeed = 2.0;
+    const render_detail::VulkanEffectPipelinePlan vertical =
+        render_detail::vulkanEffectPipelinePlan(
+            clip, output, QSize(200, 100), 0.0);
+    QCOMPARE(vertical.generatedDraws.size(), 5);
+    QVERIFY(vertical.generatedDraws.constFirst().outputRect.y() < output.y());
+    QVERIFY(vertical.generatedDraws.constLast().outputRect.y() > output.y());
+    QVERIFY(qFuzzyCompare(output.y() - vertical.generatedDraws.constFirst().outputRect.y(),
+                         vertical.generatedDraws.constLast().outputRect.y() - output.y()));
+
+    TimelineClip stepClip;
+    stepClip.effectPreset = ClipEffectPreset::StepRepeat;
+    stepClip.effectRows = 5;
+    const render_detail::VulkanEffectPipelinePlan stepPlan =
+        render_detail::vulkanEffectPipelinePlan(
+            stepClip, output, QSize(200, 100), 0.0);
+    QCOMPARE(stepPlan.generatedDraws.size(), 5);
+    QVERIFY(stepPlan.generatedDraws.constFirst().shaderMode !=
+            render_detail::kVulkanEffectModeDirectionalFrameEcho);
+    QVERIFY(stepPlan.generatedDraws.at(2).outputRect != output);
 }
 
 void TestEffectPresets::directionalTrimTickerAnimatesWidthAndDirection()

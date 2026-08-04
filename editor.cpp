@@ -1076,6 +1076,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         jcut::audio::normalizedMasterOutputAudioDelayMs(
             root.value(QStringLiteral("masterOutputAudioDelayMs"))
                 .toInt(jcut::audio::kDefaultMasterOutputAudioDelayMs));
+    const int masterOutputSubtitleOffsetMs =
+        jcut::subtitle::normalizedMasterOutputOffsetMs(
+            root.value(QStringLiteral("masterOutputSubtitleOffsetMs"))
+                .toInt(jcut::subtitle::kDefaultMasterOutputOffsetMs));
     const bool createImageSequence = root.value(QStringLiteral("createImageSequence")).toBool(false);
     const QString imageSequenceFormat =
         root.value(QStringLiteral("imageSequenceFormat")).toString(QStringLiteral("jpeg"));
@@ -1580,6 +1584,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         track.tilingSpacing =
             qBound<qreal>(0.1, obj.value(QStringLiteral("tilingSpacing")).toDouble(1.0), 8.0);
         track.tilingWrap = obj.value(QStringLiteral("tilingWrap")).toBool(true);
+        track.tilingUseMaskBounds =
+            obj.value(QStringLiteral("tilingUseMaskBounds")).toBool(false);
+        track.tilingMaskIslandSigma =
+            qBound<qreal>(0.0, obj.value(QStringLiteral("tilingMaskIslandSigma")).toDouble(0.0), 100.0);
         track.effectParameterSets = obj.value(QStringLiteral("effectParameterSets")).toObject();
         loadedTracks.push_back(track);
     }
@@ -1690,6 +1698,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_masterOutputAudioDelayMsSpin) {
         QSignalBlocker block(m_masterOutputAudioDelayMsSpin);
         m_masterOutputAudioDelayMsSpin->setValue(masterOutputAudioDelayMs);
+    }
+    if (m_masterOutputSubtitleOffsetMsSpin) {
+        QSignalBlocker block(m_masterOutputSubtitleOffsetMsSpin);
+        m_masterOutputSubtitleOffsetMsSpin->setValue(
+            masterOutputSubtitleOffsetMs);
     }
     if (m_createImageSequenceCheckBox) {
         QSignalBlocker block(m_createImageSequenceCheckBox);

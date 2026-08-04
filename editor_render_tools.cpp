@@ -644,6 +644,10 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         m_masterOutputAudioDelayMsSpin
         ? m_masterOutputAudioDelayMsSpin->value()
         : jcut::audio::kDefaultMasterOutputAudioDelayMs;
+    request.masterOutputSubtitleOffsetMs =
+        m_masterOutputSubtitleOffsetMsSpin
+        ? m_masterOutputSubtitleOffsetMsSpin->value()
+        : jcut::subtitle::kDefaultMasterOutputOffsetMs;
     request.instagramSafeAreaGuides =
         m_instagramSafeAreaGuidesCheckBox &&
         m_instagramSafeAreaGuidesCheckBox->isChecked();
@@ -750,6 +754,16 @@ void EditorWindow::persistExportRequestDefaults(const RenderRequest& request)
         m_masterOutputAudioDelayMsSpin->value() != nextAudioDelayMs) {
         QSignalBlocker blocker(m_masterOutputAudioDelayMsSpin);
         m_masterOutputAudioDelayMsSpin->setValue(nextAudioDelayMs);
+        changed = true;
+    }
+    const int nextSubtitleOffsetMs =
+        jcut::subtitle::normalizedMasterOutputOffsetMs(
+            request.masterOutputSubtitleOffsetMs);
+    if (m_masterOutputSubtitleOffsetMsSpin &&
+        m_masterOutputSubtitleOffsetMsSpin->value() !=
+            nextSubtitleOffsetMs) {
+        QSignalBlocker blocker(m_masterOutputSubtitleOffsetMsSpin);
+        m_masterOutputSubtitleOffsetMsSpin->setValue(nextSubtitleOffsetMs);
         changed = true;
     }
     if (m_preview && nextSize.isValid() && m_preview->outputSize() != nextSize) {

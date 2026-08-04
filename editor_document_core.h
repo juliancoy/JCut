@@ -80,7 +80,7 @@ inline EditorAudioTreatment editorAudioTreatmentFromId(
 
 // Canonical persisted IDs shared with the Qt preset serializer. Commands still
 // preserve unknown IDs so newer projects remain forward-compatible.
-inline constexpr std::array<std::string_view, 41> kEditorEffectPresetIds = {
+inline constexpr std::array<std::string_view, 48> kEditorEffectPresetIds = {
     "none",
     "mirror_ring",
     "kaleidoscope",
@@ -106,6 +106,12 @@ inline constexpr std::array<std::string_view, 41> kEditorEffectPresetIds = {
     "slit_scan",
     "freeze_pattern",
     "step_repeat",
+    "step_repeat_fill",
+    "source_mosaic_grid",
+    "source_mosaic_stagger",
+    "source_mosaic_hex",
+    "source_mosaic_radial",
+    "source_mosaic_flow",
     "source_tile",
     "news_logo_ticker",
     "directional_trim_ticker",
@@ -121,6 +127,7 @@ inline constexpr std::array<std::string_view, 41> kEditorEffectPresetIds = {
     "speaker_mask_dilation",
     "speaker_mask_dilation_pulse",
     "speaker_mask_dilation_rings",
+    "directional_frame_echo",
     "difference_matte",
 };
 
@@ -209,6 +216,8 @@ struct EditorBoolKeyframe {
 
 struct EditorEffectParameterKeyframe {
     std::int64_t frame = 0;
+    std::string effectPreset = "none";
+    bool effectPresetKeyframed = false;
     int effectRows = 32;
     double effectSpeed = 1.0;
     double effectScale = 1.0;
@@ -222,6 +231,14 @@ struct EditorEffectParameterKeyframe {
     std::string tilingPattern = "grid";
     double tilingSpacing = 1.0;
     bool tilingWrap = true;
+    bool tilingUseMaskBounds = false;
+    double tilingMaskIslandSigma = 0.0;
+    std::string effectModulationMode = "none";
+    std::string effectModulationTarget = "scale";
+    double effectModulationAmount = 0.0;
+    double effectModulationRate = 1.0;
+    double effectModulationPhaseDegrees = 0.0;
+    bool effectSkipAwareTiming = false;
     bool linearInterpolation = true;
 };
 

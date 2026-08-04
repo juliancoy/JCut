@@ -421,6 +421,13 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
              "render_vulkan_shared.cpp must be readable");
     const QString sharedRenderSource =
         QString::fromUtf8(sharedRenderFile.readAll());
+    QFile compositionFile(
+        QStringLiteral(JCUT_SOURCE_DIR) +
+        QStringLiteral("/offscreen_vulkan_renderer_composition.h"));
+    QVERIFY2(compositionFile.open(QIODevice::ReadOnly),
+             "offscreen_vulkan_renderer_composition.h must be readable");
+    const QString compositionSource =
+        QString::fromUtf8(compositionFile.readAll());
     QFile maskPreprocessorFile(
         QStringLiteral(JCUT_SOURCE_DIR) +
         QStringLiteral("/vulkan_mask_preprocessor.cpp"));
@@ -428,16 +435,26 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
              "vulkan_mask_preprocessor.cpp must be readable");
     const QString maskPreprocessorSource =
         QString::fromUtf8(maskPreprocessorFile.readAll());
+    QFile vulkanResourcesFile(
+        QStringLiteral(JCUT_SOURCE_DIR) +
+        QStringLiteral("/vulkan_resources.cpp"));
+    QVERIFY2(vulkanResourcesFile.open(QIODevice::ReadOnly),
+             "vulkan_resources.cpp must be readable");
+    const QString vulkanResourcesSource =
+        QString::fromUtf8(vulkanResourcesFile.readAll());
     QVERIFY2(vulkanSource.contains(QStringLiteral(
                  "if (!frameContext.externalVulkanOutput)")) &&
                  vulkanSource.contains(QStringLiteral(
                      "lastRenderedVulkanFrame(&output->vulkanFrame")),
              "Vulkan export must make canonical external Vulkan output mode explicit");
-    QVERIFY2(!vulkanSource.contains(QStringLiteral("CPU-raster title layer")) &&
-                 vulkanSource.contains(QStringLiteral("textInputs.title3D.push_back(title)")),
-             "All titles must use the Vulkan text path, including GPU-only export");
-    QVERIFY2(vulkanSource.contains(QStringLiteral("uploadFrame(layer.frame, false")) &&
-                 vulkanSource.contains(QStringLiteral("return false;\n        }\n      }\n      QImage rgba")),
+    QVERIFY2(vulkanSource.contains(QStringLiteral("textInputs.title3D.push_back(title)")) &&
+                 !vulkanSource.contains(QStringLiteral("titleOverlay = renderTitleOverlay")) &&
+                 !vulkanSource.contains(QStringLiteral("layer.overlayImage = titleOverlay")) &&
+                 vulkanSource.contains(QStringLiteral("if (!titleClip && !clip.titleKeyframes.isEmpty())")),
+             "Standalone and embedded title clips must use the GPU-native text path without CPU title images");
+    QVERIFY2(compositionSource.contains(QStringLiteral("uploadFrame(layer.frame, false")) &&
+                 compositionSource.contains(QStringLiteral("image fallback is disabled")) &&
+                 compositionSource.contains(QStringLiteral("QImage rgba")),
              "GPU-output render path must not fall back to CPU image uploads when hardware handoff fails");
     QVERIFY2(vulkanSource.contains(QStringLiteral(
                  "timingSource.id.trimmed() != clip.linkedSourceClipId.trimmed()")) &&
@@ -448,7 +465,7 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
                  "vulkanMaskCorrectionStorageData")) &&
                  maskPreprocessorSource.contains(QStringLiteral(
                      "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER")) &&
-                 vulkanSource.contains(QStringLiteral(
+                 vulkanResourcesSource.contains(QStringLiteral(
                      "m_maskPreprocessor.record(")) &&
                  !vulkanSource.contains(QStringLiteral(
                      "applyCorrectionPolygonsToMaskBuffer")) &&

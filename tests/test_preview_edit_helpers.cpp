@@ -11,6 +11,7 @@ private slots:
     void testPreviewResizeUpdatesTemporalTransformKeyframe();
     void testPreviewResizeKeyframeStoresRelativeToBaseTransform();
     void testPreviewMovePreservesTemporalScale();
+    void testTitlePreviewMoveUsesRegularTransformKeyframes();
     void testMaskMattePreviewTransformOwnerRequiresVideoMediaParent();
 };
 
@@ -182,6 +183,33 @@ void TestPreviewEditHelpers::testPreviewMovePreservesTemporalScale() {
     QCOMPARE(moved.translationY, -44.0);
     QCOMPARE(moved.scaleX, 2.835);
     QCOMPARE(moved.scaleY, 2.835);
+}
+
+void TestPreviewEditHelpers::testTitlePreviewMoveUsesRegularTransformKeyframes() {
+    TimelineClip clip;
+    clip.id = QStringLiteral("title-preview-edit");
+    clip.mediaType = ClipMediaType::Title;
+    clip.startFrame = 10;
+    clip.durationFrames = 120;
+    clip.sourceDurationFrames = 120;
+    TimelineClip::TitleKeyframe title;
+    title.frame = 0;
+    title.text = QStringLiteral("Title");
+    title.translationX = 17.0;
+    title.translationY = -23.0;
+    clip.titleKeyframes = {title};
+
+    QVERIFY(commitPreviewMove(clip, 50, 80.0, -45.0, false));
+
+    QCOMPARE(clip.titleKeyframes.size(), 1);
+    QCOMPARE(clip.titleKeyframes.constFirst().translationX, 17.0);
+    QCOMPARE(clip.titleKeyframes.constFirst().translationY, -23.0);
+    QCOMPARE(clip.transformKeyframes.size(), 2);
+    QCOMPARE(clip.transformKeyframes.constLast().frame, int64_t{40});
+    const TimelineClip::TransformKeyframe moved =
+        evaluateClipTransformAtFrame(clip, 50);
+    QCOMPARE(moved.translationX, 80.0);
+    QCOMPARE(moved.translationY, -45.0);
 }
 
 void TestPreviewEditHelpers::testMaskMattePreviewTransformOwnerRequiresVideoMediaParent() {

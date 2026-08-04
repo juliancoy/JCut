@@ -12,6 +12,8 @@ layout(set = 0, binding = 4) uniform FrameUniforms {
     vec4 backgroundHighlights;
     vec4 backgroundGrade; // xyz = brightness, contrast, saturation
     vec4 effectParams; // x=intensity/scale, y=count/radius, z=animation phase, w=spacing
+    vec4 effectDomain; // xy=min, zw=size; w < 0 applies mask matte for object-domain draws
+    vec4 effectMaskDomain; // normalized mask-content crop for object-domain matte sampling
 } frame;
 layout(push_constant) uniform Push {
     mat4 u_mvp;
@@ -51,6 +53,18 @@ vec3 applyCurveLut(vec3 rgb, bool maskCurveEnabled) {
     return rgb;
 }
 
+vec3 hueShiftRgb(vec3 rgb, float hueTurns) {
+    float angle = hueTurns * 6.28318530718;
+    vec3 axis = vec3(0.57735026919);
+    float cosine = cos(angle);
+    float sine = sin(angle);
+    return clamp(rgb * cosine +
+                 cross(axis, rgb) * sine +
+                 axis * dot(axis, rgb) * (1.0 - cosine),
+                 vec3(0.0),
+                 vec3(1.0));
+}
+
 float softMaskShadow(vec2 uv, float radiusPixels) {
     vec2 texel = 1.0 / max(vec2(1.0), vec2(textureSize(u_mask, 0)));
     vec2 nearOffset = texel * min(max(radiusPixels, 0.0), 96.0) * 0.35;
@@ -77,6 +91,91 @@ vec2 textureInteriorClamp(vec2 uv) {
     vec2 low = min(halfTexel, vec2(0.5));
     vec2 high = max(vec2(1.0) - halfTexel, low);
     return clamp(uv, low, high);
+}
+
+float hash21(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+vec2 rotate2(vec2 p, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return mat2(c, -s, s, c) * p;
+}
+
+vec2 sourceMosaicMicroUv(vec2 screenUv, int mode, float density, float phase) {
+    vec2 uv = screenUv;
+    if (mode == 40) {
+        float row = floor(uv.y * density);
+        uv.x += mod(row, 2.0) * 0.5 / density;
+    } else if (mode == 41) {
+        uv.x += floor(uv.y * density * 0.8660254) * 0.5 / density;
+        uv.y *= 0.8660254;
+    } else if (mode == 42) {
+        vec2 p = screenUv - vec2(0.5);
+        float radius = length(p) * 2.0;
+        float angle = atan(p.y, p.x) / 6.28318530718 + 0.5;
+        uv = vec2(angle * density, radius * density * 0.72);
+    } else if (mode == 43) {
+        vec2 p = screenUv - vec2(0.5);
+        float flow = sin(p.y * 9.0 + phase * 1.7) * 0.16 +
+                     cos(p.x * 7.0 - phase * 1.3) * 0.10;
+        uv = screenUv + vec2(flow, -flow * 0.45);
+    }
+
+    vec2 tile = floor(uv * density);
+    vec2 local = fract(uv * density) - vec2(0.5);
+    float jitter = hash21(tile);
+    float angle = (jitter - 0.5) * 0.75 + phase * 0.08;
+    local = rotate2(local, angle);
+    local = clamp(local * (0.88 + hash21(tile + 13.17) * 0.18) + vec2(0.5),
+                  vec2(0.0),
+                  vec2(1.0));
+    vec2 sourceOffset = vec2(hash21(tile + 3.1), hash21(tile + 9.7));
+    return fract(sourceOffset + local * 0.62);
+}
+
+vec2 generatedEffectDomainSize() {
+    return max(vec2(abs(frame.effectDomain.z), abs(frame.effectDomain.w)),
+               vec2(0.0001));
+}
+
+vec2 generatedEffectDomainUv(vec2 screenUv) {
+    return (screenUv - frame.effectDomain.xy) / generatedEffectDomainSize();
+}
+
+vec2 generatedEffectDomainSourceUv(vec2 domainUv) {
+    return frame.effectDomain.xy + domainUv * generatedEffectDomainSize();
+}
+
+bool generatedEffectAppliesMaskMatte() {
+    return frame.effectDomain.w < 0.0;
+}
+
+vec2 generatedEffectMaskUv(vec2 screenUv) {
+    vec2 domainUv = generatedEffectDomainUv(screenUv);
+    vec2 maskSize = max(abs(frame.effectMaskDomain.zw), vec2(0.0001));
+    return frame.effectMaskDomain.xy + domainUv * maskSize;
+}
+
+float periodicOriginalWeight(float phase) {
+    float wrapped = fract(phase);
+    float edgeDistance = min(wrapped, 1.0 - wrapped);
+    return 1.0 - smoothstep(0.0, 0.14, edgeDistance);
+}
+
+vec3 adaptToMosaicGuide(vec3 micro,
+                        vec3 guide,
+                        float lumaMatch,
+                        float hueMatch) {
+    float microLum = max(lumaOf(micro), 0.01);
+    float guideLum = max(lumaOf(guide), 0.01);
+    vec3 lumaAdapted = micro * clamp(guideLum / microLum, 0.25, 4.0);
+    vec3 guideChroma = guide / guideLum;
+    vec3 hueAdapted = guideChroma * max(lumaOf(lumaAdapted), 0.01);
+    return clamp(mix(micro, mix(lumaAdapted, hueAdapted, hueMatch), lumaMatch),
+                 vec3(0.0),
+                 vec3(1.0));
 }
 
 vec4 samplePostGradeTexture(vec2 uv) {
@@ -517,7 +616,11 @@ vec4 tileFillSample(vec2 uv) {
     return samplePostGradeTexture(textureInteriorClamp(validUv));
 }
 
-vec2 recursiveZoomVariantUv(vec2 uv, float scale, float phase, int mode) {
+vec2 recursiveZoomVariantUv(vec2 uv,
+                             float scale,
+                             float zoomPhase,
+                             float motionPhase,
+                             int mode) {
     vec2 centered = uv - vec2(0.5);
     float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
     float density = clamp(frame.effectParams.y, 1.0, 96.0);
@@ -527,8 +630,8 @@ vec2 recursiveZoomVariantUv(vec2 uv, float scale, float phase, int mode) {
     if (mode == 31) { // Recursive zoom tunnel
         float r = max(length(centered), 0.0001);
         float a = atan(centered.y, centered.x);
-        return vec2(fract(a / tau + 0.5 + phase * 0.35),
-                    fract(-log(r) * 0.22 * spacing + scale * 0.021));
+        return vec2(fract(a / tau + 0.5 + motionPhase * 0.35),
+                    fract(-log(r) * 0.22 * spacing + zoomPhase));
     }
     if (mode == 32) { // Recursive zoom mirror box
         vec2 box = centered * scale + vec2(0.5);
@@ -538,20 +641,20 @@ vec2 recursiveZoomVariantUv(vec2 uv, float scale, float phase, int mode) {
         float r = max(length(centered), 0.0001);
         float a = atan(centered.y, centered.x) +
                   log(r) * spacing +
-                  phase * tau;
+                  motionPhase * tau;
         float rr = mirroredCoord(r * scale) * 0.5;
         return vec2(0.5) + vec2(cos(a), sin(a)) * rr;
     }
     if (mode == 34) { // Recursive zoom kaleidoscope
         float r = length(centered) * scale;
-        float a = atan(centered.y, centered.x) + phase * tau * 0.5;
+        float a = atan(centered.y, centered.x) + motionPhase * tau * 0.5;
         float wedge = tau / sectors;
         a = abs(mod(a + wedge * 0.5, wedge) - wedge * 0.5);
         return vec2(0.5) + vec2(cos(a), sin(a)) * mirroredCoord(r) * 0.5;
     }
     if (mode == 35) { // Recursive zoom radial repeat
         float r = length(centered) * scale;
-        float a = atan(centered.y, centered.x) + phase * tau * 0.25;
+        float a = atan(centered.y, centered.x) + motionPhase * tau * 0.25;
         float wedge = tau / sectors;
         a = mod(a + wedge * 0.5, wedge) - wedge * 0.5;
         return vec2(0.5) + vec2(cos(a), sin(a)) * fract(r);
@@ -566,25 +669,50 @@ vec2 recursiveZoomVariantUv(vec2 uv, float scale, float phase, int mode) {
 }
 
 vec4 recursiveZoomVariantSample(vec2 uv, int mode) {
-    float grain = clamp(frame.effectParams.x, 0.1, 8.0);
+    vec2 domainUv = generatedEffectDomainUv(uv);
     float density = clamp(frame.effectParams.y, 1.0, 96.0);
     float spacing = clamp(frame.effectParams.w, 0.1, 8.0);
     // One complete phase moves from the current scale into the next tiled
-    // scale, while crossfading toward the parent level.  At phase wrap the
-    // parent level equals the new child level, making the infinite zoom loop
-    // continuous rather than a hard reset.
+    // scale.  Zoom phase comes from the effect zoom parameter, not transport
+    // playback or preview/timeline zoom.  Integer effect zoom positions are
+    // exact original-frame anchors for every recursive zoom variant, so
+    // keyframed zooms are continuous and periodically resolve back to source.
     float recursionBase = clamp(1.65 + density * 0.025 + spacing * 0.22,
                                 2.0,
                                 6.0);
-    float phase = fract(frame.effectParams.z * 0.012);
-    float childScale = grain * pow(recursionBase, phase);
-    float parentScale = childScale / recursionBase;
-    vec2 childUv = recursiveZoomVariantUv(uv, childScale, phase, mode);
-    vec2 parentUv = recursiveZoomVariantUv(uv, parentScale, fract(phase + 1.0), mode);
+    float continuousZoom = max(frame.effectParams.x, 0.0);
+    float zoomPhase = fract(continuousZoom);
+    float motionPhase = frame.effectParams.z * 0.012;
+    float childScale = pow(recursionBase, zoomPhase);
+    bool exactTileMode = mode == 30;
+    // Tile recursion must never crossfade through a scale below one source
+    // domain.  A below-one layer stretches the masked subject.  Instead, tile
+    // mode blends upward from the current exact bounding-box repeat to the
+    // next repeat density, so a tile scale of one samples the full box exactly
+    // and higher densities are seamless repeats of that same box.
+    float tileLayerScale = exactTileMode
+        ? childScale * recursionBase
+        : childScale / recursionBase;
+    vec2 childUv = generatedEffectDomainSourceUv(
+        recursiveZoomVariantUv(domainUv, childScale, continuousZoom, motionPhase, mode));
+    vec2 parentUv = generatedEffectDomainSourceUv(
+        recursiveZoomVariantUv(domainUv, tileLayerScale, continuousZoom - 1.0, motionPhase, mode));
     vec4 child = texture(u_texture, textureInteriorClamp(childUv));
     vec4 parent = texture(u_texture, textureInteriorClamp(parentUv));
-    float replace = smoothstep(0.36, 0.92, phase);
-    return mix(child, parent, replace);
+    if (generatedEffectAppliesMaskMatte()) {
+        child.a *= treatedMaskValue(textureInteriorClamp(childUv));
+        parent.a *= treatedMaskValue(textureInteriorClamp(parentUv));
+    }
+    float replace = smoothstep(0.36, 0.92, zoomPhase);
+    vec4 recursive = mix(child, parent, replace);
+    vec4 original = texture(
+        u_texture,
+        textureInteriorClamp(generatedEffectDomainSourceUv(domainUv)));
+    if (generatedEffectAppliesMaskMatte()) {
+        original.a *= treatedMaskValue(
+            textureInteriorClamp(generatedEffectDomainSourceUv(domainUv)));
+    }
+    return mix(recursive, original, periodicOriginalWeight(continuousZoom));
 }
 
 vec4 recursiveZoomTileSample(vec2 uv) {
@@ -760,6 +888,13 @@ void main() {
         vec2 local = fract(v_texCoord * 18.0) - 0.5;
         float hash = fract(sin(dot(cell, vec2(41.7, 289.1))) * 43758.5);
         effectUv = v_texCoord + normalize(local + vec2(0.001)) * (hash - 0.5) * 0.035;
+    } else if (artisticMode >= 39 && artisticMode <= 43) { // Source mosaic variants
+        float density = clamp(frame.effectParams.w, 1.0, 96.0);
+        effectUv = generatedEffectDomainSourceUv(
+            sourceMosaicMicroUv(generatedEffectDomainUv(v_texCoord),
+                                artisticMode,
+                                density,
+                                frame.effectParams.y + frame.effectParams.z));
     }
     bool recursiveZoomVariant = !backgroundFill &&
         artisticMode >= 30 && artisticMode <= 36;
@@ -778,6 +913,10 @@ void main() {
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;
+    if (generatedEffectAppliesMaskMatte() &&
+        ((artisticMode >= 38 && artisticMode <= 43))) {
+        sourceAlpha *= treatedMaskValue(textureInteriorClamp(effectUv));
+    }
     if (artisticMode == 24 || artisticMode == 25) {
         float sampleRadius = clamp(frame.effectParams.y, 1.0, 4.0);
         vec2 texel = sampleRadius / vec2(textureSize(u_texture, 0));
@@ -798,6 +937,34 @@ void main() {
             vec3 neon = 0.5 + 0.5 * cos(vec3(0.0, 2.1, 4.2) + edge * 8.0 + frame.effectParams.z * 0.03);
             rgb = clamp(rgb * 0.18 + neon * edge * max(0.1, frame.effectParams.x), 0.0, 1.0);
         }
+    } else if (artisticMode == 37) {
+        rgb = hueShiftRgb(rgb, frame.effectParams.x);
+    } else if (artisticMode == 38) {
+        vec2 screenUv = gl_FragCoord.xy * frame.outputSizeAndInverse.zw;
+        screenUv.y = 1.0 - screenUv.y;
+        float guideScale = clamp(frame.effectParams.x, 0.5, 8.0);
+        vec2 guideUv = textureInteriorClamp((screenUv - vec2(0.5)) / guideScale + vec2(0.5));
+        vec3 guide = texture(u_texture, guideUv).rgb;
+        float tileLum = max(lumaOf(rgb), 0.01);
+        float guideLum = max(lumaOf(guide), 0.01);
+        float lumaMatch = clamp(frame.effectParams.y, 0.0, 1.0);
+        float hueMatch = clamp(frame.effectParams.z, 0.0, 1.0);
+        vec3 lumaAdapted = rgb * clamp(guideLum / tileLum, 0.25, 4.0);
+        vec3 guideChroma = guide / guideLum;
+        vec3 hueAdapted = guideChroma * max(lumaOf(lumaAdapted), 0.01);
+        rgb = clamp(mix(rgb, mix(lumaAdapted, hueAdapted, hueMatch), lumaMatch),
+                    vec3(0.0),
+                    vec3(1.0));
+    } else if (artisticMode >= 39 && artisticMode <= 43) {
+        float guideScale = clamp(frame.effectParams.x, 0.5, 8.0);
+        vec2 domainUv = generatedEffectDomainUv(v_texCoord);
+        vec2 guideUv = textureInteriorClamp(
+            generatedEffectDomainSourceUv((domainUv - vec2(0.5)) / guideScale + vec2(0.5)));
+        vec3 guide = texture(u_texture, guideUv).rgb;
+        rgb = adaptToMosaicGuide(rgb,
+                                 guide,
+                                 clamp(frame.effectParams.y, 0.0, 1.0),
+                                 clamp(frame.effectParams.z, 0.0, 1.0));
     } else if (artisticMode >= 26 && artisticMode <= 28) {
         vec2 texel = 1.0 / vec2(textureSize(u_mask, 0));
         float centerMask = texture(u_mask, v_texCoord).r;
@@ -837,12 +1004,14 @@ void main() {
     }
     // Some hardware-direct decoder paths provide valid color but undefined/zero alpha.
     // Treat non-black, near-zero-alpha texels as opaque to avoid black preview frames.
-    if (sourceAlpha <= 0.0001) {
+    if (sourceAlpha <= 0.0001 && !generatedEffectAppliesMaskMatte()) {
         if (max(max(rgb.r, rgb.g), rgb.b) > 0.0001) {
             sourceAlpha = 1.0;
         } else {
             rgb = vec3(0.0);
         }
+    } else if (sourceAlpha <= 0.0001) {
+        rgb = vec3(0.0);
     }
 
     if (pc.u_midtones.a > 0.0 && sourceAlpha > 0.0) {

@@ -149,7 +149,7 @@ void TestShaderGradingLogic::
 
     const int mainPosition = shader.indexOf(QStringLiteral("void main()"));
     const int maskPosition = shader.indexOf(
-        QStringLiteral("resolvedMaskValue = treatedMaskValue(v_texCoord)"),
+        QStringLiteral("resolvedMaskValue = treatedMaskValue(maskUv)"),
         mainPosition);
     const int discardPosition = shader.indexOf(QStringLiteral("discard;"), maskPosition);
     const int sourceSamplePosition = shader.indexOf(

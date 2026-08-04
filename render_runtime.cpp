@@ -127,6 +127,9 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.masterOutputAudioDelayMs =
         audio::normalizedMasterOutputAudioDelayMs(
             request.masterOutputAudioDelayMs);
+    qtRequest.masterOutputSubtitleOffsetMs =
+        subtitle::normalizedMasterOutputOffsetMs(
+            request.masterOutputSubtitleOffsetMs);
     qtRequest.instagramSafeAreaGuides = request.instagramSafeAreaGuides;
     qtRequest.alignmentGridGuides = request.alignmentGridGuides;
     qtRequest.transcriptPrependMs = request.transcriptPrependMs;

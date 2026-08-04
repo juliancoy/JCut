@@ -263,6 +263,9 @@ void TestPlaybackPolicy::
         QStringLiteral("control_server_worker_routes.cpp"));
     const QString exportSource = readSourceFile(
         QStringLiteral("render_export.cpp"));
+    const QString outputTab = readSourceFile(QStringLiteral("output_tab.cpp"));
+    const QString inspector = readSourceFile(
+        QStringLiteral("inspector_pane_secondary_tabs.cpp"));
     QVERIFY2(routes.contains(QStringLiteral("/render/config")) &&
                  routes.contains(QStringLiteral(
                      "segment_decode_lookahead_frames")) &&
@@ -278,6 +281,16 @@ void TestPlaybackPolicy::
                      "prewarmedDecodeFramesBySegment")),
              "An active export must re-read the live lookahead and extend an "
              "already-prewarmed segment when the value increases.");
+    QVERIFY2(inspector.contains(QStringLiteral(
+                 "Auto-tune segment prewarming")) &&
+                 outputTab.contains(QStringLiteral(
+                     "onSegmentPrewarmAutotuneToggled")) &&
+                 outputTab.contains(QStringLiteral(
+                     "setRenderSegmentDecodeLookaheadAutotuneEnabled(checked)")) &&
+                 outputTab.contains(QStringLiteral(
+                     "renderSegmentDecodeLookaheadAutotuneEnabled()")),
+             "The Output tab toggle must read and write the canonical live "
+             "segment-prewarming autotune state.");
 }
 
 void TestPlaybackPolicy::testFrameSmoothStepSpeedThroughMapsOutgoingTailAcrossGap()

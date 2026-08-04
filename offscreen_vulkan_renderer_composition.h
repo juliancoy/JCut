@@ -140,7 +140,10 @@
       float highlights[4];
     } push{};
     auto updateFrameUniformForDraw =
-        [&](const LayerInput* layer = nullptr, const float* effectParams = nullptr) -> uint32_t {
+        [&](const LayerInput* layer = nullptr,
+            const float* effectParams = nullptr,
+            const float* effectDomain = nullptr,
+            const float* effectMaskDomain = nullptr) -> uint32_t {
       if (!m_frameUniformMapped || m_frameUniformStride == 0) {
         return 0u;
       }
@@ -165,6 +168,14 @@
       }
       if (effectParams) {
         std::memcpy(values.effectParams, effectParams, sizeof(values.effectParams));
+      }
+      if (effectDomain) {
+        std::memcpy(values.effectDomain, effectDomain, sizeof(values.effectDomain));
+      }
+      if (effectMaskDomain) {
+        std::memcpy(values.effectMaskDomain,
+                    effectMaskDomain,
+                    sizeof(values.effectMaskDomain));
       }
       const VkDeviceSize offset =
           m_frameUniformStride * static_cast<VkDeviceSize>(m_frameUniformRingIndex);
@@ -831,8 +842,14 @@
                                     const float midtones[4],
                                     const float highlights[4],
                                     float mode,
-                                    const float* effectParams = nullptr) {
-          const uint32_t frameUniformOffset = updateFrameUniformForDraw(&layer, effectParams);
+                                    const float* effectParams = nullptr,
+                                    const float* effectDomain = nullptr,
+                                    const float* effectMaskDomain = nullptr) {
+          const uint32_t frameUniformOffset =
+              updateFrameUniformForDraw(&layer,
+                                        effectParams,
+                                        effectDomain,
+                                        effectMaskDomain);
           vkCmdBindDescriptorSets(
               m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
               m_effectsPipelineLayout, 0, 1, &slot.descriptorSet, 1, &frameUniformOffset);
@@ -939,9 +956,12 @@
                 m_outputSize,
                 drawPass.rotationDegrees,
                 presetMvp);
-            const float drawMode = layer.maskClipSource
-                                       ? kVulkanEffectModeMaskGrade
-                                       : drawPass.shaderMode;
+            const bool generatedMaskDomainDraw =
+                layer.maskClipSource && drawPass.effectDomain[3] < 0.0f;
+            const float drawMode =
+                layer.maskClipSource && !generatedMaskDomainDraw
+                    ? kVulkanEffectModeMaskGrade
+                    : drawPass.shaderMode;
             float drawShadows[4];
             float drawMidtones[4];
             float drawHighlights[4];
@@ -969,7 +989,9 @@
                              drawMidtones,
                              drawHighlights,
                              drawMode,
-                             drawPass.effectParams);
+                             drawPass.effectParams,
+                             drawPass.effectDomain,
+                             drawPass.effectMaskDomain);
           }
           if (layer.presetScissorEnabled) {
             vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);

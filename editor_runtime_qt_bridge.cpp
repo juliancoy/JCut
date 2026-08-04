@@ -276,6 +276,9 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
              clip.effectParameterKeyframes) {
             EditorEffectParameterKeyframe value;
             value.frame = keyframe.frame;
+            value.effectPreset =
+                editor::effectPresetToJson(keyframe.effectPreset).toStdString();
+            value.effectPresetKeyframed = keyframe.effectPresetKeyframed;
             value.effectRows = keyframe.effectRows;
             value.effectSpeed = keyframe.effectSpeed;
             value.effectScale = keyframe.effectScale;
@@ -290,6 +293,17 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
                 editor::tilingPatternToJson(keyframe.tilingPattern).toStdString();
             value.tilingSpacing = keyframe.tilingSpacing;
             value.tilingWrap = keyframe.tilingWrap;
+            value.tilingUseMaskBounds = keyframe.tilingUseMaskBounds;
+            value.tilingMaskIslandSigma = keyframe.tilingMaskIslandSigma;
+            value.effectModulationMode =
+                keyframe.effectModulationMode.toStdString();
+            value.effectModulationTarget =
+                keyframe.effectModulationTarget.toStdString();
+            value.effectModulationAmount = keyframe.effectModulationAmount;
+            value.effectModulationRate = keyframe.effectModulationRate;
+            value.effectModulationPhaseDegrees =
+                keyframe.effectModulationPhaseDegrees;
+            value.effectSkipAwareTiming = keyframe.effectSkipAwareTiming;
             value.linearInterpolation = keyframe.linearInterpolation;
             coreClip.effectParameterKeyframes.push_back(std::move(value));
         }

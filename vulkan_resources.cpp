@@ -62,9 +62,11 @@ struct FrameUniformData {
     float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float backgroundGrade[4] = {0.0f, 1.0f, 1.0f, 0.0f};
     float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float effectDomain[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    float effectMaskDomain[4] = {0.0f, 0.0f, 1.0f, 1.0f};
 };
 
-static_assert(sizeof(FrameUniformData) == sizeof(float) * 24);
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 32);
 
 bool checkedAdd(VkDeviceSize a, VkDeviceSize b, VkDeviceSize* out)
 {
@@ -520,7 +522,9 @@ bool VulkanResources::updateFrameUniform(const QSize& outputSize,
                                          const float* backgroundMidtones,
                                          const float* backgroundHighlights,
                                          const float* backgroundGrade,
-                                         const float* effectParams)
+                                         const float* effectParams,
+                                         const float* effectDomain,
+                                         const float* effectMaskDomain)
 {
     if (!m_frameUniformMapped || m_frameUniformStride == 0) {
         return false;
@@ -546,6 +550,14 @@ bool VulkanResources::updateFrameUniform(const QSize& outputSize,
     }
     if (effectParams) {
         std::memcpy(values.effectParams, effectParams, sizeof(values.effectParams));
+    }
+    if (effectDomain) {
+        std::memcpy(values.effectDomain, effectDomain, sizeof(values.effectDomain));
+    }
+    if (effectMaskDomain) {
+        std::memcpy(values.effectMaskDomain,
+                    effectMaskDomain,
+                    sizeof(values.effectMaskDomain));
     }
     const VkDeviceSize offset = m_frameUniformStride * m_frameUniformRingIndex;
     std::memcpy(static_cast<char*>(m_frameUniformMapped) + offset, &values, sizeof(values));

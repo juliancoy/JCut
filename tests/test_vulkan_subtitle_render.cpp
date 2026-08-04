@@ -203,6 +203,23 @@ double subtitleRegionAverageLuma(const QImage& frame)
     return samples > 0 ? total / static_cast<double>(samples) : 0.0;
 }
 
+double subtitleRegionAverageAlpha(const QImage& frame)
+{
+    const QRect roi(frame.width() * 0.08,
+                    frame.height() * 0.22,
+                    frame.width() * 0.84,
+                    frame.height() * 0.56);
+    double total = 0.0;
+    int samples = 0;
+    for (int y = qMax(0, roi.top()); y < qMin(frame.height(), roi.bottom()); ++y) {
+        for (int x = qMax(0, roi.left()); x < qMin(frame.width(), roi.right()); ++x) {
+            total += frame.pixelColor(x, y).alphaF();
+            ++samples;
+        }
+    }
+    return samples > 0 ? total / static_cast<double>(samples) : 0.0;
+}
+
 } // namespace
 
 class TestVulkanSubtitleRender : public QObject {
@@ -213,12 +230,73 @@ private slots:
     void cleanup() { clearAllActiveTranscriptPaths(); }
     void testOffscreenVulkanSubtitleTextPixels_data();
     void testOffscreenVulkanSubtitleTextPixels();
+    void testMasterOutputSubtitleOffsetIsIndependentAndSigned();
+    void testMasterOutputSubtitleOffsetRetimesFinalVulkanText();
     void testOffscreenVulkanTranscriptOpacityFadePixels();
     void testOffscreenVulkanTitleTextPixels();
     void testOffscreenVulkanImageTextureOrientation();
     void testOffscreenVulkanTickerPresetDrawsRepeatedImagePixels();
     void testOffscreenVulkanContinuousMaskOpacityAndShadow();
 };
+
+void TestVulkanSubtitleRender::testMasterOutputSubtitleOffsetIsIndependentAndSigned()
+{
+    QCOMPARE(jcut::subtitle::kDefaultMasterOutputOffsetMs, -150);
+    QCOMPARE(jcut::subtitle::finalRenderOffsetMs(-51, -150), -201);
+    QCOMPARE(jcut::subtitle::finalRenderOffsetMs(80, -150), -70);
+    QCOMPARE(jcut::subtitle::finalRenderOffsetMs(-51, 150), 99);
+}
+
+void TestVulkanSubtitleRender::testMasterOutputSubtitleOffsetRetimesFinalVulkanText()
+{
+    const QSize outputSize(720, 720);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString clipPath = dir.filePath(QStringLiteral("clip.mp4"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+    const QString transcriptPath =
+        dir.filePath(QStringLiteral("clip_editable.json"));
+    QVERIFY(writeTranscript(transcriptPath));
+    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
+
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+
+    RenderRequest request;
+    request.outputPath = QStringLiteral("test://subtitle-output-offset");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = outputSize;
+    request.transcriptPrependMs = 0;
+    request.transcriptPostpendMs = 0;
+    request.transcriptOffsetMs = 0;
+    request.clips = {makeTranscriptClip(clipPath, outputSize)};
+    QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, editor::DecoderContext*> decoders;
+    render_detail::RenderPreparedFrameQueue asyncCache;
+
+    auto renderAtFrame29 = [&](int masterOffsetMs) {
+        request.masterOutputSubtitleOffsetMs = masterOffsetMs;
+        qint64 decodeMs = 0;
+        qint64 textureMs = 0;
+        qint64 compositeMs = 0;
+        qint64 readbackMs = 0;
+        return renderer.renderFrame(
+            request, 29, decoders, nullptr, &asyncCache, orderedClips,
+            nullptr, &decodeMs, &textureMs, &compositeMs, &readbackMs,
+            nullptr, nullptr);
+    };
+
+    const QImage unshifted = renderAtFrame29(0);
+    const QImage shiftedEarlier = renderAtFrame29(-150);
+    QVERIFY(!unshifted.isNull());
+    QVERIFY(!shiftedEarlier.isNull());
+    QVERIFY2(countSubtitlePixels(unshifted).nonBlack > 0,
+             "unshifted subtitle should still be visible at 0.967 seconds");
+    QCOMPARE(countSubtitlePixels(shiftedEarlier).nonBlack, 0);
+}
 
 void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels_data()
 {
@@ -252,6 +330,7 @@ void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels()
     }
 
     RenderRequest request;
+    request.masterOutputSubtitleOffsetMs = 0;
     request.outputPath = QStringLiteral("test://vulkan-subtitle");
     request.outputFormat = QStringLiteral("preview");
     request.outputSize = outputSize;
@@ -349,6 +428,7 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTranscriptOpacityFadePixels()
     }
 
     RenderRequest request;
+    request.masterOutputSubtitleOffsetMs = 0;
     request.outputPath = QStringLiteral("test://vulkan-subtitle-opacity");
     request.outputFormat = QStringLiteral("preview");
     request.outputSize = outputSize;
@@ -404,6 +484,32 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTranscriptOpacityFadePixels()
              qPrintable(QStringLiteral("faded transcript should still render visibly; full=%1 faded=%2")
                             .arg(fullLuma, 0, 'f', 6)
                             .arg(fadedLuma, 0, 'f', 6)));
+
+    auto renderCpuOverlay = [&](const TimelineClip& clip) {
+        QHash<QString, QVector<TranscriptSection>> transcriptCache;
+        const render_detail::OverlayImage overlay =
+            render_detail::overlayRenderBackend().renderTranscriptOverlay(
+                outputSize,
+                request,
+                15,
+                QVector<TimelineClip>{clip},
+                transcriptCache);
+        return overlay.asQImageView().copy();
+    };
+    const QImage fullCpuOverlay = renderCpuOverlay(fullOpacity);
+    const QImage fadedCpuOverlay = renderCpuOverlay(faded);
+    QVERIFY2(!fullCpuOverlay.isNull(), "full-opacity CPU transcript render failed");
+    QVERIFY2(!fadedCpuOverlay.isNull(), "faded CPU transcript render failed");
+    const double fullCpuAlpha = subtitleRegionAverageAlpha(fullCpuOverlay);
+    const double fadedCpuAlpha = subtitleRegionAverageAlpha(fadedCpuOverlay);
+    QVERIFY2(
+        fadedCpuAlpha < fullCpuAlpha * 0.65,
+        qPrintable(QStringLiteral(
+            "CPU transcript fade must match clip opacity; full alpha=%1 faded alpha=%2")
+            .arg(fullCpuAlpha, 0, 'f', 6)
+            .arg(fadedCpuAlpha, 0, 'f', 6)));
+    QVERIFY2(fadedCpuAlpha > fullCpuAlpha * 0.15,
+             "faded CPU transcript must remain visible");
 }
 
 void TestVulkanSubtitleRender::testOffscreenVulkanTitleTextPixels()

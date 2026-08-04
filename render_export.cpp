@@ -2115,6 +2115,8 @@ QJsonObject trackSignatureJson(const TimelineTrack& track)
          static_cast<int>(track.tilingPattern)},
         {QStringLiteral("tilingSpacing"), track.tilingSpacing},
         {QStringLiteral("tilingWrap"), track.tilingWrap},
+        {QStringLiteral("tilingUseMaskBounds"), track.tilingUseMaskBounds},
+        {QStringLiteral("tilingMaskIslandSigma"), track.tilingMaskIslandSigma},
         {QStringLiteral("effectParameterSets"), track.effectParameterSets},
     };
 }
@@ -2131,6 +2133,8 @@ QByteArray incrementalRenderSignature(const RenderRequest& request,
         {QStringLiteral("playbackSpeed"), request.playbackSpeed},
         {QStringLiteral("masterOutputAudioDelayMs"),
          request.masterOutputAudioDelayMs},
+        {QStringLiteral("masterOutputSubtitleOffsetMs"),
+         request.masterOutputSubtitleOffsetMs},
         {QStringLiteral("useProxyMedia"), request.useProxyMedia},
         {QStringLiteral("bypassGrading"), request.bypassGrading},
         {QStringLiteral("correctionsEnabled"), request.correctionsEnabled},

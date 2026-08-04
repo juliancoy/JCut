@@ -51,6 +51,7 @@ nlohmann::json toJson(const RenderRequestCore& request)
         {"incrementalExport", request.incrementalExport},
         {"incrementalChunkFrames", request.incrementalChunkFrames},
         {"masterOutputAudioDelayMs", request.masterOutputAudioDelayMs},
+        {"masterOutputSubtitleOffsetMs", request.masterOutputSubtitleOffsetMs},
         {"instagramSafeAreaGuides", request.instagramSafeAreaGuides},
         {"alignmentGridGuides", request.alignmentGridGuides},
         {"transcriptPrependMs", request.transcriptPrependMs},

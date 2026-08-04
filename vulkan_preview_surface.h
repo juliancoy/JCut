@@ -155,7 +155,6 @@ private:
         qint64 presentedFrames = 0;
         bool playing = false;
     };
-
     static QRectF facestreamKeyframeBoxNorm(const FacestreamKeyframe& keyframe,
                                             const QSize& clipFrameSize);
     static QVector<VulkanPreviewFacestreamOverlay> rawDetectionsFromCacheEntry(

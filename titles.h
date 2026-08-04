@@ -77,6 +77,7 @@ EvaluatedTitle prepareRenderableTitleForVulkanText(const TimelineClip& clip,
                                                    qreal opacityMultiplier,
                                                    const QSize& outputSize);
 TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale = 1.0);
+QRectF titleRenderBounds(const EvaluatedTitle& title, const QSize& outputSize);
 EvaluatedTitle fitTitleToOutput(const EvaluatedTitle& title,
                                 const QSize& outputSize,
                                 qreal safeWidthFraction = 0.90,

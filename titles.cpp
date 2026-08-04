@@ -342,6 +342,47 @@ TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontSca
     return render_detail::measureOverlayTitleLayout(title, fontScale);
 }
 
+QRectF titleRenderBounds(const EvaluatedTitle& title, const QSize& outputSize)
+{
+    if (!title.valid || !outputSize.isValid() || title.text.trimmed().isEmpty()) {
+        return {};
+    }
+    const TitleLayoutMetrics metrics = measureTitleLayout(title);
+    if (metrics.width <= 0.0 || metrics.height <= 0.0) {
+        return {};
+    }
+    const QPointF center((outputSize.width() - 1) * 0.5 + title.x,
+                         (outputSize.height() - 1) * 0.5 + title.y);
+    const qreal padding = (title.windowEnabled || title.windowFrameEnabled)
+        ? qMax<qreal>(0.0, title.windowPadding) : 0.0;
+    const qreal frameExtent = title.windowFrameEnabled
+        ? qMax<qreal>(0.0, title.windowFrameGap) +
+              qMax<qreal>(1.0, title.windowFrameWidth)
+        : 0.0;
+    QRectF bounds(center.x() - metrics.width * 0.5,
+                  center.y() - metrics.height * 0.5,
+                  metrics.width,
+                  metrics.height);
+    bounds.adjust(-padding - frameExtent,
+                  -padding - frameExtent,
+                  padding + frameExtent,
+                  padding + frameExtent);
+    if (!title.logoPath.trimmed().isEmpty()) {
+        const qreal logoSize = qBound<qreal>(34.0, title.fontSize * 1.35, 140.0);
+        bounds.setLeft(bounds.left() - logoSize - qMax<qreal>(8.0, padding * 0.45));
+    }
+    if (title.dropShadowEnabled && title.dropShadowOpacity > 0.0) {
+        bounds = bounds.united(bounds.translated(
+            title.dropShadowOffsetX, title.dropShadowOffsetY));
+    }
+    if (title.vulkan3DExtrudeEnabled && title.vulkan3DExtrudeDepth > 0.001) {
+        const qreal extrusionExtent = qMax<qreal>(2.0, title.vulkan3DExtrudeDepth * 40.0);
+        bounds.adjust(-extrusionExtent, -extrusionExtent,
+                      extrusionExtent, extrusionExtent);
+    }
+    return bounds.intersected(QRectF(QPointF(0.0, 0.0), QSizeF(outputSize)));
+}
+
 EvaluatedTitle fitTitleToOutput(const EvaluatedTitle& title,
                                 const QSize& outputSize,
                                 qreal safeWidthFraction,

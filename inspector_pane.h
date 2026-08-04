@@ -11,6 +11,7 @@ class QHBoxLayout;
 class QDoubleSpinBox;
 class QSpinBox;
 class QSlider;
+class QDial;
 class QComboBox;
 class QCheckBox;
 class QFontComboBox;
@@ -34,6 +35,7 @@ public:
 
     struct OutputRenderControls {
         QCheckBox *incrementalRender = nullptr;
+        QCheckBox *segmentPrewarmAutotune = nullptr;
         QCheckBox *instagramSafeAreaGuides = nullptr;
         QCheckBox *alignmentGridGuides = nullptr;
         QLabel *renderCachePath = nullptr;
@@ -285,7 +287,10 @@ public:
     QDoubleSpinBox *edgeFillOpacitySpin() const { return m_edgeFillOpacitySpin; }
     QDoubleSpinBox *edgeFillBrightnessSpin() const { return m_edgeFillBrightnessSpin; }
     QDoubleSpinBox *edgeFillSaturationSpin() const { return m_edgeFillSaturationSpin; }
+    QComboBox *effectPresetCategoryCombo() const { return m_effectPresetCategoryCombo; }
     QComboBox *effectPresetCombo() const { return m_effectPresetCombo; }
+    QPushButton *effectPresetPreviousButton() const { return m_effectPresetPreviousButton; }
+    QPushButton *effectPresetNextButton() const { return m_effectPresetNextButton; }
     QLabel *effectPresetSpecificHelpLabel() const { return m_effectPresetSpecificHelpLabel; }
     QSpinBox *differenceReferenceFramesSpin() const { return m_differenceReferenceFramesSpin; }
     QDoubleSpinBox *differenceThresholdSpin() const { return m_differenceThresholdSpin; }
@@ -313,6 +318,26 @@ public:
     QComboBox *tilingPatternCombo() const { return m_tilingPatternCombo; }
     QDoubleSpinBox *tilingSpacingSpin() const { return m_tilingSpacingSpin; }
     QCheckBox *tilingWrapCheck() const { return m_tilingWrapCheck; }
+    QWidget *maskBoundingBoxSection() const { return m_maskBoundingBoxSection; }
+    QCheckBox *tilingUseMaskBoundsCheck() const { return m_tilingUseMaskBoundsCheck; }
+    QDoubleSpinBox *tilingMaskIslandSigmaSpin() const { return m_tilingMaskIslandSigmaSpin; }
+    QCheckBox *maskBoundingBoxPreviewCheck() const { return m_maskBoundingBoxPreviewCheck; }
+    QWidget *directionalEchoControlsWidget() const { return m_directionalEchoControlsWidget; }
+    QDial *directionalEchoDirectionDial() const { return m_directionalEchoDirectionDial; }
+    QLabel *directionalEchoDirectionValueLabel() const { return m_directionalEchoDirectionValueLabel; }
+    QDial *directionalEchoSpreadDial() const { return m_directionalEchoSpreadDial; }
+    QLabel *directionalEchoSpreadValueLabel() const { return m_directionalEchoSpreadValueLabel; }
+    QDial *directionalEchoHueDial() const { return m_directionalEchoHueDial; }
+    QLabel *directionalEchoHueValueLabel() const { return m_directionalEchoHueValueLabel; }
+    QLabel *directionalEchoSummaryLabel() const { return m_directionalEchoSummaryLabel; }
+    QWidget *stepRepeatFillControlsWidget() const { return m_stepRepeatFillControlsWidget; }
+    QDial *stepRepeatFillGuideScaleDial() const { return m_stepRepeatFillGuideScaleDial; }
+    QLabel *stepRepeatFillGuideScaleValueLabel() const { return m_stepRepeatFillGuideScaleValueLabel; }
+    QDial *stepRepeatFillLumaMatchDial() const { return m_stepRepeatFillLumaMatchDial; }
+    QLabel *stepRepeatFillLumaMatchValueLabel() const { return m_stepRepeatFillLumaMatchValueLabel; }
+    QDial *stepRepeatFillHueMatchDial() const { return m_stepRepeatFillHueMatchDial; }
+    QLabel *stepRepeatFillHueMatchValueLabel() const { return m_stepRepeatFillHueMatchValueLabel; }
+    QLabel *stepRepeatFillSummaryLabel() const { return m_stepRepeatFillSummaryLabel; }
     QLabel *maskClipLabel() const { return m_maskClipLabel; }
     QCheckBox *maskEnabledCheck() const { return m_maskEnabledCheck; }
     QLineEdit *maskFramesDirEdit() const { return m_maskFramesDirEdit; }
@@ -521,9 +546,11 @@ public:
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
     QSpinBox *masterOutputAudioDelayMsSpin() const { return m_masterOutputAudioDelayMsSpin; }
+    QSpinBox *masterOutputSubtitleOffsetMsSpin() const { return m_masterOutputSubtitleOffsetMsSpin; }
     OutputRenderControls outputRenderControls() const
     {
         return {m_incrementalRenderCheckBox,
+                m_segmentPrewarmAutotuneCheckBox,
                 m_instagramSafeAreaGuidesCheckBox,
                 m_alignmentGridGuidesCheckBox,
                 m_renderCachePathLabel,
@@ -661,7 +688,10 @@ private:
     QDoubleSpinBox *m_edgeFillOpacitySpin = nullptr;
     QDoubleSpinBox *m_edgeFillBrightnessSpin = nullptr;
     QDoubleSpinBox *m_edgeFillSaturationSpin = nullptr;
+    QComboBox *m_effectPresetCategoryCombo = nullptr;
     QComboBox *m_effectPresetCombo = nullptr;
+    QPushButton *m_effectPresetPreviousButton = nullptr;
+    QPushButton *m_effectPresetNextButton = nullptr;
     QLabel *m_effectPresetSpecificHelpLabel = nullptr;
     QSpinBox *m_effectRowsSpin = nullptr;
     QDoubleSpinBox *m_effectSpeedSpin = nullptr;
@@ -689,6 +719,26 @@ private:
     QComboBox *m_tilingPatternCombo = nullptr;
     QDoubleSpinBox *m_tilingSpacingSpin = nullptr;
     QCheckBox *m_tilingWrapCheck = nullptr;
+    QWidget *m_maskBoundingBoxSection = nullptr;
+    QCheckBox *m_tilingUseMaskBoundsCheck = nullptr;
+    QDoubleSpinBox *m_tilingMaskIslandSigmaSpin = nullptr;
+    QCheckBox *m_maskBoundingBoxPreviewCheck = nullptr;
+    QWidget *m_directionalEchoControlsWidget = nullptr;
+    QDial *m_directionalEchoDirectionDial = nullptr;
+    QLabel *m_directionalEchoDirectionValueLabel = nullptr;
+    QDial *m_directionalEchoSpreadDial = nullptr;
+    QLabel *m_directionalEchoSpreadValueLabel = nullptr;
+    QDial *m_directionalEchoHueDial = nullptr;
+    QLabel *m_directionalEchoHueValueLabel = nullptr;
+    QLabel *m_directionalEchoSummaryLabel = nullptr;
+    QWidget *m_stepRepeatFillControlsWidget = nullptr;
+    QDial *m_stepRepeatFillGuideScaleDial = nullptr;
+    QLabel *m_stepRepeatFillGuideScaleValueLabel = nullptr;
+    QDial *m_stepRepeatFillLumaMatchDial = nullptr;
+    QLabel *m_stepRepeatFillLumaMatchValueLabel = nullptr;
+    QDial *m_stepRepeatFillHueMatchDial = nullptr;
+    QLabel *m_stepRepeatFillHueMatchValueLabel = nullptr;
+    QLabel *m_stepRepeatFillSummaryLabel = nullptr;
     QLabel *m_maskClipLabel = nullptr;
     QCheckBox *m_maskEnabledCheck = nullptr;
     QLineEdit *m_maskFramesDirEdit = nullptr;
@@ -1080,7 +1130,9 @@ private:
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QSpinBox *m_masterOutputAudioDelayMsSpin = nullptr;
+    QSpinBox *m_masterOutputSubtitleOffsetMsSpin = nullptr;
     QCheckBox *m_incrementalRenderCheckBox = nullptr;
+    QCheckBox *m_segmentPrewarmAutotuneCheckBox = nullptr;
     QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
     QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;
     QCheckBox *m_renderCreateVideoFromSequenceCheckBox = nullptr;

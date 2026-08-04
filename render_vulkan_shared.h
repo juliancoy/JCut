@@ -56,6 +56,13 @@ inline constexpr float kVulkanEffectModeRecursiveZoomSpiral = 33.0f;
 inline constexpr float kVulkanEffectModeRecursiveZoomKaleidoscope = 34.0f;
 inline constexpr float kVulkanEffectModeRecursiveZoomRadialRepeat = 35.0f;
 inline constexpr float kVulkanEffectModeRecursiveZoomPixelMosaic = 36.0f;
+inline constexpr float kVulkanEffectModeDirectionalFrameEcho = 37.0f;
+inline constexpr float kVulkanEffectModeStepRepeatFill = 38.0f;
+inline constexpr float kVulkanEffectModeSourceMosaicGrid = 39.0f;
+inline constexpr float kVulkanEffectModeSourceMosaicStagger = 40.0f;
+inline constexpr float kVulkanEffectModeSourceMosaicHex = 41.0f;
+inline constexpr float kVulkanEffectModeSourceMosaicRadial = 42.0f;
+inline constexpr float kVulkanEffectModeSourceMosaicFlow = 43.0f;
 inline constexpr float kVulkanEffectModeBackgroundBlur = -1.0f;
 inline constexpr float kVulkanEffectModeBackgroundEdgeStretch = -2.0f;
 inline constexpr float kVulkanEffectModeBackgroundProgressiveEdgeStretch = -3.0f;
@@ -85,6 +92,10 @@ struct VulkanEffectPipelinePlan {
                             0.0f, 1.0f, 0.0f,
                             1.0f, 1.0f, 0.0f};
         float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        // Normalized generated-effect domain in draw-local coordinates.
+        // w < 0 means the shader must also apply the bound mask matte.
+        float effectDomain[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+        float effectMaskDomain[4] = {0.0f, 0.0f, 1.0f, 1.0f};
     };
 
     Mode mode = Mode::PassThrough;
@@ -99,11 +110,27 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   const QSize& textureSize,
                                                   qreal timelineFrame,
                                                   qreal effectFrame = -1.0,
-                                                  const PlaybackTimingContext& timing = {});
+                                                  const PlaybackTimingContext& timing = {},
+                                                  const QRectF& tilingMaskBounds = {});
 QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,
                                         const QRectF& outputRect,
                                         const QSize& textureSize,
                                         qreal timelineFrame);
+QRectF normalizedMaskContentBounds(const jcut::core::ImageBuffer& mask,
+                                   qreal outsidePixelsPercent = 0.0,
+                                   bool invert = false);
+bool effectPresetUsesGeneratedMaskDomain(ClipEffectPreset preset);
+QRectF mappedMaskContentBounds(const jcut::core::ImageBuffer& mask,
+                               const QTransform& clipToScreen,
+                               const QRectF& localRect,
+                               const QRectF& outputRect,
+                               qreal outsidePixelsPercent = 0.0,
+                               bool invert = false);
+void applyGeneratedEffectMaskDomain(VulkanEffectPipelinePlan& plan,
+                                    const QRectF& domainRect,
+                                    const QRectF& outputRect,
+                                    bool applyMaskMatte,
+                                    const QRectF& maskDomain = QRectF(0.0, 0.0, 1.0, 1.0));
 qreal clipEffectPlaybackFramePosition(const TimelineClip& clip,
                                       const QVector<TimelineClip>& timelineClips,
                                       qreal timelineFramePosition,
@@ -206,6 +233,8 @@ struct VulkanRenderLayerPacket {
     bool maskClipSource = false;
     bool maskForegroundLayerEnabled = false;
     bool maskShowOnly = false;
+    bool maskBoundingBoxPreview = false;
+    QRectF maskBoundingBoxNorm;
     bool maskGradeEnabled = false;
     bool maskInvert = false;
     qreal maskErode = 0.0;

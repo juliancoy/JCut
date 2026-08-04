@@ -8,7 +8,7 @@
 
 namespace jcut::audio {
 
-inline constexpr int kDefaultMasterOutputAudioDelayMs = 150;
+inline constexpr int kDefaultMasterOutputAudioDelayMs = -150;
 inline constexpr int kMinMasterOutputAudioDelayMs = -10000;
 inline constexpr int kMaxMasterOutputAudioDelayMs = 10000;
 

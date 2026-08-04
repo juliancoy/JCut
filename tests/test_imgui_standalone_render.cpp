@@ -1109,6 +1109,7 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersTranscriptOverlayFro
     document.exportRequest.transcriptPrependMs = 0;
     document.exportRequest.transcriptPostpendMs = 0;
     document.exportRequest.transcriptOffsetMs = 0;
+    document.exportRequest.masterOutputSubtitleOffsetMs = -150;
     jcut::EditorClip clip;
     clip.id = 1;
     clip.persistentId = "dialogue-1";
@@ -1160,6 +1161,32 @@ void TestImGuiStandaloneRender::testStandalonePreviewRendersTranscriptOverlayFro
     document.clips.push_back(clip);
 
     constexpr jcut::core::SizeI outputSize{320, 180};
+    const auto previewNearEnd =
+        jcut::standalone_render::renderTimelineFrame({
+            document, outputSize, 29.0, tempDir.path().toStdString()});
+    QVERIFY2(previewNearEnd.success, previewNearEnd.message.c_str());
+    auto zeroOffsetDocument = document;
+    zeroOffsetDocument.exportRequest.masterOutputSubtitleOffsetMs = 0;
+    const auto zeroOffsetPreview =
+        jcut::standalone_render::renderTimelineFrame({
+            zeroOffsetDocument,
+            outputSize,
+            29.0,
+            tempDir.path().toStdString()});
+    QVERIFY2(zeroOffsetPreview.success, zeroOffsetPreview.message.c_str());
+    QCOMPARE(previewNearEnd.image.bytes, zeroOffsetPreview.image.bytes);
+
+    jcut::standalone_render::TimelineRenderRequest exportFrameRequest;
+    exportFrameRequest.document = document;
+    exportFrameRequest.outputSize = outputSize;
+    exportFrameRequest.timelineFrame = 29.0;
+    exportFrameRequest.rootDirectory = tempDir.path().toStdString();
+    exportFrameRequest.applyMasterOutputSubtitleOffset = true;
+    const auto retimedExportFrame =
+        jcut::standalone_render::renderTimelineFrame(exportFrameRequest);
+    QVERIFY2(retimedExportFrame.success, retimedExportFrame.message.c_str());
+    QVERIFY(previewNearEnd.image.bytes != retimedExportFrame.image.bytes);
+
     const auto firstWord = jcut::standalone_render::renderTimelineFrame({
         document, outputSize, 5.0, tempDir.path().toStdString()});
     QVERIFY2(firstWord.success, firstWord.message.c_str());

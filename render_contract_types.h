@@ -9,6 +9,7 @@
 #include <string>
 
 #include "master_output_audio_delay.h"
+#include "output_subtitle_timing.h"
 
 namespace jcut::render {
 
@@ -33,6 +34,8 @@ struct RenderRequestCore {
     bool incrementalExport = false;
     int incrementalChunkFrames = 900;
     int masterOutputAudioDelayMs = audio::kDefaultMasterOutputAudioDelayMs;
+    int masterOutputSubtitleOffsetMs =
+        subtitle::kDefaultMasterOutputOffsetMs;
     bool instagramSafeAreaGuides = false;
     bool alignmentGridGuides = false;
     int transcriptPrependMs = 150;

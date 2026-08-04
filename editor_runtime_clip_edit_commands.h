@@ -506,6 +506,19 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                         std::clamp(keyframe.temporalEchoDecay, 0.0, 1.0);
                     keyframe.tilingSpacing =
                         std::clamp(keyframe.tilingSpacing, 0.1, 8.0);
+                    keyframe.tilingMaskIslandSigma =
+                        std::clamp(keyframe.tilingMaskIslandSigma, 0.0, 100.0);
+                    keyframe.effectModulationAmount = std::clamp(
+                        keyframe.effectModulationAmount, -512.0, 512.0);
+                    keyframe.effectModulationRate = std::clamp(
+                        keyframe.effectModulationRate, 0.0, 20.0);
+                    keyframe.effectModulationPhaseDegrees = std::clamp(
+                        keyframe.effectModulationPhaseDegrees, -360.0, 360.0);
+                    if (keyframe.effectModulationTarget != "rows" &&
+                        keyframe.effectModulationTarget != "speed" &&
+                        keyframe.effectModulationTarget != "spacing") {
+                        keyframe.effectModulationTarget = "scale";
+                    }
                     static constexpr std::array<std::string_view, 7> kEffectKeyTilingPatterns = {
                         "grid", "encircle", "spiral", "spiral_xy", "spiral_xz", "spiral_yz", "diamond"};
                     if (std::find(

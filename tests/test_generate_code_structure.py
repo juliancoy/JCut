@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "generate_code_structure.py"
+VIEWER_SERVER = Path(__file__).resolve().parents[1] / "scripts" / "serve_code_structure.py"
 SPEC = importlib.util.spec_from_file_location("generate_code_structure", SCRIPT)
 assert SPEC and SPEC.loader
 generator = importlib.util.module_from_spec(SPEC)
@@ -464,6 +465,53 @@ struct Worker {
             )
             markdown = (output / "code_structure.md").read_text(encoding="utf-8")
             self.assertIn("## Large-file outlines (2 files)", markdown)
+            viewer = json.loads(
+                (output / "code_structure_graph.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(viewer["schema"], generator.VIEWER_SCHEMA)
+            self.assertEqual(len(viewer["nodes"]), 2)
+            self.assertEqual(
+                {item["id"] for item in viewer["nodes"]},
+                {"sample.cpp", "sample.py"},
+            )
+            self.assertNotIn("calls", viewer["nodes"][0])
+            self.assertTrue((output / "index.html").is_file())
+            self.assertTrue((output / "app.css").is_file())
+            self.assertTrue((output / "app.js").is_file())
+            viewer_html = (output / "index.html").read_text(encoding="utf-8")
+            viewer_app = (output / "app.js").read_text(encoding="utf-8")
+            self.assertIn('id="layout-mode"', viewer_html)
+            self.assertIn('id="size-metric"', viewer_html)
+            self.assertIn('id="edge-strength"', viewer_html)
+            self.assertIn('id="centrality-list"', viewer_html)
+            self.assertIn("function annotateCentrality(model)", viewer_app)
+            self.assertIn("function neighborhood(startId, edges, depth)", viewer_app)
+            self.assertIn("function drawArrowHead", viewer_app)
+            viewer_check = subprocess.run(
+                [
+                    sys.executable,
+                    str(VIEWER_SERVER),
+                    "--root", str(root),
+                    "--output-dir", str(output),
+                    "--check",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(viewer_check.returncode, 0, viewer_check.stderr)
+            self.assertIn("Viewer artifacts are valid", viewer_check.stdout)
+
+    def test_check_current_rejects_modified_viewer_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = self.create_generated_fixture(root)
+            (output / "app.js").write_text("modified", encoding="utf-8")
+
+            result = self.check_current(root, output)
+
+            self.assertEqual(result.returncode, 4)
+            self.assertIn("viewer asset differs from its source: app.js", result.stderr)
 
     def test_discovery_ignores_tracked_files_deleted_in_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

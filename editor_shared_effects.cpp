@@ -129,6 +129,8 @@ TimelineClip::EffectParameterKeyframe effectParameterKeyframeFromClip(
     keyframe.tilingPattern = clip.tilingPattern;
     keyframe.tilingSpacing = clip.tilingSpacing;
     keyframe.tilingWrap = clip.tilingWrap;
+    keyframe.tilingUseMaskBounds = clip.tilingUseMaskBounds;
+    keyframe.tilingMaskIslandSigma = clip.tilingMaskIslandSigma;
     keyframe.effectModulationMode = clip.effectModulationMode;
     keyframe.effectModulationTarget = clip.effectModulationTarget;
     keyframe.effectModulationAmount = clip.effectModulationAmount;
@@ -187,6 +189,11 @@ TimelineClip::EffectParameterKeyframe interpolatedEffectParameterKeyframe(
         1.0);
     result.tilingSpacing =
         qBound<qreal>(0.1, lerp(previous.tilingSpacing, next.tilingSpacing), 8.0);
+    result.tilingUseMaskBounds = previous.tilingUseMaskBounds;
+    result.tilingMaskIslandSigma = qBound<qreal>(
+        0.0,
+        lerp(previous.tilingMaskIslandSigma, next.tilingMaskIslandSigma),
+        100.0);
     result.effectModulationMode = previous.effectModulationMode;
     result.effectModulationTarget = previous.effectModulationTarget;
     result.effectModulationAmount = qBound<qreal>(
@@ -231,6 +238,9 @@ void applyEffectParameterKeyframe(TimelineClip* clip,
     clip->tilingPattern = keyframe.tilingPattern;
     clip->tilingSpacing = qBound<qreal>(0.1, keyframe.tilingSpacing, 8.0);
     clip->tilingWrap = keyframe.tilingWrap;
+    clip->tilingUseMaskBounds = keyframe.tilingUseMaskBounds;
+    clip->tilingMaskIslandSigma =
+        qBound<qreal>(0.0, keyframe.tilingMaskIslandSigma, 100.0);
     clip->effectModulationMode = keyframe.effectModulationMode;
     clip->effectModulationTarget = keyframe.effectModulationTarget;
     clip->effectModulationAmount =

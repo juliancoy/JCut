@@ -109,9 +109,11 @@ struct FrameUniformData {
   float backgroundHighlights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   float backgroundGrade[4] = {0.0f, 1.0f, 1.0f, 0.0f};
   float effectParams[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float effectDomain[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+  float effectMaskDomain[4] = {0.0f, 0.0f, 1.0f, 1.0f};
 };
 
-static_assert(sizeof(FrameUniformData) == sizeof(float) * 24);
+static_assert(sizeof(FrameUniformData) == sizeof(float) * 32);
 
 constexpr int kFrameUniformRingCount = 4096;
 
@@ -503,7 +505,20 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const TimelineClip &timingOwner = timingSource;
     const TimelineClip &effectsOwner = clip;
     const TimelineClip &matteOwner = clip;
-    const bool titleClip = clip.mediaType == ClipMediaType::Title;
+    const bool titleClip =
+        clip.mediaType == ClipMediaType::Title &&
+        !clip.transcriptOverlay.enabled;
+    if (clip.clipRole == ClipRole::TranscriptSubtitle) {
+      continue;
+    }
+    const bool visualLayerClip =
+        titleClip ||
+        clip.mediaType == ClipMediaType::Video ||
+        clip.mediaType == ClipMediaType::Image ||
+        clip.sourceKind == MediaSourceKind::ImageSequence;
+    if (!visualLayerClip) {
+      continue;
+    }
     // An orphaned or malformed virtual matte must never fall back to its
     // serialized media-path cache and decode as an independent full layer.
     // Normalization removes these clips, but export remains fail-closed when
@@ -541,8 +556,19 @@ QImage OffscreenVulkanRenderer::renderFrame(
     if (grade.opacity <= 0.001) {
       continue;
     }
+    ++visualClipCandidates;
+    QString decodePath;
+    int64_t localFrame = qBound<int64_t>(
+        0,
+        timelineFrame - clip.startFrame,
+        qMax<int64_t>(0, clip.durationFrames - 1));
+    int64_t mappedSourceSample = frameClock.timelineSample;
+    qreal mappedSourceFramePosition = static_cast<qreal>(localFrame);
+    int64_t mappedTranscriptFrame = localFrame;
+    editor::FrameHandle frame;
     if (titleClip) {
       if (clip.titleKeyframes.isEmpty()) {
+        recordUnresolvedLayer(clip, QStringLiteral("title_keyframes_empty"));
         continue;
       }
       const EvaluatedTitle title = prepareRenderableTitleForVulkanText(
@@ -552,28 +578,32 @@ QImage OffscreenVulkanRenderer::renderFrame(
           static_cast<qreal>(grade.opacity),
           request.outputSize);
       if (!title.valid) {
+        recordUnresolvedLayer(clip, QStringLiteral("title_evaluated_invisible"));
         continue;
       }
       textInputs.title3D.push_back(title);
+      ++visualLayersResolved;
       continue;
-    }
-    ++visualClipCandidates;
-    const QString decodePath = playbackMediaPathForClip(mediaOwner);
-    if (decodePath.isEmpty()) {
-      ++decodePathMissingCount;
-      recordUnresolvedLayer(clip, QStringLiteral("decode_path_missing"));
-      continue;
-    }
-    const ClipFrameMapping frameMapping =
-        clipFrameMappingForClock(
-            clip, request.clips, frameClock, request.renderSyncMarkers);
-    const int64_t localFrame = frameMapping.sourceFrame;
-    const editor::FrameHandle frame =
-        decodeFrameForTimingOwner(timingOwner, decodePath, localFrame);
-    if (frame.isNull()) {
-      ++decodeNullCount;
-      recordUnresolvedLayer(clip, QStringLiteral("decode_frame_unavailable"));
-      continue;
+    } else {
+      decodePath = playbackMediaPathForClip(mediaOwner);
+      if (decodePath.isEmpty()) {
+        ++decodePathMissingCount;
+        recordUnresolvedLayer(clip, QStringLiteral("decode_path_missing"));
+        continue;
+      }
+      const ClipFrameMapping frameMapping =
+          clipFrameMappingForClock(
+              clip, request.clips, frameClock, request.renderSyncMarkers);
+      localFrame = frameMapping.sourceFrame;
+      mappedSourceSample = frameMapping.sourceSample;
+      mappedSourceFramePosition = frameMapping.sourceFramePosition;
+      mappedTranscriptFrame = frameMapping.transcriptFrame;
+      frame = decodeFrameForTimingOwner(timingOwner, decodePath, localFrame);
+      if (frame.isNull()) {
+        ++decodeNullCount;
+        recordUnresolvedLayer(clip, QStringLiteral("decode_frame_unavailable"));
+        continue;
+      }
     }
     OffscreenVulkanRendererPrivate::LayerInput layer;
     layer.clipId = clip.id;
@@ -745,7 +775,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
             request.renderSyncMarkers,
             request.playbackTiming),
         request.clips);
-    if (effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
+    if (!titleClip && effectClip.effectPreset == ClipEffectPreset::DifferenceMatte) {
       layer.differenceThreshold =
           qBound<qreal>(0.0, effectClip.differenceThreshold, 1.0);
       layer.differenceSoftness =
@@ -778,7 +808,23 @@ QImage OffscreenVulkanRenderer::renderFrame(
          foregroundEffectClip.maskRepeatEnabled)
             ? layerGeometry.bounds.intersected(outputRect)
             : outputRect;
-    const VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
+    QRectF tilingMaskBounds;
+    if (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile &&
+        foregroundEffectClip.tilingUseMaskBounds && layer.maskBuffer) {
+      const QRectF normalizedMaskBounds =
+          normalizedMaskContentBounds(
+              *layer.maskBuffer,
+              foregroundEffectClip.tilingMaskIslandSigma,
+              matteOwner.maskInvert);
+      if (!normalizedMaskBounds.isEmpty()) {
+        tilingMaskBounds =
+            layerGeometry.clipToScreen
+                .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+                    normalizedMaskBounds, layerGeometry.localRect))
+                .intersected(outputRect);
+      }
+    }
+    VulkanEffectPipelinePlan effectPlan = vulkanEffectPipelinePlan(
         foregroundEffectClip,
         effectBounds,
         sourceSize,
@@ -786,7 +832,25 @@ QImage OffscreenVulkanRenderer::renderFrame(
         clipEffectPlaybackFramePosition(foregroundEffectClip, request.clips, generatedEffectClockTimelineFrame,
                                         request.playbackTiming,
                                         request.tracks),
-        request.playbackTiming);
+        request.playbackTiming,
+        tilingMaskBounds);
+    if (generatedMaskMatte && layer.maskBuffer &&
+        effectPresetUsesGeneratedMaskDomain(foregroundEffectClip.effectPreset)) {
+      const QRectF normalizedMaskDomain =
+          normalizedMaskContentBounds(
+              *layer.maskBuffer,
+              foregroundEffectClip.tilingMaskIslandSigma,
+              matteOwner.maskInvert);
+      const QRectF maskDomain =
+          normalizedMaskDomain.isEmpty()
+              ? QRectF{}
+              : layerGeometry.clipToScreen
+                    .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+                        normalizedMaskDomain, layerGeometry.localRect))
+                    .intersected(outputRect);
+      applyGeneratedEffectMaskDomain(
+          effectPlan, maskDomain, outputRect, true, normalizedMaskDomain);
+    }
     layer.effectPlan = effectPlan;
     const PlaybackFrameCrossfade frameCrossfade =
         clipShouldApplySpeechFilterFrameCrossfade(clip)
@@ -940,9 +1004,9 @@ QImage OffscreenVulkanRenderer::renderFrame(
       transformDiagnostics.insert(QStringLiteral("timeline_sample"), static_cast<qint64>(frameClock.timelineSample));
       transformDiagnostics.insert(QStringLiteral("sync_clock_domain"), QStringLiteral("timeline_sample"));
       transformDiagnostics.insert(QStringLiteral("decode_source_frame"), static_cast<qint64>(localFrame));
-      transformDiagnostics.insert(QStringLiteral("mapped_source_sample"), static_cast<qint64>(frameMapping.sourceSample));
-      transformDiagnostics.insert(QStringLiteral("mapped_source_frame_position"), frameMapping.sourceFramePosition);
-      transformDiagnostics.insert(QStringLiteral("mapped_transcript_frame"), static_cast<qint64>(frameMapping.transcriptFrame));
+      transformDiagnostics.insert(QStringLiteral("mapped_source_sample"), static_cast<qint64>(mappedSourceSample));
+      transformDiagnostics.insert(QStringLiteral("mapped_source_frame_position"), mappedSourceFramePosition);
+      transformDiagnostics.insert(QStringLiteral("mapped_transcript_frame"), static_cast<qint64>(mappedTranscriptFrame));
       transformDiagnostics.insert(QStringLiteral("renderer_texture_origin"), QStringLiteral("top_left"));
       transformDiagnostics.insert(QStringLiteral("renderer_texture_normalized"), true);
       transformDiagnostics.insert(QStringLiteral("export_video_translation"), QJsonObject{
@@ -1067,7 +1131,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
     }
     QVector<int> temporalEchoOrdinals;
     if (clipVisible) {
-      if (effectClip.effectPreset == ClipEffectPreset::TemporalEcho) {
+      if (!titleClip && effectClip.effectPreset == ClipEffectPreset::TemporalEcho) {
         const int echoCount = qBound(1, effectClip.temporalEchoCount, 12);
         const int spacing = qBound(1, effectClip.temporalEchoSpacingFrames, 120);
         const qreal decay = qBound<qreal>(0.0, effectClip.temporalEchoDecay, 1.0);
@@ -1162,7 +1226,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
           foregroundLayer.maskFeatherGamma;
       foregroundMaskLayers.push_back(foregroundLayer);
     }
-    if (!clip.titleKeyframes.isEmpty()) {
+    if (!titleClip && !clip.titleKeyframes.isEmpty()) {
       const EvaluatedTitle title = prepareRenderableTitleForVulkanText(
           clip,
           static_cast<qreal>(timelineFrame),

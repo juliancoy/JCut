@@ -54,7 +54,8 @@ inline QVector<MediaOwnerHandoffPlanEntry> mediaOwnerHandoffPlan(
 
     for (int statusIndex = 0; statusIndex < statuses.size(); ++statusIndex) {
         const VulkanPreviewClipFrameStatus& status = statuses.at(statusIndex);
-        if (!status.active || status.drawSuppressed) {
+        if (!status.active || status.drawSuppressed ||
+            (!status.hasFrame && !status.externalVulkanFrame)) {
             continue;
         }
         const QString mediaOwnerClipId = status.mediaOwnerClipId.trimmed().isEmpty()

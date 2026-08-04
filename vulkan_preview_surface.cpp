@@ -20,6 +20,7 @@
 #include "preview_view_transform.h"
 #include "render_vulkan_shared.h"
 #include "timeline_cache.h"
+#include "titles.h"
 #include "transcript_engine.h"
 
 #include <QFileInfo>
@@ -91,9 +92,22 @@ TimelineClip directVulkanDecodeClip(const TimelineClip& clip, bool useProxyMedia
 
 bool directVulkanPreviewSupportsClip(const TimelineClip& clip)
 {
+    if (clip.clipRole == ClipRole::TranscriptSubtitle) {
+        return false;
+    }
+    if (clip.mediaType == ClipMediaType::Title &&
+        !clip.transcriptOverlay.enabled) {
+        return true;
+    }
     return !clip.filePath.isEmpty() &&
            clip.sourceKind != MediaSourceKind::ImageSequence &&
            (clip.mediaType == ClipMediaType::Video || clip.mediaType == ClipMediaType::Image);
+}
+
+bool directVulkanPreviewUsesDecodedSource(const TimelineClip& clip)
+{
+    return directVulkanPreviewSupportsClip(clip) &&
+           clip.mediaType != ClipMediaType::Title;
 }
 
 bool visualClipActiveAtSample(const TimelineClip& clip,
@@ -134,7 +148,7 @@ QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& cli
     for (const TimelineClip& clip : clips) {
         if (clip.clipRole == ClipRole::MaskMatte ||
             !clipContributesVisualMedia(clip, clips, tracks, relationships) ||
-            !directVulkanPreviewSupportsClip(clip)) {
+            !directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         playbackClips.push_back(directVulkanDecodeClip(clip, useProxyMedia));
@@ -426,7 +440,7 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
         QSet<QString> ids;
         const qreal framePosition = samplesToFramePosition(sample);
         for (const TimelineClip& clip : m_interaction.clips) {
-            if (!directVulkanPreviewSupportsClip(clip)) {
+            if (!directVulkanPreviewUsesDecodedSource(clip)) {
                 continue;
             }
             if (visualClipActiveAtSample(clip,
@@ -677,7 +691,11 @@ void VulkanPreviewSurface::setAudioVolume(qreal volume)
 
 void VulkanPreviewSurface::setOutputSize(const QSize& size)
 {
-    m_interaction.outputSize = QSize(std::max(16, size.width()), std::max(16, size.height()));
+    const QSize outputSize(std::max(16, size.width()),
+                           std::max(16, size.height()));
+    if (m_interaction.outputSize != outputSize) {
+        m_interaction.outputSize = outputSize;
+    }
     requestNativeUpdate();
 }
 
@@ -1259,7 +1277,7 @@ void VulkanPreviewSurface::registerVisibleClips()
             !clipContributesVisualMedia(
                 clip, m_interaction.clips, m_interaction.tracks,
                 &m_clipParentChildRelationships) ||
-            !directVulkanPreviewSupportsClip(clip)) {
+            !directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         const TimelineClip decodeClip = directVulkanDecodeClip(clip, m_useProxyMedia);
@@ -1375,7 +1393,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         if (clip.clipRole == ClipRole::MaskMatte) {
             continue;
         }
-        if (!directVulkanPreviewSupportsClip(clip)) {
+        if (!directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         const bool visibleSource = visualClipActiveAtSample(
@@ -1459,7 +1477,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         const int backlog = m_playbackPipeline->pendingVisibleRequestCount();
         for (const TimelineClip& clip : m_interaction.clips) {
             if (clip.clipRole == ClipRole::MaskMatte ||
-                !directVulkanPreviewSupportsClip(clip)) {
+                !directVulkanPreviewUsesDecodedSource(clip)) {
                 continue;
             }
             const bool visibleSource = visualClipActiveAtSample(
@@ -1566,7 +1584,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     qint64 visibleRequestUnavailableCount = 0;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.clipRole == ClipRole::MaskMatte ||
-            !directVulkanPreviewSupportsClip(clip)) {
+            !directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         const bool visibleSource = visualClipActiveAtSample(
@@ -1752,7 +1770,7 @@ bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, 
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.clipRole == ClipRole::MaskMatte ||
             clip.id != clipId ||
-            !directVulkanPreviewSupportsClip(clip)) {
+            !directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         const bool visibleSource = visualClipActiveAtSample(
@@ -1892,7 +1910,6 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     int cpuCount = 0;
     int64_t maxFrameLag = 0;
     qint64 correctionsUnavailableCount = 0;
-
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.clipRole == ClipRole::MaskMatte) {
             continue;
@@ -1912,7 +1929,15 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             continue;
         }
 
-        const int64_t localFrame = sourceFrameForSample(clip, visualSample);
+        const bool titleClip = clip.mediaType == ClipMediaType::Title;
+        const int64_t titleTimelineFrame =
+            static_cast<int64_t>(std::floor(visualFramePosition));
+        const int64_t localFrame = titleClip
+            ? qBound<int64_t>(
+                  0,
+                  titleTimelineFrame - clip.startFrame,
+                  qMax<int64_t>(0, clip.durationFrames - 1))
+            : sourceFrameForSample(clip, visualSample);
         const bool staticImageClip = clip.mediaType == ClipMediaType::Image;
         const int64_t requestFrame = staticImageClip ? 0 : localFrame;
         const PlaybackFrameCrossfade frameCrossfade =
@@ -1952,40 +1977,46 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             ? qMax<int64_t>(maxStaleFrameDelta,
                             static_cast<int64_t>(std::ceil(resolvedSourceFps(clip) * 4.0)))
             : -1;
-        const bool usePlaybackPipeline = m_interaction.playing && m_playbackPipeline;
+        const bool usePlaybackPipeline = !titleClip && m_interaction.playing && m_playbackPipeline;
         const FrameHandle heldFrame = m_lastPresentedFrameByClip.value(clip.id);
         const int64_t maxRetainedFrameDelta = usePlaybackPipeline
             ? maxHeldFrameDelta
             : editor::kPreviewMaxHeldPresentationFrameDelta;
-        const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
-            editor::PreviewFrameSelectionRequest{
-                clip.id,
-                requestFrame,
-                m_interaction.playing,
-                usePlaybackPipeline,
-                false,
-                m_interaction.playing,
-                false,
-                false,
-                maxRetainedFrameDelta,
-            },
-            m_cache.get(),
-            m_playbackPipeline.get(),
-            heldFrame,
-            [](const FrameHandle& frame) {
-                return !frame.isNull() &&
-                       !frame.hasCpuImage() &&
-                       !frame.hasHardwareFrame() &&
-                       !frame.hasGpuTexture();
-            });
-        const FrameHandle exactFrame = frameSelection.exactFrame;
-        FrameHandle selectedFrame = frameSelection.frame;
-        const int64_t selectedStaleFrameDelta =
-            frameSelection.selectedHeld ? maxHeldFrameDelta : maxStaleFrameDelta;
-        const bool selectedTooStale =
-            !staticImageClip &&
-            m_interaction.playing &&
-            editor::previewFrameIsTooStaleForPlayback(selectedFrame, requestFrame, selectedStaleFrameDelta);
+        editor::PreviewFrameSelectionResult frameSelection;
+        FrameHandle exactFrame;
+        FrameHandle selectedFrame;
+        bool selectedTooStale = false;
+        if (!titleClip) {
+            frameSelection = editor::selectPreviewFrame(
+                editor::PreviewFrameSelectionRequest{
+                    clip.id,
+                    requestFrame,
+                    m_interaction.playing,
+                    usePlaybackPipeline,
+                    false,
+                    m_interaction.playing,
+                    false,
+                    false,
+                    maxRetainedFrameDelta,
+                },
+                m_cache.get(),
+                m_playbackPipeline.get(),
+                heldFrame,
+                [](const FrameHandle& frame) {
+                    return !frame.isNull() &&
+                           !frame.hasCpuImage() &&
+                           !frame.hasHardwareFrame() &&
+                           !frame.hasGpuTexture();
+                });
+            exactFrame = frameSelection.exactFrame;
+            selectedFrame = frameSelection.frame;
+            const int64_t selectedStaleFrameDelta =
+                frameSelection.selectedHeld ? maxHeldFrameDelta : maxStaleFrameDelta;
+            selectedTooStale =
+                !staticImageClip &&
+                m_interaction.playing &&
+                editor::previewFrameIsTooStaleForPlayback(selectedFrame, requestFrame, selectedStaleFrameDelta);
+        }
         if (selectedTooStale) {
             selectedFrame = FrameHandle();
         }
@@ -2050,6 +2081,27 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             effects.correctionPolygons.clear();
         }
         status.setGrading(effects.grading);
+        if (titleClip) {
+            const EvaluatedTitle title = prepareRenderableTitleForVulkanText(
+                clip,
+                static_cast<qreal>(titleTimelineFrame),
+                m_interaction.playbackTiming,
+                static_cast<qreal>(effects.grading.opacity),
+                m_interaction.outputSize);
+            if (title.valid) {
+                status.textInputs.title3D.push_back(title);
+                status.frameSelection = QStringLiteral("gpu-title-draw");
+                status.frameSize = m_interaction.outputSize;
+                status.targetRect = titleRenderBounds(title, m_interaction.outputSize);
+                status.exactFrameAvailable = true;
+                status.selectedFrameAvailable = true;
+                status.exact = true;
+                status.upToDate = true;
+            } else {
+                status.drawSuppressed = true;
+                status.missingReason = QStringLiteral("title_evaluated_invisible");
+            }
+        }
         status.maskFeather = effects.maskFeather;
         status.maskFeatherGamma = effects.maskFeatherGamma;
         status.maskFeatherFalloff = effects.maskFeatherFalloff;
@@ -2078,12 +2130,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         const bool selectedHasHardwareFrame = !selectedFrame.isNull() && selectedFrame.hasHardwareFrame();
         const bool selectedHasGpuTexture = !selectedFrame.isNull() && selectedFrame.hasGpuTexture();
         const bool selectedHasCpuFrame = !selectedFrame.isNull() && selectedFrame.hasCpuImage();
-        status.exactFrameAvailable = !exactFrame.isNull();
-        status.selectedFrameAvailable = !selectedFrame.isNull();
-        status.hasFrame = !selectedFrame.isNull() &&
-                          (selectedHasHardwareFrame || selectedHasGpuTexture || selectedHasCpuFrame);
-        status.exact = status.hasFrame && !exactFrame.isNull() && selectedFrame == exactFrame;
-        status.upToDate = status.exact;
+        if (!titleClip) {
+            status.exactFrameAvailable = !exactFrame.isNull();
+            status.selectedFrameAvailable = !selectedFrame.isNull();
+            status.hasFrame = !selectedFrame.isNull() &&
+                              (selectedHasHardwareFrame || selectedHasGpuTexture || selectedHasCpuFrame);
+            status.exact = status.hasFrame && !exactFrame.isNull() && selectedFrame == exactFrame;
+            status.upToDate = status.exact;
+        }
         status.currentFrameFailure = m_interaction.playing && !status.upToDate && !status.drawSuppressed;
         if (status.hasFrame) {
             status.frame = selectedFrame;
@@ -2123,6 +2177,15 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     status.maskClipSource = generatedMaskMatte;
                     status.maskForegroundLayerEnabled = clip.maskForegroundLayerEnabled;
                     status.maskShowOnly = clip.maskShowOnly;
+                    status.maskBoundingBoxPreview =
+                        generatedMaskMatte && clip.maskBoundingBoxPreview;
+                    if (status.maskBoundingBoxPreview) {
+                        status.maskBoundingBoxNorm =
+                            render_detail::normalizedMaskContentBounds(
+                                *status.maskBuffer,
+                                clip.tilingMaskIslandSigma,
+                                clip.maskInvert);
+                    }
                     status.maskGradeEnabled = false;
                     status.maskOpacity = clip.maskOpacity;
                     status.maskDropShadowEnabled = clip.maskDropShadowEnabled;
@@ -2197,6 +2260,22 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                  foregroundEffectClip.maskRepeatEnabled)
                     ? renderGeometry.bounds.intersected(renderOutputRect)
                     : renderOutputRect;
+            QRectF tilingMaskBounds;
+            if (foregroundEffectClip.effectPreset == ClipEffectPreset::SourceTile &&
+                foregroundEffectClip.tilingUseMaskBounds && status.maskBuffer) {
+                const QRectF normalizedMaskBounds =
+                    render_detail::normalizedMaskContentBounds(
+                        *status.maskBuffer,
+                        foregroundEffectClip.tilingMaskIslandSigma,
+                        status.maskInvert);
+                if (!normalizedMaskBounds.isEmpty()) {
+                    tilingMaskBounds =
+                        renderGeometry.clipToScreen
+                            .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+                                normalizedMaskBounds, renderGeometry.localRect))
+                            .intersected(renderOutputRect);
+                }
+            }
             status.targetRect = renderOutputRect;
             status.fittedRect = renderFitted;
             status.effectPlan = render_detail::vulkanEffectPipelinePlan(
@@ -2210,7 +2289,31 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     m_interaction.currentFramePosition,
                     m_interaction.playbackTiming,
                     m_interaction.tracks),
-                m_interaction.playbackTiming);
+                m_interaction.playbackTiming,
+                tilingMaskBounds);
+            if (status.maskClipSource && status.maskBuffer &&
+                render_detail::effectPresetUsesGeneratedMaskDomain(
+                    foregroundEffectClip.effectPreset)) {
+                const QRectF normalizedMaskDomain =
+                    render_detail::normalizedMaskContentBounds(
+                        *status.maskBuffer,
+                        foregroundEffectClip.tilingMaskIslandSigma,
+                        status.maskInvert);
+                const QRectF maskDomain =
+                    normalizedMaskDomain.isEmpty()
+                        ? QRectF{}
+                        : renderGeometry.clipToScreen
+                              .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+                                  normalizedMaskDomain,
+                                  renderGeometry.localRect))
+                              .intersected(renderOutputRect);
+                render_detail::applyGeneratedEffectMaskDomain(
+                    status.effectPlan,
+                    maskDomain,
+                    renderOutputRect,
+                    true,
+                    normalizedMaskDomain);
+            }
             auto auxiliaryFrame = [&](int64_t frameNumber) {
                 FrameHandle result = usePlaybackPipeline
                     ? m_playbackPipeline->getFrame(clip.id, frameNumber)
@@ -2357,6 +2460,16 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.maskClipSource = true;
                     markerStatus.maskForegroundLayerEnabled = false;
                     markerStatus.maskShowOnly = clip.maskShowOnly;
+                    markerStatus.maskBoundingBoxPreview =
+                        clip.maskBoundingBoxPreview;
+                    if (markerStatus.maskBoundingBoxPreview &&
+                        markerStatus.maskBuffer) {
+                        markerStatus.maskBoundingBoxNorm =
+                            render_detail::normalizedMaskContentBounds(
+                                *markerStatus.maskBuffer,
+                                clip.tilingMaskIslandSigma,
+                                clip.maskInvert);
+                    }
                     markerStatus.maskOpacity = clip.maskOpacity;
                     markerStatus.maskDropShadowEnabled = clip.maskDropShadowEnabled;
                     markerStatus.maskDropShadowRadius = clip.maskDropShadowRadius;
@@ -2459,6 +2572,24 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                             ? renderGeometry.bounds.intersected(
                                   renderOutputRect)
                             : renderOutputRect;
+                    QRectF tilingMaskBounds;
+                    if (matteEffectClip.effectPreset == ClipEffectPreset::SourceTile &&
+                        matteEffectClip.tilingUseMaskBounds &&
+                        markerStatus.maskBuffer) {
+                        const QRectF normalizedMaskBounds =
+                            render_detail::normalizedMaskContentBounds(
+                                *markerStatus.maskBuffer,
+                                matteEffectClip.tilingMaskIslandSigma,
+                                markerStatus.maskInvert);
+                        if (!normalizedMaskBounds.isEmpty()) {
+                            tilingMaskBounds =
+                                renderGeometry.clipToScreen
+                                    .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+                                        normalizedMaskBounds,
+                                        renderGeometry.localRect))
+                                    .intersected(renderOutputRect);
+                        }
+                    }
                     markerStatus.targetRect = renderOutputRect;
                     markerStatus.fittedRect = renderFitted;
                     markerStatus.effectPlan =
@@ -2473,7 +2604,32 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                                 m_interaction.currentFramePosition,
                                 m_interaction.playbackTiming,
                                 m_interaction.tracks),
-                            m_interaction.playbackTiming);
+                            m_interaction.playbackTiming,
+                            tilingMaskBounds);
+                    if (markerStatus.maskClipSource &&
+                        markerStatus.maskBuffer &&
+                        render_detail::effectPresetUsesGeneratedMaskDomain(
+                            matteEffectClip.effectPreset)) {
+                        const QRectF normalizedMaskDomain =
+                            render_detail::normalizedMaskContentBounds(
+                                *markerStatus.maskBuffer,
+                                matteEffectClip.tilingMaskIslandSigma,
+                                markerStatus.maskInvert);
+                        const QRectF maskDomain =
+                            normalizedMaskDomain.isEmpty()
+                                ? QRectF{}
+                                : renderGeometry.clipToScreen
+                                      .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+                                          normalizedMaskDomain,
+                                          renderGeometry.localRect))
+                                      .intersected(renderOutputRect);
+                        render_detail::applyGeneratedEffectMaskDomain(
+                            markerStatus.effectPlan,
+                            maskDomain,
+                            renderOutputRect,
+                            true,
+                            normalizedMaskDomain);
+                    }
                     markerStatus.correctionsApplied = false;
                     markerStatus.correctionsSupported =
                         markerStatus.correctionPolygonCount == 0 ||
@@ -2710,7 +2866,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
     bool ready = true;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.clipRole == ClipRole::MaskMatte ||
-            !directVulkanPreviewSupportsClip(clip)) {
+            !directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         if (!clipContributesVisualMedia(
@@ -2751,7 +2907,7 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
         const int64_t visualSample = framePositionToSamples(visualFramePosition);
         for (const TimelineClip& clip : m_interaction.clips) {
             if (clip.clipRole == ClipRole::MaskMatte ||
-                !directVulkanPreviewSupportsClip(clip)) {
+                !directVulkanPreviewUsesDecodedSource(clip)) {
                 continue;
             }
             const bool visibleSource = visualClipActiveAtSample(
@@ -2787,7 +2943,7 @@ bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart() const
     const int64_t visualSample = framePositionToSamples(visualFramePosition);
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.clipRole == ClipRole::MaskMatte ||
-            !directVulkanPreviewSupportsClip(clip)) {
+            !directVulkanPreviewUsesDecodedSource(clip)) {
             continue;
         }
         const bool visibleSource = visualClipActiveAtSample(

@@ -1,6 +1,7 @@
 #include "inspector_pane.h"
 
 #include "master_output_audio_delay.h"
+#include "output_subtitle_timing.h"
 #include "gpu_selection.h"
 #include <QVulkanInstance>
 
@@ -142,6 +143,11 @@ QWidget *InspectorPane::buildOutputTab()
     m_incrementalRenderCheckBox->setChecked(false);
     m_incrementalRenderCheckBox->setToolTip(
         QStringLiteral("Render resumable encoded chunks and assemble them into the final video. Disable for one continuous export without chunk checkpoints."));
+    m_segmentPrewarmAutotuneCheckBox =
+        new QCheckBox(QStringLiteral("Auto-tune segment prewarming"), page);
+    m_segmentPrewarmAutotuneCheckBox->setToolTip(
+        QStringLiteral("Adjust export decode lookahead from observed segment-boundary waits. "
+                       "Changes apply to an active render at subsequent segment boundaries."));
     m_instagramSafeAreaGuidesCheckBox =
         new QCheckBox(QStringLiteral("Render Instagram 250px safe-area guides"), page);
     m_instagramSafeAreaGuidesCheckBox->setChecked(false);
@@ -204,6 +210,19 @@ QWidget *InspectorPane::buildOutputTab()
     m_masterOutputAudioDelayMsSpin->setToolTip(QStringLiteral(
         "Retimes final-render audio without changing output duration. "
         "Positive values delay audio; negative values advance audio."));
+    m_masterOutputSubtitleOffsetMsSpin = new QSpinBox(page);
+    m_masterOutputSubtitleOffsetMsSpin->setObjectName(
+        QStringLiteral("masterOutputSubtitleOffsetMsSpin"));
+    m_masterOutputSubtitleOffsetMsSpin->setRange(
+        jcut::subtitle::kMinMasterOutputOffsetMs,
+        jcut::subtitle::kMaxMasterOutputOffsetMs);
+    m_masterOutputSubtitleOffsetMsSpin->setValue(
+        jcut::subtitle::kDefaultMasterOutputOffsetMs);
+    m_masterOutputSubtitleOffsetMsSpin->setSuffix(QStringLiteral(" ms"));
+    m_masterOutputSubtitleOffsetMsSpin->setToolTip(QStringLiteral(
+        "Retimes subtitles in the final render only. Positive values display "
+        "later; negative values display earlier. Transcript source timing and "
+        "speech-filter cuts are unchanged."));
     m_renderCachePathLabel =
         new QLabel(QStringLiteral("Render cache: choose a render output first."), page);
     m_renderCachePathLabel->setWordWrap(true);
@@ -225,6 +244,7 @@ QWidget *InspectorPane::buildOutputTab()
     settingsSection.body->addLayout(form);
     settingsSection.body->addWidget(m_renderUseProxiesCheckBox);
     settingsSection.body->addWidget(m_incrementalRenderCheckBox);
+    settingsSection.body->addWidget(m_segmentPrewarmAutotuneCheckBox);
     settingsSection.body->addWidget(m_instagramSafeAreaGuidesCheckBox);
     settingsSection.body->addWidget(m_alignmentGridGuidesCheckBox);
     settingsSection.body->addWidget(m_renderCreateVideoFromSequenceCheckBox);
@@ -235,6 +255,9 @@ QWidget *InspectorPane::buildOutputTab()
     actionForm->addRow(
         QStringLiteral("Master Audio Delay"),
         m_masterOutputAudioDelayMsSpin);
+    actionForm->addRow(
+        QStringLiteral("Master Subtitle Offset"),
+        m_masterOutputSubtitleOffsetMsSpin);
     actionSection.body->addLayout(actionForm);
     actionSection.body->addWidget(m_renderButton);
     actionSection.body->addWidget(m_renderCachePathLabel);

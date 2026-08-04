@@ -64,7 +64,9 @@ public:
                             const float* backgroundMidtones = nullptr,
                             const float* backgroundHighlights = nullptr,
                             const float* backgroundGrade = nullptr,
-                            const float* effectParams = nullptr);
+                            const float* effectParams = nullptr,
+                            const float* effectDomain = nullptr,
+                            const float* effectMaskDomain = nullptr);
     uint32_t frameUniformDynamicOffset() const { return m_frameUniformDynamicOffset; }
 
     VkDescriptorSetLayout descriptorSetLayout() const { return m_descriptorSetLayout; }

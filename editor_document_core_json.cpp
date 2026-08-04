@@ -163,6 +163,9 @@ void parseEffectParameterKeyframes(
         }
         jcut::EditorEffectParameterKeyframe keyframe;
         keyframe.frame = valueOr(value, "frame", std::int64_t{0});
+        keyframe.effectPreset = stringOr(value, "effectPreset", "none");
+        keyframe.effectPresetKeyframed =
+            valueOr(value, "effectPresetKeyframed", false);
         keyframe.effectRows =
             std::clamp(valueOr(value, "effectRows", 32), 1, 512);
         keyframe.effectSpeed =
@@ -196,6 +199,22 @@ void parseEffectParameterKeyframes(
         keyframe.tilingSpacing =
             std::clamp(valueOr(value, "tilingSpacing", 1.0), 0.1, 8.0);
         keyframe.tilingWrap = valueOr(value, "tilingWrap", true);
+        keyframe.tilingUseMaskBounds =
+            valueOr(value, "tilingUseMaskBounds", false);
+        keyframe.tilingMaskIslandSigma = std::clamp(
+            valueOr(value, "tilingMaskIslandSigma", 0.0), 0.0, 100.0);
+        keyframe.effectModulationMode =
+            stringOr(value, "effectModulationMode", "none");
+        keyframe.effectModulationTarget =
+            stringOr(value, "effectModulationTarget", "scale");
+        keyframe.effectModulationAmount = std::clamp(
+            valueOr(value, "effectModulationAmount", 0.0), -512.0, 512.0);
+        keyframe.effectModulationRate = std::clamp(
+            valueOr(value, "effectModulationRate", 1.0), 0.0, 20.0);
+        keyframe.effectModulationPhaseDegrees = std::clamp(
+            valueOr(value, "effectModulationPhaseDegrees", 0.0), -360.0, 360.0);
+        keyframe.effectSkipAwareTiming =
+            valueOr(value, "effectSkipAwareTiming", false);
         keyframe.linearInterpolation =
             valueOr(value, "linearInterpolation", true);
         keyframes->push_back(std::move(keyframe));
@@ -956,6 +975,11 @@ bool parseCoreDocument(const json& root, jcut::EditorDocumentCore* document, std
                 exportRequest,
                 "masterOutputAudioDelayMs",
                 jcut::audio::kDefaultMasterOutputAudioDelayMs));
+        document->exportRequest.masterOutputSubtitleOffsetMs =
+            jcut::subtitle::normalizedMasterOutputOffsetMs(valueOr(
+                exportRequest,
+                "masterOutputSubtitleOffsetMs",
+                jcut::subtitle::kDefaultMasterOutputOffsetMs));
         document->exportRequest.instagramSafeAreaGuides =
             valueOr(exportRequest, "instagramSafeAreaGuides", false);
         document->exportRequest.alignmentGridGuides =
@@ -1050,6 +1074,11 @@ bool parseLegacyStateDocument(const json& root, jcut::EditorDocumentCore* docume
             root,
             "masterOutputAudioDelayMs",
             jcut::audio::kDefaultMasterOutputAudioDelayMs));
+    document->exportRequest.masterOutputSubtitleOffsetMs =
+        jcut::subtitle::normalizedMasterOutputOffsetMs(valueOr(
+            root,
+            "masterOutputSubtitleOffsetMs",
+            jcut::subtitle::kDefaultMasterOutputOffsetMs));
     document->exportRequest.bypassGrading = !valueOr(root, "gradingPreview", true);
     document->exportRequest.correctionsEnabled = valueOr(root, "correctionsEnabled", true);
     document->exportRequest.createVideoFromImageSequence =
@@ -1723,6 +1752,8 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
          clip.effectParameterKeyframes) {
         effectParameterKeyframes.push_back({
             {"frame", keyframe.frame},
+            {"effectPreset", keyframe.effectPreset},
+            {"effectPresetKeyframed", keyframe.effectPresetKeyframed},
             {"effectRows", keyframe.effectRows},
             {"effectSpeed", keyframe.effectSpeed},
             {"effectScale", keyframe.effectScale},
@@ -1736,6 +1767,14 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
             {"tilingPattern", keyframe.tilingPattern},
             {"tilingSpacing", keyframe.tilingSpacing},
             {"tilingWrap", keyframe.tilingWrap},
+            {"tilingUseMaskBounds", keyframe.tilingUseMaskBounds},
+            {"tilingMaskIslandSigma", keyframe.tilingMaskIslandSigma},
+            {"effectModulationMode", keyframe.effectModulationMode},
+            {"effectModulationTarget", keyframe.effectModulationTarget},
+            {"effectModulationAmount", keyframe.effectModulationAmount},
+            {"effectModulationRate", keyframe.effectModulationRate},
+            {"effectModulationPhaseDegrees", keyframe.effectModulationPhaseDegrees},
+            {"effectSkipAwareTiming", keyframe.effectSkipAwareTiming},
             {"linearInterpolation", keyframe.linearInterpolation}});
     }
     (*out)["effectParameterKeyframes"] = std::move(effectParameterKeyframes);
@@ -2005,6 +2044,8 @@ nlohmann::json toLegacyStateJson(const EditorDocumentCore& document, const nlohm
     root["incrementalExport"] = document.exportRequest.incrementalExport;
     root["masterOutputAudioDelayMs"] =
         document.exportRequest.masterOutputAudioDelayMs;
+    root["masterOutputSubtitleOffsetMs"] =
+        document.exportRequest.masterOutputSubtitleOffsetMs;
     root["createImageSequence"] = document.exportRequest.createVideoFromImageSequence;
     root["imageSequenceFormat"] = document.exportRequest.imageSequenceFormat.empty()
         ? std::string("jpeg")

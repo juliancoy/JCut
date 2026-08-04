@@ -91,6 +91,8 @@ RenderRequestCore toCoreRenderRequest(const ::RenderRequest& request)
     core.incrementalExport = request.incrementalExport;
     core.incrementalChunkFrames = request.incrementalChunkFrames;
     core.masterOutputAudioDelayMs = request.masterOutputAudioDelayMs;
+    core.masterOutputSubtitleOffsetMs =
+        request.masterOutputSubtitleOffsetMs;
     core.instagramSafeAreaGuides = request.instagramSafeAreaGuides;
     core.alignmentGridGuides = request.alignmentGridGuides;
     core.transcriptPrependMs = request.transcriptPrependMs;

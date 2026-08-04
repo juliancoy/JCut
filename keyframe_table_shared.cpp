@@ -1,5 +1,8 @@
 #include "keyframe_table_shared.h"
 
+#include <QEvent>
+#include <QKeyEvent>
+
 namespace editor {
 
 QSet<int64_t> collectSelectedFrameRoles(QTableWidget* table) {
@@ -159,6 +162,23 @@ int countSelectedFrameRoles(QTableWidget* table, const std::function<bool(int64_
         }
     }
     return count;
+}
+
+bool isTableDeleteKeyEvent(QEvent* event) {
+    if (!event || event->type() != QEvent::KeyPress) {
+        return false;
+    }
+    auto* keyEvent = static_cast<QKeyEvent*>(event);
+    return keyEvent->key() == Qt::Key_Delete ||
+           keyEvent->key() == Qt::Key_Backspace;
+}
+
+bool editItemIfEditable(QTableWidget* table, QTableWidgetItem* item) {
+    if (!table || !item || !(item->flags() & Qt::ItemIsEditable)) {
+        return false;
+    }
+    table->editItem(item);
+    return true;
 }
 
 } // namespace editor

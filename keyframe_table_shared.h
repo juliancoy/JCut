@@ -5,6 +5,8 @@
 
 #include <functional>
 
+class QEvent;
+
 namespace editor {
 
 QSet<int64_t> collectSelectedFrameRoles(QTableWidget* table);
@@ -14,5 +16,7 @@ bool findTableCellForItem(QTableWidget* table, const QTableWidgetItem* item, int
 QTableWidgetItem* ensureContextRowSelected(QTableWidget* table, const QPoint& pos, int* rowOut = nullptr);
 int64_t rowFrameRole(QTableWidget* table, int row);
 int countSelectedFrameRoles(QTableWidget* table, const std::function<bool(int64_t)>& predicate);
+bool isTableDeleteKeyEvent(QEvent* event);
+bool editItemIfEditable(QTableWidget* table, QTableWidgetItem* item);
 
 } // namespace editor

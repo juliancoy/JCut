@@ -529,39 +529,6 @@ void MaskTab::refresh()
         m_widgets.fuzzyRemoveButton->setChecked(false);
     }
 
-    // The Masks tab edits child-owned state. A source selection is only a
-    // discovery context: resolve its chosen sidecar to a materialized child
-    // before populating or enabling any treatment controls.
-    if (validClip &&
-        clip->clipRole == ClipRole::Media &&
-        maskInspectorActive) {
-        const QString sourceId = clip->id.trimmed();
-        QString directory = clip->maskFramesDir.trimmed();
-        QString sidecarId = directory.isEmpty()
-            ? QString()
-            : editor::masks::stableMaskSidecarId(directory);
-        if (directory.isEmpty()) {
-            const editor::masks::MaskSidecar discoveredSidecar = autoMaskSidecarForClip(*clip);
-            if (discoveredSidecar.isValid()) {
-                directory = discoveredSidecar.directory;
-                sidecarId = discoveredSidecar.id;
-            }
-        }
-
-        QString childId = m_deps.findMaskMatteChildForSidecar && !sidecarId.isEmpty()
-            ? m_deps.findMaskMatteChildForSidecar(sourceId, sidecarId)
-            : QString();
-        if (childId.isEmpty() &&
-            !directory.isEmpty() &&
-            m_deps.materializeMaskMatteForSidecar) {
-            childId = m_deps.materializeMaskMatteForSidecar(sourceId, directory);
-        }
-        if (!childId.isEmpty() && childId != sourceId && m_deps.selectClipById) {
-            m_deps.selectClipById(childId);
-            return;
-        }
-    }
-
     m_updating = true;
 
     if (m_widgets.clipLabel) {

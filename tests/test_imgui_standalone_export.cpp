@@ -36,6 +36,7 @@ private slots:
     void qtFreeAudioMixerMatchesTimelinePolicies();
     void boundedAudioDecodeRetainsOnlyRequestedSourceEnvelope();
     void transcriptNormalizationUsesActiveCutWords();
+    void masterOutputTimingRoundTripsIndependently();
     void exportsDecodedAndMixedAudioStream();
     void sharedPitchPreservingStretchKeepsToneFrequency();
     void sharedHarmonicIsolationAndTreatmentRoundTrip();
@@ -726,6 +727,33 @@ void TestImGuiStandaloneExport::transcriptNormalizationUsesActiveCutWords()
     QVERIFY(
         std::abs(output[0]) >
         untreated * 2.0f);
+}
+
+void TestImGuiStandaloneExport::masterOutputTimingRoundTripsIndependently()
+{
+    jcut::EditorDocumentCore document;
+    document.exportRequest.masterOutputAudioDelayMs = -150;
+    document.exportRequest.masterOutputSubtitleOffsetMs = -225;
+    document.exportRequest.transcriptOffsetMs = 75;
+
+    const auto verify = [](const nlohmann::json& state) {
+        std::string error;
+        const auto restored =
+            jcut::editorDocumentCoreFromJson(state, &error);
+        QVERIFY2(restored.has_value(), error.c_str());
+        QCOMPARE(restored->exportRequest.masterOutputAudioDelayMs, -150);
+        QCOMPARE(restored->exportRequest.masterOutputSubtitleOffsetMs, -225);
+        QCOMPARE(restored->exportRequest.transcriptOffsetMs, 75);
+    };
+    verify(jcut::toLegacyStateJson(document));
+    verify(jcut::toJson(document));
+
+    const auto defaults =
+        jcut::editorDocumentCoreFromJson(nlohmann::json::object());
+    QVERIFY(defaults.has_value());
+    QCOMPARE(defaults->exportRequest.masterOutputAudioDelayMs, -150);
+    QCOMPARE(defaults->exportRequest.masterOutputSubtitleOffsetMs, -150);
+    QCOMPARE(defaults->exportRequest.transcriptOffsetMs, 0);
 }
 
 void TestImGuiStandaloneExport::exportsDecodedAndMixedAudioStream()

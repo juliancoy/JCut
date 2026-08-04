@@ -735,6 +735,10 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         return {};
     }
     OverlayImage canvas = makeOverlayImage(imageSize);
+    const int finalSubtitleOffsetMs =
+        jcut::subtitle::finalRenderOffsetMs(
+            request.transcriptOffsetMs,
+            request.masterOutputSubtitleOffsetMs);
 
     for (const TimelineClip& clip : orderedClips) {
         if (timelineFrame < clip.startFrame || timelineFrame >= clip.startFrame + clip.durationFrames) {
@@ -747,7 +751,9 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                 request.renderSyncMarkers,
                 transcriptCache,
                 TranscriptOverlayTiming{
-                    request.transcriptPrependMs, request.transcriptPostpendMs, request.transcriptOffsetMs});
+                    request.transcriptPrependMs,
+                    request.transcriptPostpendMs,
+                    finalSubtitleOffsetMs});
         if (overlayLayout.lines.isEmpty()) {
             continue;
         }
@@ -761,11 +767,26 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
             sectionsIt != transcriptCache.constEnd() ? sectionsIt.value() : emptySections;
         const QRectF bounds = transcriptOverlayRectInOutputSpace(
             clip, request.outputSize, transcriptPath, sections, sourceFrame);
+        const qreal clipOpacity = qBound<qreal>(
+            0.0,
+            evaluateEffectiveVisualEffectsAtPosition(
+                clip,
+                request.tracks,
+                static_cast<qreal>(timelineFrame),
+                request.renderSyncMarkers,
+                request.playbackTiming).grading.opacity,
+            1.0);
+        if (clipOpacity <= 0.001) {
+            continue;
+        }
         if (clip.transcriptOverlay.showBackground) {
             QColor backgroundColor = clip.transcriptOverlay.backgroundColor.isValid()
                 ? clip.transcriptOverlay.backgroundColor
                 : QColor(Qt::black);
-            backgroundColor.setAlphaF(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundOpacity, 1.0));
+            backgroundColor.setAlphaF(qBound<qreal>(
+                0.0,
+                clip.transcriptOverlay.backgroundOpacity * clipOpacity,
+                1.0));
             fillRoundedRectSoftware(&canvas,
                                     bounds,
                                     qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0),
@@ -800,17 +821,20 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         });
 
         const QRectF textBounds = bounds.adjusted(18.0, 14.0, -18.0, -14.0);
-        const QColor textColor = clip.transcriptOverlay.textColor.isValid()
+        QColor textColor = clip.transcriptOverlay.textColor.isValid()
             ? clip.transcriptOverlay.textColor
             : QColor(Qt::white);
+        textColor.setAlphaF(textColor.alphaF() * clipOpacity);
         const QColor shadowColor = colorWithOpacity(clip.transcriptOverlay.shadowColor,
-                                                    clip.transcriptOverlay.shadowOpacity);
-        const QColor highlightFillColor = clip.transcriptOverlay.highlightColor.isValid()
+                                                    clip.transcriptOverlay.shadowOpacity * clipOpacity);
+        QColor highlightFillColor = clip.transcriptOverlay.highlightColor.isValid()
             ? clip.transcriptOverlay.highlightColor
             : QColor(QStringLiteral("#fff2a8"));
-        const QColor highlightTextColor = clip.transcriptOverlay.highlightTextColor.isValid()
+        highlightFillColor.setAlphaF(highlightFillColor.alphaF() * clipOpacity);
+        QColor highlightTextColor = clip.transcriptOverlay.highlightTextColor.isValid()
             ? clip.transcriptOverlay.highlightTextColor
             : QColor(QStringLiteral("#181818"));
+        highlightTextColor.setAlphaF(highlightTextColor.alphaF() * clipOpacity);
 
         const QString speakerTitle = (clip.transcriptOverlay.showSpeakerTitle && hasTitleFace)
             ? transcriptSpeakerTitleForSourceFrame(
@@ -818,7 +842,9 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                   sections,
                   sourceFrame,
                   TranscriptOverlayTiming{
-                      request.transcriptPrependMs, request.transcriptPostpendMs, request.transcriptOffsetMs}).trimmed()
+                      request.transcriptPrependMs,
+                      request.transcriptPostpendMs,
+                      finalSubtitleOffsetMs}).trimmed()
             : QString();
 
         QVector<TranscriptRenderLineMetrics> lineMetrics;
@@ -845,7 +871,7 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         const qreal shadowOffsetX = clip.transcriptOverlay.shadowOffsetX * docScale;
         const qreal shadowOffsetY = clip.transcriptOverlay.shadowOffsetY * docScale;
         const QColor outlineColor = colorWithOpacity(clip.transcriptOverlay.textOutlineColor,
-                                                     clip.transcriptOverlay.textOutlineOpacity);
+                                                     clip.transcriptOverlay.textOutlineOpacity * clipOpacity);
         const QVector<QPointF> outlineOffsets = clip.transcriptOverlay.textOutlineEnabled
             ? dilationOffsets(qMax<qreal>(0.0, clip.transcriptOverlay.textOutlineWidth) * docScale)
             : QVector<QPointF>{};

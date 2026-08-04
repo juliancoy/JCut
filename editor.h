@@ -608,7 +608,9 @@ private:
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QSpinBox *m_masterOutputAudioDelayMsSpin = nullptr;
+    QSpinBox *m_masterOutputSubtitleOffsetMsSpin = nullptr;
     QCheckBox *m_incrementalRenderCheckBox = nullptr;
+    QCheckBox *m_segmentPrewarmAutotuneCheckBox = nullptr;
     QCheckBox *m_instagramSafeAreaGuidesCheckBox = nullptr;
     QCheckBox *m_alignmentGridGuidesCheckBox = nullptr;
     QLabel *m_renderCachePathLabel = nullptr;

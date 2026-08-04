@@ -49,6 +49,7 @@ public:
         QSpinBox* historyMaxEntriesSpin = nullptr;
         QSpinBox* historyMaxMegabytesSpin = nullptr;
         QCheckBox* incrementalRenderCheckBox = nullptr;
+        QCheckBox* segmentPrewarmAutotuneCheckBox = nullptr;
         QCheckBox* instagramSafeAreaGuidesCheckBox = nullptr;
         QCheckBox* alignmentGridGuidesCheckBox = nullptr;
         QCheckBox* createImageSequenceCheckBox = nullptr;
@@ -56,6 +57,7 @@ public:
         QLabel* renderCachePathLabel = nullptr;
         QPushButton* clearRenderCacheButton = nullptr;
         QSpinBox* masterOutputAudioDelayMsSpin = nullptr;
+        QSpinBox* masterOutputSubtitleOffsetMsSpin = nullptr;
         QPushButton* renderButton = nullptr;
     };
 
@@ -103,7 +105,9 @@ private slots:
     void onOutputFormatChanged(int index);
     void onRenderUseProxiesToggled(bool checked);
     void onIncrementalRenderToggled(bool checked);
+    void onSegmentPrewarmAutotuneToggled(bool checked);
     void onMasterOutputAudioDelayMsChanged(int value);
+    void onMasterOutputSubtitleOffsetMsChanged(int value);
     void onOutputPlaybackCacheFallbackToggled(bool checked);
     void onOutputLeadPrefetchEnabledToggled(bool checked);
     void onOutputLeadPrefetchCountChanged(int value);

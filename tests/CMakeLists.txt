@@ -166,6 +166,14 @@ target_sources(test_mask_fuzzy_remove PRIVATE
 target_sources(test_effects_tab PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../effects_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../effects_tab.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../keyframe_table_shared.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../keyframe_table_shared.h
+)
+
+target_sources(test_direct_vulkan_handoff_pipeline_contract PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../direct_vulkan_preview_interaction.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../direct_vulkan_preview_config.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../audio_preview_support.cpp
 )
 
 target_sources(test_editor_runtime

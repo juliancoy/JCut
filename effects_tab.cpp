@@ -2,11 +2,12 @@
 #include "editor_effect_presets.h"
 #include "editor_shared_effects.h"
 #include "editor_tab_edit_effects.h"
+#include "keyframe_table_shared.h"
 #include <QEvent>
+#include <QDial>
 #include <QSignalBlocker>
 #include <QDir>
 #include <QFormLayout>
-#include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QSet>
@@ -46,6 +47,74 @@ ClipEffectPreset presetFromCombo(const QComboBox* combo)
         ok ? value : static_cast<int>(ClipEffectPreset::None));
 }
 
+int comboIndexForPreset(const QComboBox* combo, ClipEffectPreset preset);
+void setMaskMattePresetAvailability(QComboBox* combo, bool maskMatteTarget);
+
+QString groupForEffectPreset(ClipEffectPreset preset)
+{
+    for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+        if (option.preset == preset) {
+            return option.group;
+        }
+    }
+    return QStringLiteral("General");
+}
+
+QString selectedEffectPresetCategory(const QComboBox* combo)
+{
+    if (!combo) {
+        return QStringLiteral("General");
+    }
+    const QString category = combo->currentData().toString().trimmed();
+    return category.isEmpty() ? QStringLiteral("General") : category;
+}
+
+void populateEffectPresetCategoryCombo(QComboBox* combo, ClipEffectPreset selectedPreset)
+{
+    if (!combo) {
+        return;
+    }
+    const QSignalBlocker blocker(combo);
+    const QString selectedGroup = groupForEffectPreset(selectedPreset);
+    if (combo->count() <= 0) {
+        QStringList groups;
+        for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+            if (!groups.contains(option.group)) {
+                groups.push_back(option.group);
+                combo->addItem(option.group, option.group);
+            }
+        }
+    }
+    const int index = combo->findData(selectedGroup);
+    combo->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+void populateEffectPresetCombo(QComboBox* combo,
+                               const QString& category,
+                               ClipEffectPreset selectedPreset)
+{
+    if (!combo) {
+        return;
+    }
+    const QSignalBlocker blocker(combo);
+    combo->clear();
+    const QString effectiveCategory =
+        category.trimmed().isEmpty() ? groupForEffectPreset(selectedPreset)
+                                     : category.trimmed();
+    for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
+        if (option.group != effectiveCategory) {
+            continue;
+        }
+        combo->addItem(option.label, static_cast<int>(option.preset));
+        combo->setItemData(combo->count() - 1, option.group, Qt::ToolTipRole);
+    }
+    int selectedIndex = comboIndexForPreset(combo, selectedPreset);
+    if (selectedIndex < 0 && combo->count() > 0) {
+        selectedIndex = 0;
+    }
+    combo->setCurrentIndex(selectedIndex);
+}
+
 int comboIndexForPreset(const QComboBox* combo, ClipEffectPreset preset)
 {
     if (!combo) {
@@ -53,6 +122,18 @@ int comboIndexForPreset(const QComboBox* combo, ClipEffectPreset preset)
     }
     const int index = combo->findData(static_cast<int>(preset));
     return index >= 0 ? index : combo->findData(static_cast<int>(ClipEffectPreset::None));
+}
+
+void setEffectPresetSelectorToPreset(const EffectsTab::Widgets& widgets,
+                                     ClipEffectPreset preset,
+                                     bool maskMatteTarget)
+{
+    populateEffectPresetCategoryCombo(widgets.effectPresetCategoryCombo, preset);
+    populateEffectPresetCombo(
+        widgets.effectPresetCombo,
+        selectedEffectPresetCategory(widgets.effectPresetCategoryCombo),
+        preset);
+    setMaskMattePresetAvailability(widgets.effectPresetCombo, maskMatteTarget);
 }
 
 void setMaskMattePresetAvailability(QComboBox* combo, bool maskMatteTarget)
@@ -170,7 +251,9 @@ QJsonObject effectParameters(const Owner& owner)
                        {QStringLiteral("echoDecay"), owner.temporalEchoDecay},
                        {QStringLiteral("pattern"), static_cast<int>(owner.tilingPattern)},
                        {QStringLiteral("spacing"), owner.tilingSpacing},
-                       {QStringLiteral("wrap"), owner.tilingWrap}};
+                       {QStringLiteral("wrap"), owner.tilingWrap},
+                       {QStringLiteral("maskBounds"), owner.tilingUseMaskBounds},
+                       {QStringLiteral("maskIslandSigma"), owner.tilingMaskIslandSigma}};
 }
 
 template <typename Owner>
@@ -190,6 +273,222 @@ void restoreEffectParameters(Owner& owner, const QJsonObject& values)
     owner.tilingPattern = static_cast<ClipTilingPattern>(values.value(QStringLiteral("pattern")).toInt(0));
     owner.tilingSpacing = qBound<qreal>(0.1, values.value(QStringLiteral("spacing")).toDouble(1.0), 8.0);
     owner.tilingWrap = values.value(QStringLiteral("wrap")).toBool(true);
+    owner.tilingUseMaskBounds = values.value(QStringLiteral("maskBounds")).toBool(false);
+    owner.tilingMaskIslandSigma =
+        qBound<qreal>(0.0, values.value(QStringLiteral("maskIslandSigma")).toDouble(0.0), 100.0);
+}
+
+int directionDegreesFromEffectSpeed(qreal speed)
+{
+    int degrees = qRound(qBound<qreal>(-8.0, speed, 8.0) * 45.0);
+    degrees %= 360;
+    if (degrees < 0) {
+        degrees += 360;
+    }
+    return degrees;
+}
+
+qreal effectSpeedFromDirectionDegrees(int degrees)
+{
+    return qBound<qreal>(-8.0, static_cast<qreal>(degrees % 360) / 45.0, 8.0);
+}
+
+int spreadPercentFromTilingSpacing(qreal spacing)
+{
+    return qBound(0, qRound((qBound<qreal>(0.1, spacing, 8.0) - 0.1) / 7.9 * 100.0), 100);
+}
+
+qreal tilingSpacingFromSpreadPercent(int percent)
+{
+    return qBound<qreal>(0.1, 0.1 + (qBound(0, percent, 100) / 100.0) * 7.9, 8.0);
+}
+
+int huePercentFromEffectScale(qreal scale)
+{
+    return qBound(0, qRound(qBound<qreal>(0.1, scale, 8.0) / 8.0 * 100.0), 100);
+}
+
+qreal effectScaleFromHuePercent(int percent)
+{
+    return qBound<qreal>(0.1, (qBound(0, percent, 100) / 100.0) * 8.0, 8.0);
+}
+
+int guideScalePercentFromTilingSpacing(qreal spacing)
+{
+    return qBound(0, qRound((qBound<qreal>(0.5, spacing, 8.0) - 0.5) / 7.5 * 100.0), 100);
+}
+
+qreal tilingSpacingFromGuideScalePercent(int percent)
+{
+    return qBound<qreal>(0.5, 0.5 + (qBound(0, percent, 100) / 100.0) * 7.5, 8.0);
+}
+
+int matchPercentFromEffectValue(qreal value)
+{
+    return qBound(0, qRound(qBound<qreal>(0.0, value, 8.0) / 8.0 * 100.0), 100);
+}
+
+qreal effectValueFromMatchPercent(int percent)
+{
+    return qBound<qreal>(0.0, (qBound(0, percent, 100) / 100.0) * 8.0, 8.0);
+}
+
+bool sourceMosaicPreset(ClipEffectPreset preset)
+{
+    return preset == ClipEffectPreset::StepRepeatFill ||
+           preset == ClipEffectPreset::SourceMosaicGrid ||
+           preset == ClipEffectPreset::SourceMosaicStagger ||
+           preset == ClipEffectPreset::SourceMosaicHex ||
+           preset == ClipEffectPreset::SourceMosaicRadial ||
+           preset == ClipEffectPreset::SourceMosaicFlow;
+}
+
+bool recursiveZoomPreset(ClipEffectPreset preset)
+{
+    return preset == ClipEffectPreset::RecursiveZoomTile ||
+           preset == ClipEffectPreset::RecursiveZoomTunnel ||
+           preset == ClipEffectPreset::RecursiveZoomMirrorBox ||
+           preset == ClipEffectPreset::RecursiveZoomSpiral ||
+           preset == ClipEffectPreset::RecursiveZoomKaleidoscope ||
+           preset == ClipEffectPreset::RecursiveZoomRadialRepeat ||
+           preset == ClipEffectPreset::RecursiveZoomPixelMosaic;
+}
+
+bool generatedMaskDomainPreset(ClipEffectPreset preset)
+{
+    return recursiveZoomPreset(preset) || sourceMosaicPreset(preset);
+}
+
+QString compassLabelForDegrees(int degrees)
+{
+    static const QStringList labels{
+        QStringLiteral("right"),
+        QStringLiteral("down-right"),
+        QStringLiteral("down"),
+        QStringLiteral("down-left"),
+        QStringLiteral("left"),
+        QStringLiteral("up-left"),
+        QStringLiteral("up"),
+        QStringLiteral("up-right")};
+    return labels.at(qBound(0, qRound((degrees % 360) / 45.0), 8) % 8);
+}
+
+void updateDirectionalEchoLabels(const EffectsTab::Widgets& widgets)
+{
+    const int directionDegrees = widgets.directionalEchoDirectionDial
+        ? widgets.directionalEchoDirectionDial->value()
+        : 0;
+    const int spreadPercent = widgets.directionalEchoSpreadDial
+        ? widgets.directionalEchoSpreadDial->value()
+        : 0;
+    const int huePercent = widgets.directionalEchoHueDial
+        ? widgets.directionalEchoHueDial->value()
+        : 0;
+    const int instanceCount = widgets.effectRowsSpin
+        ? widgets.effectRowsSpin->value()
+        : 1;
+    if (widgets.directionalEchoDirectionValueLabel && widgets.directionalEchoDirectionDial) {
+        widgets.directionalEchoDirectionValueLabel->setText(
+            QStringLiteral("%1° %2")
+                .arg(directionDegrees)
+                .arg(compassLabelForDegrees(directionDegrees)));
+    }
+    if (widgets.directionalEchoSpreadValueLabel && widgets.directionalEchoSpreadDial) {
+        widgets.directionalEchoSpreadValueLabel->setText(
+            QStringLiteral("%1% spread").arg(spreadPercent));
+    }
+    if (widgets.directionalEchoHueValueLabel && widgets.directionalEchoHueDial) {
+        widgets.directionalEchoHueValueLabel->setText(
+            QStringLiteral("±%1% hue").arg(huePercent));
+    }
+    if (widgets.directionalEchoSummaryLabel) {
+        widgets.directionalEchoSummaryLabel->setText(
+            QStringLiteral("Frame Echo: %1 instanced copies on a %2° %3 axis, "
+                           "%4% spread, symmetric ±%5% hue offsets. "
+                           "Animate any knob with Key Parameters.")
+                .arg(instanceCount)
+                .arg(directionDegrees)
+                .arg(compassLabelForDegrees(directionDegrees))
+                .arg(spreadPercent)
+                .arg(huePercent));
+    }
+}
+
+void setDirectionalEchoValues(const EffectsTab::Widgets& widgets,
+                              qreal speed,
+                              qreal spacing,
+                              qreal scale)
+{
+    if (widgets.directionalEchoDirectionDial) {
+        widgets.directionalEchoDirectionDial->setValue(
+            directionDegreesFromEffectSpeed(speed));
+    }
+    if (widgets.directionalEchoSpreadDial) {
+        widgets.directionalEchoSpreadDial->setValue(
+            spreadPercentFromTilingSpacing(spacing));
+    }
+    if (widgets.directionalEchoHueDial) {
+        widgets.directionalEchoHueDial->setValue(huePercentFromEffectScale(scale));
+    }
+    updateDirectionalEchoLabels(widgets);
+}
+
+void updateStepRepeatFillLabels(const EffectsTab::Widgets& widgets)
+{
+    const int guideScale = widgets.stepRepeatFillGuideScaleDial
+        ? widgets.stepRepeatFillGuideScaleDial->value()
+        : 0;
+    const int lumaMatch = widgets.stepRepeatFillLumaMatchDial
+        ? widgets.stepRepeatFillLumaMatchDial->value()
+        : 0;
+    const int hueMatch = widgets.stepRepeatFillHueMatchDial
+        ? widgets.stepRepeatFillHueMatchDial->value()
+        : 0;
+    const int density = widgets.effectRowsSpin
+        ? widgets.effectRowsSpin->value()
+        : 1;
+    if (widgets.stepRepeatFillGuideScaleValueLabel) {
+        widgets.stepRepeatFillGuideScaleValueLabel->setText(
+            QStringLiteral("%1% guide").arg(guideScale));
+    }
+    if (widgets.stepRepeatFillLumaMatchValueLabel) {
+        widgets.stepRepeatFillLumaMatchValueLabel->setText(
+            QStringLiteral("%1% luma").arg(lumaMatch));
+    }
+    if (widgets.stepRepeatFillHueMatchValueLabel) {
+        widgets.stepRepeatFillHueMatchValueLabel->setText(
+            QStringLiteral("%1% hue").arg(hueMatch));
+    }
+    if (widgets.stepRepeatFillSummaryLabel) {
+        widgets.stepRepeatFillSummaryLabel->setText(
+            QStringLiteral("Source Mosaic: %1 cells across, %2% guide scale, "
+                           "%3% brightness match, %4% hue match. "
+                           "Animate density or any knob with Key Parameters.")
+                .arg(density)
+                .arg(guideScale)
+                .arg(lumaMatch)
+                .arg(hueMatch));
+    }
+}
+
+void setStepRepeatFillValues(const EffectsTab::Widgets& widgets,
+                             qreal speed,
+                             qreal spacing,
+                             qreal scale)
+{
+    if (widgets.stepRepeatFillGuideScaleDial) {
+        widgets.stepRepeatFillGuideScaleDial->setValue(
+            guideScalePercentFromTilingSpacing(spacing));
+    }
+    if (widgets.stepRepeatFillLumaMatchDial) {
+        widgets.stepRepeatFillLumaMatchDial->setValue(
+            matchPercentFromEffectValue(speed));
+    }
+    if (widgets.stepRepeatFillHueMatchDial) {
+        widgets.stepRepeatFillHueMatchDial->setValue(
+            matchPercentFromEffectValue(scale));
+    }
+    updateStepRepeatFillLabels(widgets);
 }
 
 QString presetParameterKey(ClipEffectPreset preset)
@@ -206,6 +505,21 @@ QString presetSpecificHelpText(ClipEffectPreset preset)
     case ClipEffectPreset::AlternatingMotionBackground:
     case ClipEffectPreset::FreezePattern:
     case ClipEffectPreset::StepRepeat:
+        return QStringLiteral("Step Repeat controls. Copies sets the sequenced repeat count, speed advances the stepped pattern, and scale sets source size.");
+    case ClipEffectPreset::StepRepeatFill:
+        return QStringLiteral("Step Repeat Fill controls. Tile density sets the repeat field, and the dedicated knobs match repeated tiles to a larger superimposed source guide.");
+    case ClipEffectPreset::SourceMosaicGrid:
+        return QStringLiteral("Source Mosaic Grid controls. A single-pass photomosaic shader builds a regular field of source fragments and matches them to a macro guide.");
+    case ClipEffectPreset::SourceMosaicStagger:
+        return QStringLiteral("Source Mosaic Stagger controls. A single-pass photomosaic shader offsets alternating rows for a more broadcast-graphic tile field.");
+    case ClipEffectPreset::SourceMosaicHex:
+        return QStringLiteral("Source Mosaic Hex controls. A single-pass photomosaic shader uses a hex-style packing field for denser organic texture.");
+    case ClipEffectPreset::SourceMosaicRadial:
+        return QStringLiteral("Source Mosaic Radial controls. A single-pass photomosaic shader arranges source fragments in polar bands around the frame.");
+    case ClipEffectPreset::SourceMosaicFlow:
+        return QStringLiteral("Source Mosaic Flow controls. A single-pass photomosaic shader warps the tile field with a stable broadcast-style flow pattern.");
+    case ClipEffectPreset::DirectionalFrameEcho:
+        return QStringLiteral("Directional Frame Echo controls. Instances sets the stack count, and the dedicated knobs set direction, spread, and symmetric hue balance.");
     case ClipEffectPreset::DirectionalTrimTicker:
     case ClipEffectPreset::SourceTile:
         return QStringLiteral("Pattern/repetition controls. Copies sets density, speed drives motion, scale changes source size, and spacing/pattern are shown when the preset supports tiled layout.");
@@ -267,6 +581,20 @@ void setFormFieldLabel(QWidget* field, const QString& text)
     }
 }
 
+void updateEdgeFillParameterVisibility(const EffectsTab::Widgets& widgets,
+                                       BackgroundFillEffect effect)
+{
+    const bool enabled = effect != BackgroundFillEffect::None;
+    const bool progressive =
+        effect == BackgroundFillEffect::ProgressiveEdgeStretch ||
+        effect == BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
+    setFormFieldVisible(widgets.edgeFillPixelsSpin, enabled && progressive);
+    setFormFieldVisible(widgets.edgeFillPowerSpin, enabled && progressive);
+    setFormFieldVisible(widgets.edgeFillOpacitySpin, enabled);
+    setFormFieldVisible(widgets.edgeFillBrightnessSpin, enabled);
+    setFormFieldVisible(widgets.edgeFillSaturationSpin, enabled);
+}
+
 bool speakerMaskDilationPreset(ClipEffectPreset preset)
 {
     return preset == ClipEffectPreset::SpeakerMaskDilation ||
@@ -309,7 +637,8 @@ QString effectPresetLabel(ClipEffectPreset preset)
 
 void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                                      ClipEffectPreset preset,
-                                     const QString& modulationMode)
+                                     const QString& modulationMode,
+                                     bool maskClip)
 {
     if (widgets.effectPresetSpecificHelpLabel) {
         widgets.effectPresetSpecificHelpLabel->setText(presetSpecificHelpText(preset));
@@ -321,6 +650,13 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
         preset == ClipEffectPreset::AlternatingMotionBackground ||
         preset == ClipEffectPreset::FreezePattern ||
         preset == ClipEffectPreset::StepRepeat ||
+        preset == ClipEffectPreset::StepRepeatFill ||
+        preset == ClipEffectPreset::SourceMosaicGrid ||
+        preset == ClipEffectPreset::SourceMosaicStagger ||
+        preset == ClipEffectPreset::SourceMosaicHex ||
+        preset == ClipEffectPreset::SourceMosaicRadial ||
+        preset == ClipEffectPreset::SourceMosaicFlow ||
+        preset == ClipEffectPreset::DirectionalFrameEcho ||
         preset == ClipEffectPreset::DirectionalTrimTicker ||
         preset == ClipEffectPreset::SourceTile ||
         preset == ClipEffectPreset::Vulkan3DSynth ||
@@ -334,6 +670,9 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
     const bool difference = preset == ClipEffectPreset::DifferenceMatte;
     const bool echo = preset == ClipEffectPreset::TemporalEcho;
     const bool tiling = preset == ClipEffectPreset::SourceTile;
+    const bool maskDomain = maskClip || tiling || generatedMaskDomainPreset(preset);
+    const bool directionalEcho = preset == ClipEffectPreset::DirectionalFrameEcho;
+    const bool stepRepeatFill = sourceMosaicPreset(preset);
     const bool spacing = tiling || mirrorGeometry || speakerMask;
     const bool sectorEffect =
         preset == ClipEffectPreset::MirrorRing ||
@@ -368,16 +707,20 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
                                                 : sectorEffect ? QStringLiteral("Mirror sectors")
                                                 : recursionEffect ? QStringLiteral("Recursion density")
                                                 : cellEffect ? QStringLiteral("Cells across")
-                                                : QStringLiteral("Copies"));
+                                                : stepRepeatFill ? QStringLiteral("Tile density")
+                                                : directionalEcho ? QStringLiteral("Instances")
+                                                                  : QStringLiteral("Copies"));
     setFormFieldLabel(widgets.effectSpeedSpin,
                       neon ? QStringLiteral("Hue speed")
                            : speakerMask ? QStringLiteral("Color cycle speed")
+                                        : recursionEffect ? QStringLiteral("Drift speed")
                                         : mirrorGeometry ? QStringLiteral("Rotation speed")
                                          : QStringLiteral("Speed"));
     setFormFieldLabel(widgets.effectScaleSpin,
                       edge ? QStringLiteral("Edge strength")
                            : neon ? QStringLiteral("Glow intensity")
                                   : speakerMask ? QStringLiteral("Opacity")
+                                                : recursionEffect ? QStringLiteral("Effect zoom")
                                                 : mirrorGeometry ? QStringLiteral("Source grain size")
                                                 : QStringLiteral("Scale"));
     setFormFieldLabel(widgets.tilingSpacingSpin,
@@ -396,11 +739,15 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
         }
         if (widgets.effectScaleSpin) {
             widgets.effectScaleSpin->setToolTip(
-                QStringLiteral("Size of the sampled source grain. Higher values produce larger image features."));
+                recursionEffect
+                    ? QStringLiteral("Continuous recursive zoom. Keyframe this value; whole numbers resolve back to the original source image.")
+                    : QStringLiteral("Size of the sampled source grain. Higher values produce larger image features."));
         }
         if (widgets.effectSpeedSpin) {
             widgets.effectSpeedSpin->setToolTip(
-                QStringLiteral("Rotation rate. Negative values reverse direction; zero holds the geometry still."));
+                recursionEffect
+                    ? QStringLiteral("Independent drift/rotation rate for the recursive geometry. This does not drive zoom.")
+                    : QStringLiteral("Rotation rate. Negative values reverse direction; zero holds the geometry still."));
         }
         if (widgets.tilingSpacingSpin) {
             widgets.tilingSpacingSpin->setToolTip(
@@ -414,11 +761,11 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
             QStringLiteral("Hexagon density. This is the primary visible size control for Hexagonal Prism."));
     }
     setFormFieldVisible(widgets.effectRowsSpin, commonParameters);
-    setFormFieldVisible(widgets.effectSpeedSpin, commonParameters && !edge);
-    setFormFieldVisible(widgets.effectScaleSpin, commonParameters && !hexagonalPrism);
+    setFormFieldVisible(widgets.effectSpeedSpin, commonParameters && !edge && !directionalEcho && !stepRepeatFill);
+    setFormFieldVisible(widgets.effectScaleSpin, commonParameters && !hexagonalPrism && !directionalEcho && !stepRepeatFill);
     setFormFieldVisible(widgets.effectAlternateDirectionCheck,
                         commonParameters && !edge && !neon && !speakerMask &&
-                            !mirrorGeometry);
+                            !mirrorGeometry && !directionalEcho && !stepRepeatFill);
     const bool steadyIncrease =
         modulationMode == QStringLiteral("steady_increase");
     setFormFieldVisible(
@@ -432,8 +779,16 @@ void updatePresetParameterVisibility(const EffectsTab::Widgets& widgets,
     setFormFieldVisible(widgets.temporalEchoSpacingSpin, echo);
     setFormFieldVisible(widgets.temporalEchoDecaySpin, echo);
     setFormFieldVisible(widgets.tilingPatternCombo, tiling);
-    setFormFieldVisible(widgets.tilingSpacingSpin, spacing);
+    setFormFieldVisible(widgets.tilingSpacingSpin, spacing && !directionalEcho && !stepRepeatFill);
     setFormFieldVisible(widgets.tilingWrapCheck, tiling);
+    setFormFieldVisible(widgets.maskBoundingBoxSection, maskDomain);
+    setFormFieldVisible(widgets.tilingUseMaskBoundsCheck, maskDomain);
+    setFormFieldVisible(widgets.tilingMaskIslandSigmaSpin, maskDomain);
+    setFormFieldVisible(widgets.maskBoundingBoxPreviewCheck, maskDomain);
+    setFormFieldVisible(widgets.directionalEchoControlsWidget, directionalEcho);
+    setFormFieldVisible(widgets.stepRepeatFillControlsWidget, stepRepeatFill);
+    updateDirectionalEchoLabels(widgets);
+    updateStepRepeatFillLabels(widgets);
 }
 
 void populateEffectKeyframeTable(const EffectsTab::Widgets& widgets,
@@ -504,7 +859,7 @@ void populateEffectKeyframeTable(const EffectsTab::Widgets& widgets,
                            QString::number(keyframe.effectScale, 'f', 2),
                            tilingPatternLabel(keyframe.tilingPattern),
                            QStringLiteral(
-                               "alt=%1 diff=%2/%3/%4 echo=%5/%6/%7 spacing=%8 wrap=%9 mod=%10/%11/%12/%13/%14 speech=%15")
+                               "alt=%1 diff=%2/%3/%4 echo=%5/%6/%7 spacing=%8 wrap=%9 bounds=%10 outside=%11% mod=%12/%13/%14/%15/%16 speech=%17")
                                .arg(keyframe.effectAlternateDirection
                                         ? QStringLiteral("on")
                                         : QStringLiteral("off"))
@@ -518,6 +873,10 @@ void populateEffectKeyframeTable(const EffectsTab::Widgets& widgets,
                                .arg(keyframe.tilingWrap
                                         ? QStringLiteral("on")
                                         : QStringLiteral("off"))
+                               .arg(keyframe.tilingUseMaskBounds
+                                        ? QStringLiteral("mask")
+                                        : QStringLiteral("clip"))
+                               .arg(keyframe.tilingMaskIslandSigma, 0, 'f', 2)
                                .arg(keyframe.effectModulationMode)
                                .arg(keyframe.effectModulationTarget)
                                .arg(keyframe.effectModulationAmount, 0, 'f', 2)
@@ -572,15 +931,27 @@ QSet<QPair<int64_t, QString>> selectedEffectKeyframeRows(QTableWidget* table)
     if (!table) {
         return selected;
     }
-    for (const QModelIndex& index : table->selectionModel()->selectedRows()) {
-        const int row = index.row();
+    auto addRow = [&](int row) {
+        if (row < 0 || row >= table->rowCount()) {
+            return;
+        }
         const QTableWidgetItem* frameItem = table->item(row, 0);
         const QTableWidgetItem* typeItem = table->item(row, 1);
         if (!frameItem || !typeItem) {
-            continue;
+            return;
         }
         selected.insert({frameItem->data(Qt::UserRole).toLongLong(),
                          typeItem->data(Qt::UserRole).toString()});
+    };
+    if (QItemSelectionModel* selection = table->selectionModel()) {
+        for (const QModelIndex& index : selection->selectedRows()) {
+            addRow(index.row());
+        }
+    }
+    for (const QTableWidgetSelectionRange& range : table->selectedRanges()) {
+        for (int row = range.topRow(); row <= range.bottomRow(); ++row) {
+            addRow(row);
+        }
     }
     return selected;
 }
@@ -632,6 +1003,33 @@ TimelineClip::EffectParameterKeyframe effectParameterKeyframeFromWidgets(
         : fallbackClip.tilingSpacing;
     keyframe.tilingWrap =
         !widgets.tilingWrapCheck || widgets.tilingWrapCheck->isChecked();
+    keyframe.tilingUseMaskBounds =
+        widgets.tilingUseMaskBoundsCheck &&
+        widgets.tilingUseMaskBoundsCheck->isChecked();
+    keyframe.tilingMaskIslandSigma = widgets.tilingMaskIslandSigmaSpin
+        ? widgets.tilingMaskIslandSigmaSpin->value()
+        : fallbackClip.tilingMaskIslandSigma;
+    if (keyframe.effectPreset == ClipEffectPreset::DirectionalFrameEcho) {
+        keyframe.effectSpeed = widgets.directionalEchoDirectionDial
+            ? effectSpeedFromDirectionDegrees(widgets.directionalEchoDirectionDial->value())
+            : fallbackClip.effectSpeed;
+        keyframe.effectScale = widgets.directionalEchoHueDial
+            ? effectScaleFromHuePercent(widgets.directionalEchoHueDial->value())
+            : fallbackClip.effectScale;
+        keyframe.tilingSpacing = widgets.directionalEchoSpreadDial
+            ? tilingSpacingFromSpreadPercent(widgets.directionalEchoSpreadDial->value())
+            : fallbackClip.tilingSpacing;
+    } else if (sourceMosaicPreset(keyframe.effectPreset)) {
+        keyframe.effectSpeed = widgets.stepRepeatFillLumaMatchDial
+            ? effectValueFromMatchPercent(widgets.stepRepeatFillLumaMatchDial->value())
+            : fallbackClip.effectSpeed;
+        keyframe.effectScale = widgets.stepRepeatFillHueMatchDial
+            ? effectValueFromMatchPercent(widgets.stepRepeatFillHueMatchDial->value())
+            : fallbackClip.effectScale;
+        keyframe.tilingSpacing = widgets.stepRepeatFillGuideScaleDial
+            ? tilingSpacingFromGuideScalePercent(widgets.stepRepeatFillGuideScaleDial->value())
+            : fallbackClip.tilingSpacing;
+    }
     keyframe.effectModulationMode = widgets.effectModulationModeCombo
         ? widgets.effectModulationModeCombo->currentData().toString()
         : fallbackClip.effectModulationMode;
@@ -677,30 +1075,6 @@ void upsertClipEffectParameterKeyframe(
         });
 }
 
-QTableWidgetItem* ensureEffectContextRowSelected(QTableWidget* table,
-                                                 const QPoint& pos,
-                                                 int* rowOut)
-{
-    if (rowOut) {
-        *rowOut = -1;
-    }
-    if (!table || !table->selectionModel()) {
-        return nullptr;
-    }
-    QTableWidgetItem* item = table->itemAt(pos);
-    if (!item) {
-        return nullptr;
-    }
-    const int row = item->row();
-    if (rowOut) {
-        *rowOut = row;
-    }
-    if (!table->selectionModel()->isRowSelected(row, QModelIndex())) {
-        table->clearSelection();
-        table->selectRow(row);
-    }
-    return item;
-}
 }
 
 void EffectsTab::wire()
@@ -729,9 +1103,23 @@ void EffectsTab::wire()
         connect(spin, &QDoubleSpinBox::editingFinished,
                 this, &EffectsTab::onEditingFinished);
     }
+    if (m_widgets.effectPresetCategoryCombo) {
+        connect(m_widgets.effectPresetCategoryCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this,
+                &EffectsTab::onEffectPresetCategoryChanged);
+    }
     if (m_widgets.effectPresetCombo) {
         connect(m_widgets.effectPresetCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &EffectsTab::onEffectPresetChanged);
+    }
+    if (m_widgets.effectPresetPreviousButton) {
+        connect(m_widgets.effectPresetPreviousButton, &QPushButton::clicked,
+                this, [this]() { stepEffectPreset(-1); });
+    }
+    if (m_widgets.effectPresetNextButton) {
+        connect(m_widgets.effectPresetNextButton, &QPushButton::clicked,
+                this, [this]() { stepEffectPreset(1); });
     }
     const QVector<QSpinBox*> integerEffectControls{
         m_widgets.differenceReferenceFramesSpin, m_widgets.temporalEchoCountSpin,
@@ -792,8 +1180,10 @@ void EffectsTab::wire()
                 this, &EffectsTab::removeEffectEnabledKeyframe);
     }
     if (m_widgets.effectKeyframeTable) {
-        connect(m_widgets.effectKeyframeTable, &QTableWidget::itemClicked,
-                this, &EffectsTab::onEffectKeyframeTableItemClicked);
+        m_widgets.effectKeyframeTable->setSelectionBehavior(
+            QAbstractItemView::SelectRows);
+        m_widgets.effectKeyframeTable->setSelectionMode(
+            QAbstractItemView::ExtendedSelection);
         connect(m_widgets.effectKeyframeTable, &QTableWidget::itemChanged,
                 this, &EffectsTab::onEffectKeyframeTableItemChanged);
         connect(m_widgets.effectKeyframeTable, &QTableWidget::itemDoubleClicked,
@@ -844,6 +1234,50 @@ void EffectsTab::wire()
         connect(m_widgets.tilingWrapCheck, &QCheckBox::toggled,
                 this, &EffectsTab::onEffectControlChanged);
     }
+    if (m_widgets.tilingUseMaskBoundsCheck) {
+        connect(m_widgets.tilingUseMaskBoundsCheck, &QCheckBox::toggled,
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    if (m_widgets.tilingMaskIslandSigmaSpin) {
+        connect(m_widgets.tilingMaskIslandSigmaSpin,
+                qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, &EffectsTab::onEffectControlChanged);
+        connect(m_widgets.tilingMaskIslandSigmaSpin,
+                &QDoubleSpinBox::editingFinished,
+                this, &EffectsTab::onEditingFinished);
+    }
+    if (m_widgets.maskBoundingBoxPreviewCheck) {
+        connect(m_widgets.maskBoundingBoxPreviewCheck, &QCheckBox::toggled,
+                this, &EffectsTab::onEffectControlChanged);
+    }
+    for (QDial* dial : {
+             m_widgets.directionalEchoDirectionDial,
+             m_widgets.directionalEchoSpreadDial,
+             m_widgets.directionalEchoHueDial}) {
+        if (dial) {
+            connect(dial, &QDial::valueChanged,
+                    this, [this]() {
+                        updateDirectionalEchoLabels(m_widgets);
+                        onEffectControlChanged();
+                    });
+            connect(dial, &QDial::sliderReleased,
+                    this, &EffectsTab::onEditingFinished);
+        }
+    }
+    for (QDial* dial : {
+             m_widgets.stepRepeatFillGuideScaleDial,
+             m_widgets.stepRepeatFillLumaMatchDial,
+             m_widgets.stepRepeatFillHueMatchDial}) {
+        if (dial) {
+            connect(dial, &QDial::valueChanged,
+                    this, [this]() {
+                        updateStepRepeatFillLabels(m_widgets);
+                        onEffectControlChanged();
+                    });
+            connect(dial, &QDial::sliderReleased,
+                    this, &EffectsTab::onEditingFinished);
+        }
+    }
 }
 
 void EffectsTab::refresh()
@@ -860,9 +1294,12 @@ void EffectsTab::refresh()
     const bool maskMatteTarget =
         (clip && clip->clipRole == ClipRole::MaskMatte) ||
         (!clip && selectedTrack && selectedTrack->generatedChildTrack);
-    setMaskMattePresetAvailability(m_widgets.effectPresetCombo, maskMatteTarget);
     m_updating = true;
 
+    const std::unique_ptr<QSignalBlocker> presetCategoryBlock =
+        m_widgets.effectPresetCategoryCombo
+            ? std::make_unique<QSignalBlocker>(m_widgets.effectPresetCategoryCombo)
+            : nullptr;
     const std::unique_ptr<QSignalBlocker> presetBlock =
         m_widgets.effectPresetCombo
             ? std::make_unique<QSignalBlocker>(m_widgets.effectPresetCombo)
@@ -887,6 +1324,22 @@ void EffectsTab::refresh()
         m_widgets.tilingSpacingSpin ? std::make_unique<QSignalBlocker>(m_widgets.tilingSpacingSpin) : nullptr;
     const std::unique_ptr<QSignalBlocker> tilingWrapBlock =
         m_widgets.tilingWrapCheck ? std::make_unique<QSignalBlocker>(m_widgets.tilingWrapCheck) : nullptr;
+    const std::unique_ptr<QSignalBlocker> tilingUseMaskBoundsBlock =
+        m_widgets.tilingUseMaskBoundsCheck ? std::make_unique<QSignalBlocker>(m_widgets.tilingUseMaskBoundsCheck) : nullptr;
+    const std::unique_ptr<QSignalBlocker> tilingMaskIslandSigmaBlock =
+        m_widgets.tilingMaskIslandSigmaSpin ? std::make_unique<QSignalBlocker>(m_widgets.tilingMaskIslandSigmaSpin) : nullptr;
+    const std::unique_ptr<QSignalBlocker> directionalEchoDirectionBlock =
+        m_widgets.directionalEchoDirectionDial ? std::make_unique<QSignalBlocker>(m_widgets.directionalEchoDirectionDial) : nullptr;
+    const std::unique_ptr<QSignalBlocker> directionalEchoSpreadBlock =
+        m_widgets.directionalEchoSpreadDial ? std::make_unique<QSignalBlocker>(m_widgets.directionalEchoSpreadDial) : nullptr;
+    const std::unique_ptr<QSignalBlocker> directionalEchoHueBlock =
+        m_widgets.directionalEchoHueDial ? std::make_unique<QSignalBlocker>(m_widgets.directionalEchoHueDial) : nullptr;
+    const std::unique_ptr<QSignalBlocker> stepRepeatFillGuideScaleBlock =
+        m_widgets.stepRepeatFillGuideScaleDial ? std::make_unique<QSignalBlocker>(m_widgets.stepRepeatFillGuideScaleDial) : nullptr;
+    const std::unique_ptr<QSignalBlocker> stepRepeatFillLumaMatchBlock =
+        m_widgets.stepRepeatFillLumaMatchDial ? std::make_unique<QSignalBlocker>(m_widgets.stepRepeatFillLumaMatchDial) : nullptr;
+    const std::unique_ptr<QSignalBlocker> stepRepeatFillHueMatchBlock =
+        m_widgets.stepRepeatFillHueMatchDial ? std::make_unique<QSignalBlocker>(m_widgets.stepRepeatFillHueMatchDial) : nullptr;
 
     const bool selectedSynthClip = clip && clip->clipRole == ClipRole::EffectSynth;
 
@@ -914,15 +1367,25 @@ void EffectsTab::refresh()
                 m_widgets.edgeFillEffectCombo->findData(
                     backgroundFillEffectToString(BackgroundFillEffect::None)));
         }
-        if (m_widgets.effectPresetCombo) {
-            m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
-                m_widgets.effectPresetCombo,
-                selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None));
-            m_widgets.effectPresetCombo->setEnabled(
-                selectedTrack != nullptr && !selectedTrack->generatedChildTrack);
-        }
+        updateEdgeFillParameterVisibility(m_widgets, BackgroundFillEffect::None);
         const ClipEffectPreset trackPreset =
             selectedTrack ? selectedTrack->effectPreset : ClipEffectPreset::None;
+        setEffectPresetSelectorToPreset(m_widgets, trackPreset, maskMatteTarget);
+        const bool trackPresetSelectable =
+            selectedTrack != nullptr && !selectedTrack->generatedChildTrack;
+        if (m_widgets.effectPresetCategoryCombo) {
+            m_widgets.effectPresetCategoryCombo->setEnabled(trackPresetSelectable);
+        }
+        if (m_widgets.effectPresetCombo) {
+            m_widgets.effectPresetCombo->setEnabled(
+                trackPresetSelectable);
+        }
+        if (m_widgets.effectPresetPreviousButton) {
+            m_widgets.effectPresetPreviousButton->setEnabled(trackPresetSelectable);
+        }
+        if (m_widgets.effectPresetNextButton) {
+            m_widgets.effectPresetNextButton->setEnabled(trackPresetSelectable);
+        }
         const bool trackEffectActive = selectedTrack && trackPreset != ClipEffectPreset::None;
         if (m_widgets.effectRowsSpin) {
             m_widgets.effectRowsSpin->setValue(selectedTrack ? selectedTrack->effectRows : 32);
@@ -1005,8 +1468,41 @@ void EffectsTab::refresh()
             m_widgets.tilingWrapCheck->setChecked(!selectedTrack || selectedTrack->tilingWrap);
             m_widgets.tilingWrapCheck->setEnabled(trackEffectActive);
         }
+        if (m_widgets.tilingUseMaskBoundsCheck) {
+            m_widgets.tilingUseMaskBoundsCheck->setChecked(
+                selectedTrack && selectedTrack->tilingUseMaskBounds);
+            m_widgets.tilingUseMaskBoundsCheck->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.tilingMaskIslandSigmaSpin) {
+            m_widgets.tilingMaskIslandSigmaSpin->setValue(
+                selectedTrack ? selectedTrack->tilingMaskIslandSigma : 0.0);
+            m_widgets.tilingMaskIslandSigmaSpin->setEnabled(trackEffectActive);
+        }
+        if (m_widgets.maskBoundingBoxPreviewCheck) {
+            m_widgets.maskBoundingBoxPreviewCheck->setChecked(false);
+            m_widgets.maskBoundingBoxPreviewCheck->setEnabled(false);
+        }
+        setDirectionalEchoValues(
+            m_widgets,
+            selectedTrack ? selectedTrack->effectSpeed : 0.0,
+            selectedTrack ? selectedTrack->tilingSpacing : 1.0,
+            selectedTrack ? selectedTrack->effectScale : 2.0);
+        setStepRepeatFillValues(
+            m_widgets,
+            selectedTrack ? selectedTrack->effectSpeed : 6.0,
+            selectedTrack ? selectedTrack->tilingSpacing : 4.0,
+            selectedTrack ? selectedTrack->effectScale : 4.0);
+        for (QDial* dial : {
+                 m_widgets.directionalEchoDirectionDial,
+                 m_widgets.directionalEchoSpreadDial,
+                 m_widgets.directionalEchoHueDial,
+                 m_widgets.stepRepeatFillGuideScaleDial,
+                 m_widgets.stepRepeatFillLumaMatchDial,
+                 m_widgets.stepRepeatFillHueMatchDial}) {
+            if (dial) dial->setEnabled(trackEffectActive);
+        }
         updatePresetParameterVisibility(
-            m_widgets, trackPreset, QStringLiteral("none"));
+            m_widgets, trackPreset, QStringLiteral("none"), false);
         m_updating = false;
         return;
     }
@@ -1040,6 +1536,7 @@ void EffectsTab::refresh()
             BackgroundFillEffect::ProgressiveBidirectionalEdgeStretch;
     const bool edgeFillEnabled =
         clip->edgeFillEffect != BackgroundFillEffect::None;
+    updateEdgeFillParameterVisibility(m_widgets, clip->edgeFillEffect);
     if (m_widgets.edgeFillPixelsSpin) {
         m_widgets.edgeFillPixelsSpin->setValue(clip->edgeFillPixels);
         m_widgets.edgeFillPixelsSpin->setEnabled(
@@ -1062,11 +1559,7 @@ void EffectsTab::refresh()
         m_widgets.edgeFillSaturationSpin->setValue(clip->edgeFillSaturation * 100.0);
         m_widgets.edgeFillSaturationSpin->setEnabled(edgeFillEnabled);
     }
-    if (m_widgets.effectPresetCombo) {
-        m_widgets.effectPresetCombo->setCurrentIndex(comboIndexForPreset(
-            m_widgets.effectPresetCombo,
-            effectClip->effectPreset));
-    }
+    setEffectPresetSelectorToPreset(m_widgets, effectClip->effectPreset, maskMatteTarget);
     if (m_widgets.effectRowsSpin) {
         m_widgets.effectRowsSpin->setValue(effectClip->effectRows);
     }
@@ -1199,13 +1692,40 @@ void EffectsTab::refresh()
     if (m_widgets.tilingWrapCheck) {
         m_widgets.tilingWrapCheck->setChecked(effectClip->tilingWrap);
     }
+    if (m_widgets.tilingUseMaskBoundsCheck) {
+        m_widgets.tilingUseMaskBoundsCheck->setChecked(effectClip->tilingUseMaskBounds);
+    }
+    if (m_widgets.tilingMaskIslandSigmaSpin) {
+        m_widgets.tilingMaskIslandSigmaSpin->setValue(effectClip->tilingMaskIslandSigma);
+    }
+    if (m_widgets.maskBoundingBoxPreviewCheck) {
+        m_widgets.maskBoundingBoxPreviewCheck->setChecked(
+            clip->maskBoundingBoxPreview);
+    }
+    setDirectionalEchoValues(m_widgets,
+                             effectClip->effectSpeed,
+                             effectClip->tilingSpacing,
+                             effectClip->effectScale);
+    setStepRepeatFillValues(m_widgets,
+                            effectClip->effectSpeed,
+                            effectClip->tilingSpacing,
+                            effectClip->effectScale);
 
     const bool imagePresetCapable = clip->mediaType == ClipMediaType::Image ||
                                     clip->mediaType == ClipMediaType::Video;
     const ClipEffectPreset clipPreset = effectClip->effectPreset;
     const bool imagePresetActive = clipPreset != ClipEffectPreset::None;
+    if (m_widgets.effectPresetCategoryCombo) {
+        m_widgets.effectPresetCategoryCombo->setEnabled(imagePresetCapable);
+    }
     if (m_widgets.effectPresetCombo) {
         m_widgets.effectPresetCombo->setEnabled(imagePresetCapable);
+    }
+    if (m_widgets.effectPresetPreviousButton) {
+        m_widgets.effectPresetPreviousButton->setEnabled(imagePresetCapable);
+    }
+    if (m_widgets.effectPresetNextButton) {
+        m_widgets.effectPresetNextButton->setEnabled(imagePresetCapable);
     }
     if (m_widgets.effectRowsSpin) {
         m_widgets.effectRowsSpin->setEnabled(imagePresetCapable && imagePresetActive);
@@ -1252,8 +1772,37 @@ void EffectsTab::refresh()
     if (m_widgets.tilingWrapCheck) {
         m_widgets.tilingWrapCheck->setEnabled(tilingControlsActive);
     }
+    const bool maskClip = clip->clipRole == ClipRole::MaskMatte;
+    const bool maskDomainControlsActive =
+        maskClip ||
+        (tilingControlsActive &&
+         effectClip &&
+         (effectClip->effectPreset == ClipEffectPreset::SourceTile ||
+          generatedMaskDomainPreset(effectClip->effectPreset)));
+    if (m_widgets.tilingUseMaskBoundsCheck) {
+        m_widgets.tilingUseMaskBoundsCheck->setEnabled(maskDomainControlsActive);
+    }
+    if (m_widgets.tilingMaskIslandSigmaSpin) {
+        m_widgets.tilingMaskIslandSigmaSpin->setEnabled(
+            maskDomainControlsActive && effectClip->tilingUseMaskBounds);
+    }
+    if (m_widgets.maskBoundingBoxPreviewCheck) {
+        m_widgets.maskBoundingBoxPreviewCheck->setEnabled(maskClip);
+    }
+    for (QDial* dial : {
+             m_widgets.directionalEchoDirectionDial,
+             m_widgets.directionalEchoSpreadDial,
+             m_widgets.directionalEchoHueDial,
+             m_widgets.stepRepeatFillGuideScaleDial,
+             m_widgets.stepRepeatFillLumaMatchDial,
+             m_widgets.stepRepeatFillHueMatchDial}) {
+        if (dial) dial->setEnabled(imagePresetCapable && imagePresetActive);
+    }
     updatePresetParameterVisibility(
-        m_widgets, clipPreset, effectClip->effectModulationMode);
+        m_widgets,
+        clipPreset,
+        effectClip->effectModulationMode,
+        clip->clipRole == ClipRole::MaskMatte);
     m_updating = false;
 }
 
@@ -1278,11 +1827,43 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
         return;
     }
     const int rows = m_widgets.effectRowsSpin ? m_widgets.effectRowsSpin->value() : 32;
-    const double speed = m_widgets.effectSpeedSpin ? m_widgets.effectSpeedSpin->value() : 1.0;
-    const double scale = m_widgets.effectScaleSpin ? m_widgets.effectScaleSpin->value() : 1.0;
+    const double rawSpeed = m_widgets.effectSpeedSpin ? m_widgets.effectSpeedSpin->value() : 1.0;
+    const double rawScale = m_widgets.effectScaleSpin ? m_widgets.effectScaleSpin->value() : 1.0;
     const ClipTilingPattern tilingPattern = tilingPatternFromCombo(m_widgets.tilingPatternCombo);
-    const double tilingSpacing = m_widgets.tilingSpacingSpin ? m_widgets.tilingSpacingSpin->value() : 1.0;
+    const double rawTilingSpacing = m_widgets.tilingSpacingSpin ? m_widgets.tilingSpacingSpin->value() : 1.0;
+    double speed = rawSpeed;
+    double scale = rawScale;
+    double tilingSpacing = rawTilingSpacing;
+    if (preset == ClipEffectPreset::DirectionalFrameEcho) {
+        speed = m_widgets.directionalEchoDirectionDial
+            ? effectSpeedFromDirectionDegrees(m_widgets.directionalEchoDirectionDial->value())
+            : rawSpeed;
+        scale = m_widgets.directionalEchoHueDial
+            ? effectScaleFromHuePercent(m_widgets.directionalEchoHueDial->value())
+            : rawScale;
+        tilingSpacing = m_widgets.directionalEchoSpreadDial
+            ? tilingSpacingFromSpreadPercent(m_widgets.directionalEchoSpreadDial->value())
+            : rawTilingSpacing;
+    } else if (sourceMosaicPreset(preset)) {
+        speed = m_widgets.stepRepeatFillLumaMatchDial
+            ? effectValueFromMatchPercent(m_widgets.stepRepeatFillLumaMatchDial->value())
+            : rawSpeed;
+        scale = m_widgets.stepRepeatFillHueMatchDial
+            ? effectValueFromMatchPercent(m_widgets.stepRepeatFillHueMatchDial->value())
+            : rawScale;
+        tilingSpacing = m_widgets.stepRepeatFillGuideScaleDial
+            ? tilingSpacingFromGuideScalePercent(m_widgets.stepRepeatFillGuideScaleDial->value())
+            : rawTilingSpacing;
+    }
     const bool tilingWrap = !m_widgets.tilingWrapCheck || m_widgets.tilingWrapCheck->isChecked();
+    const bool tilingUseMaskBounds =
+        m_widgets.tilingUseMaskBoundsCheck &&
+        m_widgets.tilingUseMaskBoundsCheck->isChecked();
+    const double tilingMaskIslandSigma =
+        m_widgets.tilingMaskIslandSigmaSpin ? m_widgets.tilingMaskIslandSigmaSpin->value() : 0.0;
+    const bool maskBoundingBoxPreview =
+        m_widgets.maskBoundingBoxPreviewCheck &&
+        m_widgets.maskBoundingBoxPreviewCheck->isChecked();
     const bool alternate =
         !m_widgets.effectAlternateDirectionCheck || m_widgets.effectAlternateDirectionCheck->isChecked();
     const QString modulationMode =
@@ -1358,6 +1939,12 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             clip.edgeFillBrightness = qBound<qreal>(-1.0, edgeFillBrightness, 1.0);
             clip.edgeFillSaturation = qBound<qreal>(0.0, edgeFillSaturation, 3.0);
             clip.effectEnabled = effectEnabled;
+            if (clip.clipRole == ClipRole::MaskMatte) {
+                clip.tilingUseMaskBounds = tilingUseMaskBounds;
+                clip.tilingMaskIslandSigma =
+                    qBound<qreal>(0.0, tilingMaskIslandSigma, 100.0);
+                clip.maskBoundingBoxPreview = maskBoundingBoxPreview;
+            }
             upsertClipEffectParameterKeyframe(clip, keyframe);
         });
     } else if (m_deps.updateTrackByIndex && targetTrackIndex >= 0 &&
@@ -1382,6 +1969,9 @@ void EffectsTab::applyEffectPreset(bool pushHistory)
             track.tilingPattern = tilingPattern;
             track.tilingSpacing = qBound<qreal>(0.1, tilingSpacing, 8.0);
             track.tilingWrap = tilingWrap;
+            track.tilingUseMaskBounds = tilingUseMaskBounds;
+            track.tilingMaskIslandSigma =
+                qBound<qreal>(0.0, tilingMaskIslandSigma, 100.0);
             }
             track.effectParameterSets[presetParameterKey(preset)] = effectParameters(track);
         });
@@ -1530,27 +2120,7 @@ void EffectsTab::removeEffectEnabledKeyframe()
 
 void EffectsTab::onEffectKeyframeTableItemClicked(QTableWidgetItem* item)
 {
-    if (m_updating || !item || !m_widgets.effectKeyframeTable ||
-        !m_deps.seekToTimelineFrame) {
-        return;
-    }
-    const TimelineClip* selectedClip =
-        m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!selectedClip) {
-        return;
-    }
-    const QTableWidgetItem* frameItem =
-        m_widgets.effectKeyframeTable->item(item->row(), 0);
-    if (!frameItem) {
-        return;
-    }
-    const int64_t keyframeFrame =
-        static_cast<int64_t>(frameItem->data(Qt::UserRole).toLongLong());
-    const int64_t localFrame = qBound<int64_t>(
-        0,
-        keyframeFrame,
-        qMax<int64_t>(0, selectedClip->durationFrames - 1));
-    m_deps.seekToTimelineFrame(selectedClip->startFrame + localFrame);
+    Q_UNUSED(item);
 }
 
 void EffectsTab::onEffectKeyframeTableItemChanged(QTableWidgetItem* item)
@@ -1670,11 +2240,7 @@ void EffectsTab::onEffectKeyframeTableItemChanged(QTableWidgetItem* item)
 
 void EffectsTab::onEffectKeyframeTableItemDoubleClicked(QTableWidgetItem* item)
 {
-    if (!item || !m_widgets.effectKeyframeTable ||
-        !(item->flags() & Qt::ItemIsEditable)) {
-        return;
-    }
-    m_widgets.effectKeyframeTable->editItem(item);
+    editor::editItemIfEditable(m_widgets.effectKeyframeTable, item);
 }
 
 void EffectsTab::onEffectKeyframeTableCustomContextMenu(const QPoint& pos)
@@ -1684,16 +2250,16 @@ void EffectsTab::onEffectKeyframeTableCustomContextMenu(const QPoint& pos)
     }
     int row = -1;
     QTableWidgetItem* item =
-        ensureEffectContextRowSelected(m_widgets.effectKeyframeTable, pos, &row);
+        editor::ensureContextRowSelected(m_widgets.effectKeyframeTable, pos, &row);
     if (!item || row < 0) {
         return;
     }
 
     QMenu menu;
     const int deletableRowCount =
-        m_widgets.effectKeyframeTable->selectionModel()
-            ? m_widgets.effectKeyframeTable->selectionModel()->selectedRows().size()
-            : 0;
+        editor::countSelectedFrameRoles(
+            m_widgets.effectKeyframeTable,
+            [](int64_t frame) { return frame >= 0; });
     QAction* deleteRows = menu.addAction(
         deletableRowCount == 1 ? QStringLiteral("Delete Row")
                                : QStringLiteral("Delete Rows"));
@@ -1709,13 +2275,9 @@ void EffectsTab::onEffectKeyframeTableCustomContextMenu(const QPoint& pos)
 bool EffectsTab::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched == m_widgets.effectKeyframeTable &&
-        event->type() == QEvent::KeyPress) {
-        auto* keyEvent = static_cast<QKeyEvent*>(event);
-        if (keyEvent->key() == Qt::Key_Delete ||
-            keyEvent->key() == Qt::Key_Backspace) {
-            removeEffectEnabledKeyframe();
-            return true;
-        }
+        editor::isTableDeleteKeyEvent(event)) {
+        removeEffectEnabledKeyframe();
+        return true;
     }
     return QObject::eventFilter(watched, event);
 }
@@ -1731,6 +2293,30 @@ void EffectsTab::onEditingFinished()
     applyEffectPreset(true);
 }
 
+void EffectsTab::onEffectPresetCategoryChanged(int index)
+{
+    Q_UNUSED(index);
+    if (m_updating) return;
+    const TimelineClip* clip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    const int selectedTrackIndex =
+        clip ? clip->trackIndex
+             : (m_deps.getSelectedTrackIndex ? m_deps.getSelectedTrackIndex() : -1);
+    const TimelineTrack* selectedTrack =
+        m_deps.getTrackByIndex ? m_deps.getTrackByIndex(selectedTrackIndex) : nullptr;
+    const bool maskMatteTarget =
+        (clip && clip->clipRole == ClipRole::MaskMatte) ||
+        (!clip && selectedTrack && selectedTrack->generatedChildTrack);
+    const ClipEffectPreset previousPreset = presetFromCombo(m_widgets.effectPresetCombo);
+    populateEffectPresetCombo(
+        m_widgets.effectPresetCombo,
+        selectedEffectPresetCategory(m_widgets.effectPresetCategoryCombo),
+        previousPreset);
+    setMaskMattePresetAvailability(m_widgets.effectPresetCombo, maskMatteTarget);
+    applyEffectPreset(true);
+    refresh();
+}
+
 void EffectsTab::onEffectPresetChanged(int index)
 {
     Q_UNUSED(index);
@@ -1739,8 +2325,47 @@ void EffectsTab::onEffectPresetChanged(int index)
     refresh();
 }
 
+void EffectsTab::stepEffectPreset(int delta)
+{
+    if (m_updating || delta == 0) return;
+    const QVector<EffectPresetUiOption> options = effectPresetUiOptions();
+    if (options.isEmpty()) return;
+    const ClipEffectPreset currentPreset = presetFromCombo(m_widgets.effectPresetCombo);
+    int currentIndex = 0;
+    for (int i = 0; i < options.size(); ++i) {
+        if (options.at(i).preset == currentPreset) {
+            currentIndex = i;
+            break;
+        }
+    }
+    const int nextIndex =
+        (currentIndex + delta + options.size()) % options.size();
+    const TimelineClip* clip = m_deps.getSelectedClip
+        ? m_deps.getSelectedClip() : nullptr;
+    const int selectedTrackIndex =
+        clip ? clip->trackIndex
+             : (m_deps.getSelectedTrackIndex ? m_deps.getSelectedTrackIndex() : -1);
+    const TimelineTrack* selectedTrack =
+        m_deps.getTrackByIndex ? m_deps.getTrackByIndex(selectedTrackIndex) : nullptr;
+    const bool maskMatteTarget =
+        (clip && clip->clipRole == ClipRole::MaskMatte) ||
+        (!clip && selectedTrack && selectedTrack->generatedChildTrack);
+    setEffectPresetSelectorToPreset(
+        m_widgets, options.at(nextIndex).preset, maskMatteTarget);
+    applyEffectPreset(true);
+    refresh();
+}
+
 void EffectsTab::onEffectControlChanged()
 {
     if (m_updating) return;
+    updateDirectionalEchoLabels(m_widgets);
+    updateStepRepeatFillLabels(m_widgets);
     applyEffectPreset(false);
+    if (sender() == m_widgets.edgeFillEffectCombo && m_widgets.edgeFillEffectCombo) {
+        updateEdgeFillParameterVisibility(
+            m_widgets,
+            backgroundFillEffectFromString(
+                m_widgets.edgeFillEffectCombo->currentData().toString()));
+    }
 }

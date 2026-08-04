@@ -10,6 +10,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QDial>
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
 #include <QFormLayout>
@@ -379,7 +380,8 @@ QWidget *InspectorPane::buildEffectsTab()
     m_effectsPathLabel->setWordWrap(true);
     layout->addWidget(m_effectsPathLabel);
 
-    auto edgeSection = createDisclosureSection(page, QStringLiteral("Edge Fill"), true);
+    auto effectSelectionSection =
+        createDisclosureSection(page, QStringLiteral("Effect Selection"), true);
     auto* edgeForm = new QFormLayout;
     edgeForm->setContentsMargins(0, 0, 0, 0);
     edgeForm->setSpacing(6);
@@ -408,7 +410,7 @@ QWidget *InspectorPane::buildEffectsTab()
         backgroundFillEffectToString(BackgroundFillEffect::BlurCover));
     m_edgeFillEffectCombo->setToolTip(
         QStringLiteral("Choose how this clip fills the surrounding canvas."));
-    edgeForm->addRow(QStringLiteral("Effect"), m_edgeFillEffectCombo);
+    edgeForm->addRow(QStringLiteral("Background fill"), m_edgeFillEffectCombo);
     m_edgeFillPixelsSpin = new QSpinBox(page);
     m_edgeFillPixelsSpin->setRange(1, 512);
     m_edgeFillPixelsSpin->setValue(1);
@@ -435,40 +437,48 @@ QWidget *InspectorPane::buildEffectsTab()
     edgeForm->addRow(QStringLiteral("Brightness"), m_edgeFillBrightnessSpin);
     m_edgeFillSaturationSpin = makeEdgePercentSpin(0.0, 300.0, 100.0);
     edgeForm->addRow(QStringLiteral("Saturation"), m_edgeFillSaturationSpin);
-    edgeSection.body->addLayout(edgeForm);
-    layout->addWidget(edgeSection.container);
 
-    auto presetSection = createDisclosureSection(page, QStringLiteral("Synthesis Effects"), true);
     auto *presetForm = new QFormLayout();
     presetForm->setContentsMargins(0, 0, 0, 0);
     presetForm->setSpacing(6);
-    m_effectPresetCombo = new QComboBox(page);
-    QString previousGroup;
+    m_effectPresetCategoryCombo = new QComboBox(page);
+    QStringList presetGroups;
     for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
-        if (option.group != previousGroup) {
-            if (!previousGroup.isEmpty()) {
-                m_effectPresetCombo->insertSeparator(m_effectPresetCombo->count());
-            }
-            m_effectPresetCombo->addItem(option.group);
-            const int headingIndex = m_effectPresetCombo->count() - 1;
-            if (auto* model = qobject_cast<QStandardItemModel*>(m_effectPresetCombo->model())) {
-                if (QStandardItem* heading = model->item(headingIndex)) {
-                    heading->setEnabled(false);
-                    QFont font = heading->font();
-                    font.setBold(true);
-                    heading->setFont(font);
-                }
-            }
+        if (!presetGroups.contains(option.group)) {
+            presetGroups.push_back(option.group);
         }
+    }
+    for (const QString& group : presetGroups) {
+        m_effectPresetCategoryCombo->addItem(group, group);
+    }
+    m_effectPresetCategoryCombo->setToolTip(
+        QStringLiteral("Filter synthesis presets by professional effect family."));
+    presetForm->addRow(QStringLiteral("Effect family"), m_effectPresetCategoryCombo);
+
+    m_effectPresetCombo = new QComboBox(page);
+    for (const EffectPresetUiOption& option : effectPresetUiOptions()) {
         m_effectPresetCombo->addItem(option.label, static_cast<int>(option.preset));
         m_effectPresetCombo->setItemData(m_effectPresetCombo->count() - 1,
                                          option.group,
                                          Qt::ToolTipRole);
-        previousGroup = option.group;
     }
-    presetForm->addRow(QStringLiteral("Preset"), m_effectPresetCombo);
-    presetSection.body->addLayout(presetForm);
-    layout->addWidget(presetSection.container);
+    m_effectPresetPreviousButton = new QPushButton(QStringLiteral("-"), page);
+    m_effectPresetPreviousButton->setToolTip(QStringLiteral("Previous synthesis preset"));
+    m_effectPresetPreviousButton->setFixedWidth(32);
+    m_effectPresetNextButton = new QPushButton(QStringLiteral("+"), page);
+    m_effectPresetNextButton->setToolTip(QStringLiteral("Next synthesis preset"));
+    m_effectPresetNextButton->setFixedWidth(32);
+    auto* presetRow = new QWidget(page);
+    auto* presetRowLayout = new QHBoxLayout(presetRow);
+    presetRowLayout->setContentsMargins(0, 0, 0, 0);
+    presetRowLayout->setSpacing(6);
+    presetRowLayout->addWidget(m_effectPresetPreviousButton);
+    presetRowLayout->addWidget(m_effectPresetCombo, 1);
+    presetRowLayout->addWidget(m_effectPresetNextButton);
+    presetForm->addRow(QStringLiteral("Synthesis preset"), presetRow);
+    effectSelectionSection.body->addLayout(presetForm);
+    effectSelectionSection.body->addLayout(edgeForm);
+    layout->addWidget(effectSelectionSection.container);
 
     auto presetSpecificSection =
         createDisclosureSection(page, QStringLiteral("Preset-Specific Settings"), true);
@@ -560,6 +570,186 @@ QWidget *InspectorPane::buildEffectsTab()
     m_tilingWrapCheck = new QCheckBox(QStringLiteral("Wrap across bounds"), page);
     m_tilingWrapCheck->setChecked(true);
     presetSpecificForm->addRow(QString(), m_tilingWrapCheck);
+
+    m_maskBoundingBoxSection = new QGroupBox(QStringLiteral("Mask Bounding Box"), page);
+    auto* maskBoundingBoxForm = new QFormLayout(m_maskBoundingBoxSection);
+    maskBoundingBoxForm->setContentsMargins(8, 8, 8, 8);
+    auto* maskBoundingBoxHelp = new QLabel(
+        QStringLiteral("Shared mask bounding-box controls for mask clips and mask-aware effects."),
+        m_maskBoundingBoxSection);
+    maskBoundingBoxHelp->setWordWrap(true);
+    maskBoundingBoxHelp->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    maskBoundingBoxForm->addRow(maskBoundingBoxHelp);
+
+    m_tilingUseMaskBoundsCheck = new QCheckBox(
+        QStringLiteral("Use available mask bounding box"), m_maskBoundingBoxSection);
+    m_tilingUseMaskBoundsCheck->setToolTip(QStringLiteral(
+        "Use the clip mask's available foreground bounds for source tiling "
+        "and mask-aware generated effects instead of the full clip bounds."));
+    maskBoundingBoxForm->addRow(QString(), m_tilingUseMaskBoundsCheck);
+
+    m_tilingMaskIslandSigmaSpin = new QDoubleSpinBox(m_maskBoundingBoxSection);
+    m_tilingMaskIslandSigmaSpin->setRange(0.0, 100.0);
+    m_tilingMaskIslandSigmaSpin->setDecimals(2);
+    m_tilingMaskIslandSigmaSpin->setSingleStep(1.0);
+    m_tilingMaskIslandSigmaSpin->setValue(0.0);
+    m_tilingMaskIslandSigmaSpin->setSuffix(QStringLiteral("%"));
+    m_tilingMaskIslandSigmaSpin->setToolTip(QStringLiteral(
+        "Allow this percentage of foreground mask pixels to remain outside "
+        "the calculated available mask bounding box. Use 0% to include every "
+        "masked pixel; increase it to ignore small outlying islands."));
+    maskBoundingBoxForm->addRow(QStringLiteral("Outside pixels"), m_tilingMaskIslandSigmaSpin);
+
+    m_maskBoundingBoxPreviewCheck = new QCheckBox(
+        QStringLiteral("Preview bounding box"), m_maskBoundingBoxSection);
+    m_maskBoundingBoxPreviewCheck->setToolTip(QStringLiteral(
+        "Draw the calculated mask bounding box in the preview."));
+    maskBoundingBoxForm->addRow(QString(), m_maskBoundingBoxPreviewCheck);
+    presetSpecificForm->addRow(m_maskBoundingBoxSection);
+
+    m_directionalEchoControlsWidget = new QWidget(page);
+    auto *directionalEchoLayout = new QGridLayout(m_directionalEchoControlsWidget);
+    directionalEchoLayout->setContentsMargins(0, 0, 0, 0);
+    directionalEchoLayout->setHorizontalSpacing(14);
+    directionalEchoLayout->setVerticalSpacing(5);
+    auto *directionalEchoIntro = new QLabel(
+        QStringLiteral("Instanced frame repeats for masked or full-frame footage. "
+                       "The center instance remains the source; outer instances "
+                       "spread symmetrically and receive opposing hue offsets."),
+        page);
+    directionalEchoIntro->setWordWrap(true);
+    directionalEchoIntro->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    directionalEchoLayout->addWidget(directionalEchoIntro, 0, 0, 1, 3);
+    auto makeEchoDial = [page, directionalEchoLayout](const QString& name,
+                                                      const QString& detail,
+                                                      QDial*& dial,
+                                                      QLabel*& valueLabel,
+                                                      int column,
+                                                      int minimum,
+                                                      int maximum,
+                                                      int value) {
+        auto *title = new QLabel(name, page);
+        title->setAlignment(Qt::AlignCenter);
+        title->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        dial = new QDial(page);
+        dial->setRange(minimum, maximum);
+        dial->setValue(value);
+        dial->setNotchesVisible(true);
+        dial->setWrapping(minimum == 0 && maximum >= 359);
+        dial->setFixedSize(72, 72);
+        valueLabel = new QLabel(page);
+        valueLabel->setAlignment(Qt::AlignCenter);
+        auto *detailLabel = new QLabel(detail, page);
+        detailLabel->setAlignment(Qt::AlignCenter);
+        detailLabel->setWordWrap(true);
+        detailLabel->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+        directionalEchoLayout->addWidget(title, 1, column);
+        directionalEchoLayout->addWidget(dial, 2, column, Qt::AlignCenter);
+        directionalEchoLayout->addWidget(valueLabel, 3, column);
+        directionalEchoLayout->addWidget(detailLabel, 4, column);
+    };
+    makeEchoDial(QStringLiteral("Direction"),
+                 QStringLiteral("Axis of the instanced trail"),
+                 m_directionalEchoDirectionDial,
+                 m_directionalEchoDirectionValueLabel,
+                 0, 0, 359, 0);
+    makeEchoDial(QStringLiteral("Spread"),
+                 QStringLiteral("Distance between copies"),
+                 m_directionalEchoSpreadDial,
+                 m_directionalEchoSpreadValueLabel,
+                 1, 0, 100, 25);
+    makeEchoDial(QStringLiteral("Hue balance"),
+                 QStringLiteral("Opposing color offsets"),
+                 m_directionalEchoHueDial,
+                 m_directionalEchoHueValueLabel,
+                 2, 0, 100, 25);
+    m_directionalEchoSummaryLabel = new QLabel(page);
+    m_directionalEchoSummaryLabel->setWordWrap(true);
+    m_directionalEchoSummaryLabel->setStyleSheet(QStringLiteral(
+        "QLabel {"
+        "  border: 1px solid palette(mid);"
+        "  border-radius: 6px;"
+        "  padding: 6px;"
+        "  background: palette(alternate-base);"
+        "}"));
+    directionalEchoLayout->addWidget(m_directionalEchoSummaryLabel, 5, 0, 1, 3);
+    m_directionalEchoControlsWidget->setToolTip(QStringLiteral(
+        "Directional Frame Echo draws instanced copies around the source. "
+        "Direction sets the echo axis, Spread sets offset distance, and Hue "
+        "Balance creates symmetric color offsets so the stack resolves back "
+        "toward the original image when viewed small."));
+    presetSpecificForm->addRow(QStringLiteral("Frame echo"), m_directionalEchoControlsWidget);
+
+    m_stepRepeatFillControlsWidget = new QWidget(page);
+    auto *stepRepeatFillLayout = new QGridLayout(m_stepRepeatFillControlsWidget);
+    stepRepeatFillLayout->setContentsMargins(0, 0, 0, 0);
+    stepRepeatFillLayout->setHorizontalSpacing(14);
+    stepRepeatFillLayout->setVerticalSpacing(5);
+    auto *stepRepeatFillIntro = new QLabel(
+        QStringLiteral("Fills the frame with repeated source tiles, then recolors each "
+                       "tile against a larger invisible version of the same source so "
+                       "the field resolves toward the original image when viewed small."),
+        page);
+    stepRepeatFillIntro->setWordWrap(true);
+    stepRepeatFillIntro->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    stepRepeatFillLayout->addWidget(stepRepeatFillIntro, 0, 0, 1, 3);
+    auto makeFillDial = [page, stepRepeatFillLayout](const QString& name,
+                                                     const QString& detail,
+                                                     QDial*& dial,
+                                                     QLabel*& valueLabel,
+                                                     int column,
+                                                     int value) {
+        auto *title = new QLabel(name, page);
+        title->setAlignment(Qt::AlignCenter);
+        title->setStyleSheet(QStringLiteral("font-weight: 600;"));
+        dial = new QDial(page);
+        dial->setRange(0, 100);
+        dial->setValue(value);
+        dial->setNotchesVisible(true);
+        dial->setFixedSize(72, 72);
+        valueLabel = new QLabel(page);
+        valueLabel->setAlignment(Qt::AlignCenter);
+        auto *detailLabel = new QLabel(detail, page);
+        detailLabel->setAlignment(Qt::AlignCenter);
+        detailLabel->setWordWrap(true);
+        detailLabel->setStyleSheet(QStringLiteral("color: palette(mid); font-size: 11px;"));
+        stepRepeatFillLayout->addWidget(title, 1, column);
+        stepRepeatFillLayout->addWidget(dial, 2, column, Qt::AlignCenter);
+        stepRepeatFillLayout->addWidget(valueLabel, 3, column);
+        stepRepeatFillLayout->addWidget(detailLabel, 4, column);
+    };
+    makeFillDial(QStringLiteral("Guide scale"),
+                 QStringLiteral("Size of invisible source guide"),
+                 m_stepRepeatFillGuideScaleDial,
+                 m_stepRepeatFillGuideScaleValueLabel,
+                 0,
+                 50);
+    makeFillDial(QStringLiteral("Luma match"),
+                 QStringLiteral("Brightness adaptation strength"),
+                 m_stepRepeatFillLumaMatchDial,
+                 m_stepRepeatFillLumaMatchValueLabel,
+                 1,
+                 75);
+    makeFillDial(QStringLiteral("Hue match"),
+                 QStringLiteral("Color adaptation strength"),
+                 m_stepRepeatFillHueMatchDial,
+                 m_stepRepeatFillHueMatchValueLabel,
+                 2,
+                 50);
+    m_stepRepeatFillSummaryLabel = new QLabel(page);
+    m_stepRepeatFillSummaryLabel->setWordWrap(true);
+    m_stepRepeatFillSummaryLabel->setStyleSheet(QStringLiteral(
+        "QLabel {"
+        "  border: 1px solid palette(mid);"
+        "  border-radius: 6px;"
+        "  padding: 6px;"
+        "  background: palette(alternate-base);"
+        "}"));
+    stepRepeatFillLayout->addWidget(m_stepRepeatFillSummaryLabel, 5, 0, 1, 3);
+    m_stepRepeatFillControlsWidget->setToolTip(QStringLiteral(
+        "Step Repeat Fill uses repeated source tiles as texture detail and a "
+        "larger superimposed source sample as the color guide."));
+    presetSpecificForm->addRow(QStringLiteral("Repeat fill"), m_stepRepeatFillControlsWidget);
     presetSpecificSection.body->addLayout(presetSpecificForm);
     layout->addWidget(presetSpecificSection.container);
 
@@ -1061,7 +1251,6 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titlesInspectorDetailsLabel = new QLabel;
     layout->addWidget(m_titlesInspectorDetailsLabel);
 
-    auto placementSection = createDisclosureSection(page, QStringLiteral("Overlay Placement"), false);
     auto typographySection = createDisclosureSection(page, QStringLiteral("Typography"), false);
     auto effectsSection = createDisclosureSection(page, QStringLiteral("Background & Effects"), false);
     auto animationSection = createDisclosureSection(page, QStringLiteral("Lifetime Animation"), false);
@@ -1074,20 +1263,6 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleTextEdit->setPlaceholderText(QStringLiteral("Enter title text..."));
     textLayout->addWidget(m_titleTextEdit);
     layout->addWidget(textGroup);
-
-    // Position row
-    auto *posRow = new QHBoxLayout;
-    posRow->addWidget(new QLabel(QStringLiteral("X:")));
-    m_titleXSpin = new QDoubleSpinBox;
-    m_titleXSpin->setRange(-9999, 9999);
-    m_titleXSpin->setDecimals(1);
-    posRow->addWidget(m_titleXSpin);
-    posRow->addWidget(new QLabel(QStringLiteral("Y:")));
-    m_titleYSpin = new QDoubleSpinBox;
-    m_titleYSpin->setRange(-9999, 9999);
-    m_titleYSpin->setDecimals(1);
-    posRow->addWidget(m_titleYSpin);
-    placementSection.body->addLayout(posRow);
 
     // Font row
     auto *fontRow = new QHBoxLayout;
@@ -1260,21 +1435,11 @@ QWidget *InspectorPane::buildTitlesTab()
     buttonRow->addWidget(m_removeTitleKeyframeButton);
     actionsSection.body->addLayout(buttonRow);
 
-    auto *centerRow = new QHBoxLayout;
-    m_titleCenterHorizontalButton = new QPushButton(QStringLiteral("Center H"));
-    m_titleCenterHorizontalButton->setToolTip(QStringLiteral("Center title horizontally"));
-    centerRow->addWidget(m_titleCenterHorizontalButton);
-    m_titleCenterVerticalButton = new QPushButton(QStringLiteral("Center V"));
-    m_titleCenterVerticalButton->setToolTip(QStringLiteral("Center title vertically"));
-    centerRow->addWidget(m_titleCenterVerticalButton);
-    placementSection.body->addLayout(centerRow);
-
     // Auto-scroll
     m_titleAutoScrollCheck = new QCheckBox(QStringLiteral("Auto-scroll to playhead"));
     m_titleAutoScrollCheck->setChecked(true);
     actionsSection.body->addWidget(m_titleAutoScrollCheck);
 
-    layout->addWidget(placementSection.container);
     layout->addWidget(typographySection.container);
     layout->addWidget(effectsSection.container);
     layout->addWidget(animationSection.container);
@@ -1282,11 +1447,11 @@ QWidget *InspectorPane::buildTitlesTab()
 
     // Table
     m_titleKeyframeTable = new QTableWidget;
-    m_titleKeyframeTable->setColumnCount(9);
+    m_titleKeyframeTable->setColumnCount(7);
     m_titleKeyframeTable->setHorizontalHeaderLabels(
         {QStringLiteral("Start"), QStringLiteral("End"), QStringLiteral("Frame"), 
-         QStringLiteral("Text"), QStringLiteral("X"), QStringLiteral("Y"), 
-         QStringLiteral("Size"), QStringLiteral("Opacity"), QStringLiteral("Interp")});
+         QStringLiteral("Text"), QStringLiteral("Size"), QStringLiteral("Opacity"),
+         QStringLiteral("Interp")});
     m_titleKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_titleKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_titleKeyframeTable->setEditTriggers(

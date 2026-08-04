@@ -6,6 +6,10 @@
       const QVector<TimelineClip> &orderedClips,
       QStringList *subtitleFailures = nullptr) {
     QVector<TranscriptTextInput> inputs;
+    const int finalSubtitleOffsetMs =
+        jcut::subtitle::finalRenderOffsetMs(
+            request.transcriptOffsetMs,
+            request.masterOutputSubtitleOffsetMs);
     for (const TimelineClip &clip : orderedClips) {
       if (!clip.transcriptOverlay.enabled ||
           (clip.mediaType != ClipMediaType::Audio && !clip.hasAudio) ||
@@ -47,7 +51,7 @@
               mapping.transcriptFrame,
               TranscriptOverlayTiming{request.transcriptPrependMs,
                                       request.transcriptPostpendMs,
-                                      request.transcriptOffsetMs});
+                                      finalSubtitleOffsetMs});
       if (layout.lines.isEmpty()) {
         continue;
       }
@@ -69,7 +73,7 @@
                 mapping.transcriptFrame,
                 TranscriptOverlayTiming{request.transcriptPrependMs,
                                         request.transcriptPostpendMs,
-                                        request.transcriptOffsetMs}).trimmed()
+                                        finalSubtitleOffsetMs}).trimmed()
           : QString();
       const EffectiveVisualEffects effects =
           request.bypassGrading
@@ -192,4 +196,3 @@
     }
     return m_speakerTextRenderer->buildSpeakerLabelLayoutForTesting(outputSize, spec);
   }
-

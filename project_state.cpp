@@ -811,6 +811,10 @@ QJsonObject EditorWindow::buildStateJson() const
         m_masterOutputAudioDelayMsSpin
         ? m_masterOutputAudioDelayMsSpin->value()
         : jcut::audio::kDefaultMasterOutputAudioDelayMs;
+    root[QStringLiteral("masterOutputSubtitleOffsetMs")] =
+        m_masterOutputSubtitleOffsetMsSpin
+        ? m_masterOutputSubtitleOffsetMsSpin->value()
+        : jcut::subtitle::kDefaultMasterOutputOffsetMs;
     root[QStringLiteral("createImageSequence")] =
         m_createImageSequenceCheckBox ? m_createImageSequenceCheckBox->isChecked() : false;
     root[QStringLiteral("imageSequenceFormat")] =
@@ -1158,6 +1162,8 @@ QJsonObject EditorWindow::buildStateJson() const
             trackObj[QStringLiteral("tilingPattern")] = tilingPatternToJson(track.tilingPattern);
             trackObj[QStringLiteral("tilingSpacing")] = track.tilingSpacing;
             trackObj[QStringLiteral("tilingWrap")] = track.tilingWrap;
+            trackObj[QStringLiteral("tilingUseMaskBounds")] = track.tilingUseMaskBounds;
+            trackObj[QStringLiteral("tilingMaskIslandSigma")] = track.tilingMaskIslandSigma;
             trackObj[QStringLiteral("effectParameterSets")] = track.effectParameterSets;
             tracks.push_back(trackObj);
         }

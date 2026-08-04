@@ -382,16 +382,14 @@ void TitlesTab::populateTable(const TimelineClip &clip)
         // Original Frame column (now column 2) - editable
         setCell(2, QString::number(kf.frame));
         setCell(3, kf.text);
-        setCell(4, QString::number(kf.translationX, 'f', 1));
-        setCell(5, QString::number(kf.translationY, 'f', 1));
-        setCell(6, QString::number(kf.fontSize, 'f', 1));
-        setCell(7, QString::number(kf.opacity, 'f', 2));
+        setCell(4, QString::number(kf.fontSize, 'f', 1));
+        setCell(5, QString::number(kf.opacity, 'f', 2));
 
         auto *interpItem = new QTableWidgetItem(kf.linearInterpolation
             ? QStringLiteral("Linear") : QStringLiteral("Step"));
         interpItem->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(kf.frame)));
         interpItem->setFlags(interpItem->flags() & ~Qt::ItemIsEditable);
-        table->setItem(row, 8, interpItem);
+        table->setItem(row, 6, interpItem);
     }
 }
 
@@ -613,8 +611,12 @@ TimelineClip::TitleKeyframe TitlesTab::buildStoredKeyframeFromInspector(int64_t 
     }
     keyframe.frame = targetFrame;
     keyframe.text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->toPlainText() : QString();
-    keyframe.translationX = m_widgets.titleXSpin ? m_widgets.titleXSpin->value() : 0.0;
-    keyframe.translationY = m_widgets.titleYSpin ? m_widgets.titleYSpin->value() : 0.0;
+    if (m_widgets.titleXSpin) {
+        keyframe.translationX = m_widgets.titleXSpin->value();
+    }
+    if (m_widgets.titleYSpin) {
+        keyframe.translationY = m_widgets.titleYSpin->value();
+    }
     keyframe.fontSize = m_widgets.titleFontSizeSpin ? m_widgets.titleFontSizeSpin->value() : 48.0;
     keyframe.opacity = m_widgets.titleOpacitySpin ? m_widgets.titleOpacitySpin->value() : 1.0;
     keyframe.fontFamily = m_widgets.titleFontCombo
@@ -878,14 +880,8 @@ void TitlesTab::onTableItemChanged(QTableWidgetItem *item)
 
     // Text column is now at index 3
     const QString text = table->item(row, 3) ? table->item(row, 3)->text() : QString();
-    // X column is now at index 4
-    const double x = table->item(row, 4) ? table->item(row, 4)->text().toDouble() : 0.0;
-    // Y column is now at index 5
-    const double y = table->item(row, 5) ? table->item(row, 5)->text().toDouble() : 0.0;
-    // Size column is now at index 6
-    const double fontSize = table->item(row, 6) ? table->item(row, 6)->text().toDouble() : 48.0;
-    // Opacity column is now at index 7
-    const double opacity = table->item(row, 7) ? table->item(row, 7)->text().toDouble() : 1.0;
+    const double fontSize = table->item(row, 4) ? table->item(row, 4)->text().toDouble() : 48.0;
+    const double opacity = table->item(row, 5) ? table->item(row, 5)->text().toDouble() : 1.0;
 
     const int64_t clipEndFrame = qMax<int64_t>(0, selectedClip->durationFrames - 1);
     const auto resolvePythonStyleFrame = [clipEndFrame](int64_t value) -> int64_t {
@@ -930,8 +926,6 @@ void TitlesTab::onTableItemChanged(QTableWidgetItem *item)
             TimelineClip::TitleKeyframe updatedKeyframe = clip.titleKeyframes.value(row);
             updatedKeyframe.frame = updatedCurrentFrame;
             updatedKeyframe.text = text;
-            updatedKeyframe.translationX = x;
-            updatedKeyframe.translationY = y;
             updatedKeyframe.fontSize = fontSize;
             updatedKeyframe.opacity = opacity;
             replaceStoredTitleKeyframeAtFrame(clip, originalFrame, updatedKeyframe);
@@ -1027,8 +1021,8 @@ void TitlesTab::onTableItemClicked(QTableWidgetItem *item)
     if (!item || m_updating) return;
     const TimelineClip *selectedClip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
     if (!selectedClip || selectedClip->mediaType != ClipMediaType::Title) return;
-    // Column 8 = Interp toggle (0=Start, 1=End, 2=Frame, 3=Text, 4=X, 5=Y, 6=Size, 7=Opacity, 8=Interp)
-    if (item->column() == 8) {
+    // Column 6 = Interp toggle (0=Start, 1=End, 2=Frame, 3=Text, 4=Size, 5=Opacity, 6=Interp)
+    if (item->column() == 6) {
         const bool isLinear = item->text() == QStringLiteral("Linear");
         item->setText(isLinear ? QStringLiteral("Step") : QStringLiteral("Linear"));
 

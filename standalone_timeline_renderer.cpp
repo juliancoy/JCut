@@ -4169,7 +4169,8 @@ private:
         const std::string& resolvedSourcePath,
         int sourceFrame,
         double localTimelineFrame,
-        const std::string& rootDirectory)
+        const std::string& rootDirectory,
+        bool applyMasterOutputSubtitleOffset = false)
     {
         jcut::TranscriptSourceSpec source;
         source.sourcePath = resolvedSourcePath;
@@ -4245,7 +4246,11 @@ private:
         layoutOptions.timing.postpendMilliseconds =
             document.exportRequest.transcriptPostpendMs;
         layoutOptions.timing.offsetMilliseconds =
-            document.exportRequest.transcriptOffsetMs;
+            jcut::subtitle::finalRenderOffsetMs(
+                document.exportRequest.transcriptOffsetMs,
+                applyMasterOutputSubtitleOffset
+                    ? document.exportRequest.masterOutputSubtitleOffsetMs
+                    : 0);
         layoutOptions.maxLines = std::min(
             std::max(1, clip.transcriptOverlay.maxLines), fittedLines);
         layoutOptions.maxCharsPerLine = std::min(
@@ -4541,7 +4546,8 @@ private:
                     request.timelineFrame -
                         static_cast<double>(
                             clip.startFrame),
-                    request.rootDirectory);
+                    request.rootDirectory,
+                    request.applyMasterOutputSubtitleOffset);
             if (layout.lines.empty()) {
                 continue;
             }

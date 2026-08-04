@@ -4,6 +4,7 @@
 #include "editor_shared_effects.h"
 #include "editor_shared_keyframes.h"
 #include "editor_shared_transcript.h"
+#include "preview_view_transform.h"
 #include "transform_skip_aware_timing.h"
 #include "vulkan_effect_synth.h"
 
@@ -12,6 +13,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <queue>
+#include <vector>
 
 namespace render_detail {
 namespace {
@@ -56,6 +59,35 @@ bool isSpeakerMaskDilationPreset(ClipEffectPreset preset)
     return preset == ClipEffectPreset::SpeakerMaskDilation ||
            preset == ClipEffectPreset::SpeakerMaskDilationPulse ||
            preset == ClipEffectPreset::SpeakerMaskDilationRings;
+}
+
+bool isRecursiveZoomPreset(ClipEffectPreset preset)
+{
+    return preset == ClipEffectPreset::RecursiveZoomTile ||
+           preset == ClipEffectPreset::RecursiveZoomTunnel ||
+           preset == ClipEffectPreset::RecursiveZoomMirrorBox ||
+           preset == ClipEffectPreset::RecursiveZoomSpiral ||
+           preset == ClipEffectPreset::RecursiveZoomKaleidoscope ||
+           preset == ClipEffectPreset::RecursiveZoomRadialRepeat ||
+           preset == ClipEffectPreset::RecursiveZoomPixelMosaic;
+}
+
+float sourceMosaicShaderMode(ClipEffectPreset preset)
+{
+    switch (preset) {
+    case ClipEffectPreset::SourceMosaicGrid:
+        return kVulkanEffectModeSourceMosaicGrid;
+    case ClipEffectPreset::SourceMosaicStagger:
+        return kVulkanEffectModeSourceMosaicStagger;
+    case ClipEffectPreset::SourceMosaicHex:
+        return kVulkanEffectModeSourceMosaicHex;
+    case ClipEffectPreset::SourceMosaicRadial:
+        return kVulkanEffectModeSourceMosaicRadial;
+    case ClipEffectPreset::SourceMosaicFlow:
+        return kVulkanEffectModeSourceMosaicFlow;
+    default:
+        return -1.0f;
+    }
 }
 
 QString effectClockContinuityKey(const TimelineClip& clip)
@@ -239,7 +271,8 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                                                   const QSize& textureSize,
                                                   qreal timelineFrame,
                                                   qreal effectFrame,
-                                                  const PlaybackTimingContext& timing)
+                                                  const PlaybackTimingContext& timing,
+                                                  const QRectF& tilingMaskBounds)
 {
     VulkanEffectPipelinePlan plan;
     const qreal temporalFrame = effectFrame >= 0.0 ? effectFrame : timelineFrame;
@@ -309,9 +342,29 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         }
     } else if (clip.effectPreset == ClipEffectPreset::SourceTile) {
         constexpr qreal kTwoPi = 6.28318530717958647692;
+        const QRectF tilingRect =
+            (clip.tilingUseMaskBounds && !tilingMaskBounds.isEmpty())
+                ? tilingMaskBounds.normalized().intersected(outputRect)
+                : outputRect;
+        if (tilingRect.isEmpty()) {
+            return plan;
+        }
+        const bool constrainToTilingRect =
+            clip.tilingUseMaskBounds && !tilingMaskBounds.isEmpty();
+        auto addTilingDraw = [&](const QRectF& rect) {
+            if (!constrainToTilingRect) {
+                addDraw(rect);
+                return;
+            }
+            const QRectF clipped = rect.intersected(tilingRect);
+            if (!clipped.isEmpty()) {
+                addDraw(clipped);
+            }
+        };
         const qreal spacing = qBound<qreal>(0.1, clip.tilingSpacing, 8.0);
-        const qreal minDimension = std::max<qreal>(1.0, std::min(outputRect.width(), outputRect.height()));
-        const qreal baseTileW = outputRect.width() / static_cast<qreal>(qBound(1, count, 96));
+        const qreal minDimension = std::max<qreal>(
+            1.0, std::min(tilingRect.width(), tilingRect.height()));
+        const qreal baseTileW = tilingRect.width() / static_cast<qreal>(qBound(1, count, 96));
         const qreal tileW = std::max<qreal>(2.0, baseTileW * scale);
         const qreal tileH = std::max<qreal>(2.0, tileW / std::max<qreal>(0.001, aspect));
         const qreal stepX = std::max<qreal>(1.0, tileW * spacing);
@@ -322,19 +375,19 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         const qreal normalizedPhaseY = phaseY < 0.0 ? phaseY + stepY : phaseY;
 
         if (clip.tilingPattern == ClipTilingPattern::Encircle) {
-            const QPointF center = outputRect.center();
+            const QPointF center = tilingRect.center();
             const qreal radius = minDimension * 0.34 * spacing;
             const qreal phase = temporalFrame * speed * 0.018;
             for (int i = 0; i < count; ++i) {
                 const qreal angle = phase + (kTwoPi * static_cast<qreal>(i) / static_cast<qreal>(count));
                 const QPointF p(center.x() + std::cos(angle) * radius,
                                 center.y() + std::sin(angle) * radius);
-                addDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+                addTilingDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
             }
         } else if (clip.tilingPattern == ClipTilingPattern::SpiralXY ||
                    clip.tilingPattern == ClipTilingPattern::SpiralXZ ||
                    clip.tilingPattern == ClipTilingPattern::SpiralYZ) {
-            const QPointF center = outputRect.center();
+            const QPointF center = tilingRect.center();
             const qreal maxRadius = minDimension * 0.46 * spacing;
             const qreal phase = temporalFrame * speed * 0.014;
             for (int i = 0; i < count; ++i) {
@@ -347,22 +400,22 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                 qreal y = center.y() + v;
                 qreal sizeMultiplier = 1.0;
                 if (clip.tilingPattern == ClipTilingPattern::SpiralXZ) {
-                    y = center.y() + ((t - 0.5) * outputRect.height() * 0.68);
+                    y = center.y() + ((t - 0.5) * tilingRect.height() * 0.68);
                     sizeMultiplier = qBound<qreal>(0.45, 0.76 + (v / std::max<qreal>(1.0, maxRadius)) * 0.34, 1.18);
                 } else if (clip.tilingPattern == ClipTilingPattern::SpiralYZ) {
-                    x = center.x() + ((t - 0.5) * outputRect.width() * 0.68);
+                    x = center.x() + ((t - 0.5) * tilingRect.width() * 0.68);
                     y = center.y() + u;
                     sizeMultiplier = qBound<qreal>(0.45, 0.76 + (v / std::max<qreal>(1.0, maxRadius)) * 0.34, 1.18);
                 }
                 const qreal drawW = tileW * sizeMultiplier;
                 const qreal drawH = tileH * sizeMultiplier;
-                addDraw(QRectF(x - drawW * 0.5, y - drawH * 0.5, drawW, drawH));
+                addTilingDraw(QRectF(x - drawW * 0.5, y - drawH * 0.5, drawW, drawH));
             }
         } else if (clip.tilingPattern == ClipTilingPattern::Diamond) {
-            const QPointF center = outputRect.center();
+            const QPointF center = tilingRect.center();
             const int rings = qBound(1, static_cast<int>(std::ceil(std::sqrt(static_cast<qreal>(count)))), 10);
             int emitted = 0;
-            addDraw(QRectF(center.x() - tileW * 0.5, center.y() - tileH * 0.5, tileW, tileH));
+            addTilingDraw(QRectF(center.x() - tileW * 0.5, center.y() - tileH * 0.5, tileW, tileH));
             ++emitted;
             for (int ring = 1; ring <= rings && emitted < count; ++ring) {
                 const qreal dx = stepX * static_cast<qreal>(ring);
@@ -373,7 +426,7 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
                     QPointF(center.x(), center.y() + dy),
                     QPointF(center.x() - dx, center.y())};
                 for (const QPointF& p : points) {
-                    addDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
+                    addTilingDraw(QRectF(p.x() - tileW * 0.5, p.y() - tileH * 0.5, tileW, tileH));
                     if (++emitted >= count) {
                         break;
                     }
@@ -381,20 +434,20 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
             }
         } else {
             const int columns = qBound(1, count, 96);
-            const qreal startY = clip.tilingWrap ? outputRect.top() - tileH + normalizedPhaseY : outputRect.top();
-            const qreal endY = clip.tilingWrap ? outputRect.bottom() + tileH : outputRect.bottom() - tileH + 1.0;
+            const qreal startY = clip.tilingWrap ? tilingRect.top() - tileH + normalizedPhaseY : tilingRect.top();
+            const qreal endY = clip.tilingWrap ? tilingRect.bottom() + tileH : tilingRect.bottom() - tileH + 1.0;
             int row = 0;
             for (qreal y = startY; y < endY; y += stepY, ++row) {
                 const qreal rowOffset =
                     (clip.effectAlternateDirection && (row % 2)) ? stepX * 0.5 : 0.0;
                 const qreal startX = clip.tilingWrap
-                    ? outputRect.left() - tileW + normalizedPhaseX - rowOffset
-                    : outputRect.left() - rowOffset;
+                    ? tilingRect.left() - tileW + normalizedPhaseX - rowOffset
+                    : tilingRect.left() - rowOffset;
                 const qreal endX = clip.tilingWrap
-                    ? outputRect.right() + tileW
-                    : outputRect.left() + (columns * stepX);
+                    ? tilingRect.right() + tileW
+                    : tilingRect.left() + (columns * stepX);
                 for (qreal x = startX; x < endX; x += stepX) {
-                    addDraw(QRectF(x, y, tileW, tileH));
+                    addTilingDraw(QRectF(x, y, tileW, tileH));
                 }
             }
         }
@@ -451,6 +504,74 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
             const qreal y = outputRect.center().y() - tileH * 0.5 +
                             std::sin(static_cast<qreal>(i) * 1.57079632679) * stepY;
             addDraw(QRectF(x, y, tileW, tileH));
+        }
+    } else if (clip.effectPreset == ClipEffectPreset::StepRepeatFill) {
+        const int columns = qBound(1, count, 96);
+        const qreal tileW = std::max<qreal>(
+            2.0, outputRect.width() / static_cast<qreal>(columns));
+        const qreal tileH = std::max<qreal>(
+            2.0, tileW / std::max<qreal>(0.001, aspect));
+        const int rows = qBound(
+            1,
+            static_cast<int>(std::ceil(outputRect.height() / tileH)) + 1,
+            96);
+        const qreal guideScale = qBound<qreal>(0.5, clip.tilingSpacing, 8.0);
+        const qreal lumaMatch = qBound<qreal>(0.0, clip.effectSpeed / 8.0, 1.0);
+        const qreal hueMatch = qBound<qreal>(0.0, clip.effectScale / 8.0, 1.0);
+        const qreal phase = std::fmod(temporalFrame * 0.012, 1.0);
+        for (int row = 0; row < rows; ++row) {
+            const qreal rowOffset =
+                (clip.effectAlternateDirection && (row % 2)) ? tileW * 0.5 : 0.0;
+            for (int column = -1; column <= columns; ++column) {
+                VulkanEffectPipelinePlan::DrawPass pass;
+                pass.outputRect = QRectF(outputRect.left() + column * tileW - rowOffset + phase * tileW,
+                                         outputRect.top() + row * tileH,
+                                         tileW,
+                                         tileH);
+                pass.shaderMode = kVulkanEffectModeStepRepeatFill;
+                pass.effectParams[0] = static_cast<float>(guideScale);
+                pass.effectParams[1] = static_cast<float>(lumaMatch);
+                pass.effectParams[2] = static_cast<float>(hueMatch);
+                pass.effectParams[3] = 0.0f;
+                draws.push_back(pass);
+            }
+        }
+    } else if (const float mosaicMode = sourceMosaicShaderMode(clip.effectPreset);
+               mosaicMode >= 0.0f) {
+        VulkanEffectPipelinePlan::DrawPass pass;
+        pass.outputRect = outputRect;
+        pass.shaderMode = mosaicMode;
+        pass.effectParams[0] = static_cast<float>(qBound<qreal>(0.5, clip.tilingSpacing, 8.0));
+        pass.effectParams[1] = static_cast<float>(qBound<qreal>(0.0, clip.effectSpeed / 8.0, 1.0));
+        pass.effectParams[2] = static_cast<float>(qBound<qreal>(0.0, clip.effectScale / 8.0, 1.0));
+        pass.effectParams[3] = static_cast<float>(qBound(1, clip.effectRows, 96));
+        draws.push_back(pass);
+    } else if (clip.effectPreset == ClipEffectPreset::DirectionalFrameEcho) {
+        constexpr qreal kQuarterPi = 0.78539816339744830962;
+        const qreal spread = qBound<qreal>(0.1, clip.tilingSpacing, 8.0);
+        const qreal hueAmount = qBound<qreal>(0.1, clip.effectScale, 8.0);
+        const qreal angle = speed * kQuarterPi;
+        const QPointF direction(std::cos(angle), std::sin(angle));
+        const qreal spreadPixels =
+            std::max<qreal>(1.0, std::min(outputRect.width(), outputRect.height()) * 0.035 * spread);
+        const qreal centerIndex = (static_cast<qreal>(count) - 1.0) * 0.5;
+        const qreal maxDistance = std::max<qreal>(1.0, centerIndex);
+        for (int i = 0; i < count; ++i) {
+            const qreal offsetIndex = static_cast<qreal>(i) - centerIndex;
+            VulkanEffectPipelinePlan::DrawPass pass;
+            pass.outputRect = outputRect.translated(direction.x() * spreadPixels * offsetIndex,
+                                                    direction.y() * spreadPixels * offsetIndex);
+            pass.shaderMode = kVulkanEffectModeDirectionalFrameEcho;
+            pass.effectParams[0] =
+                static_cast<float>((offsetIndex * hueAmount) / 8.0);
+            pass.effectParams[1] = static_cast<float>(count);
+            pass.effectParams[2] = static_cast<float>(offsetIndex);
+            pass.effectParams[3] = static_cast<float>(spread);
+            pass.opacityMultiplier =
+                static_cast<float>(qBound<qreal>(
+                    0.18, 1.0 - 0.34 * std::abs(offsetIndex) / maxDistance, 1.0));
+            pass.depthSortKey = -std::abs(offsetIndex);
+            draws.push_back(pass);
         }
     } else if (clip.effectPreset == ClipEffectPreset::MirrorRing ||
                clip.effectPreset == ClipEffectPreset::Tessellation) {
@@ -530,6 +651,193 @@ VulkanEffectPipelinePlan vulkanEffectPipelinePlan(const TimelineClip& clip,
         plan.mode = VulkanEffectPipelinePlan::Mode::GeneratedDraws;
     }
     return plan;
+}
+
+QRectF normalizedMaskContentBounds(const jcut::core::ImageBuffer& mask,
+                                   qreal outsidePixelsPercent,
+                                   bool invert)
+{
+    if (mask.empty() || mask.format != jcut::core::PixelFormat::Gray8) {
+        return {};
+    }
+    const int width = mask.size.width;
+    const int height = mask.size.height;
+    if (width <= 0 || height <= 0 || mask.strideBytes < width) {
+        return {};
+    }
+    const qreal allowedOutsideFraction =
+        qBound<qreal>(0.0, outsidePixelsPercent, 100.0) / 100.0;
+    auto foregroundAt = [&](int x, int y) {
+        const std::uint8_t value =
+            mask.bytes[static_cast<std::size_t>(y * mask.strideBytes + x)];
+        return invert ? value < 128 : value >= 128;
+    };
+    struct Component {
+        QRect bounds;
+        int area = 0;
+    };
+    std::vector<Component> components;
+    int totalForegroundPixels = 0;
+    std::vector<std::uint8_t> visited(
+        static_cast<std::size_t>(width * height), 0);
+    const QPoint offsets[4] = {
+        QPoint(1, 0), QPoint(-1, 0), QPoint(0, 1), QPoint(0, -1)};
+    std::queue<QPoint> queue;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const int index = y * width + x;
+            if (visited[static_cast<std::size_t>(index)] || !foregroundAt(x, y)) {
+                continue;
+            }
+            visited[static_cast<std::size_t>(index)] = 1;
+            QRect component(x, y, 1, 1);
+            int area = 0;
+            queue.push(QPoint(x, y));
+            while (!queue.empty()) {
+                const QPoint p = queue.front();
+                queue.pop();
+                ++area;
+                component = component.united(QRect(p, QSize(1, 1)));
+                for (const QPoint& offset : offsets) {
+                    const int nx = p.x() + offset.x();
+                    const int ny = p.y() + offset.y();
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+                        continue;
+                    }
+                    const int nIndex = ny * width + nx;
+                    if (visited[static_cast<std::size_t>(nIndex)] ||
+                        !foregroundAt(nx, ny)) {
+                        continue;
+                    }
+                    visited[static_cast<std::size_t>(nIndex)] = 1;
+                    queue.push(QPoint(nx, ny));
+                }
+            }
+            totalForegroundPixels += area;
+            components.push_back(Component{component, area});
+        }
+    }
+    if (components.empty() || totalForegroundPixels <= 0) {
+        return {};
+    }
+    std::sort(components.begin(), components.end(),
+              [](const Component& left, const Component& right) {
+                  if (left.area != right.area) {
+                      return left.area > right.area;
+                  }
+                  return left.bounds.topLeft().manhattanLength() <
+                         right.bounds.topLeft().manhattanLength();
+              });
+    const qreal allowedOutsidePixels =
+        static_cast<qreal>(totalForegroundPixels) * allowedOutsideFraction;
+    QRect accepted;
+    bool hasAccepted = false;
+    int keptPixels = 0;
+    for (const Component& component : components) {
+        accepted = hasAccepted ? accepted.united(component.bounds)
+                               : component.bounds;
+        hasAccepted = true;
+        keptPixels += component.area;
+        const int outsidePixels = totalForegroundPixels - keptPixels;
+        if (static_cast<qreal>(outsidePixels) <= allowedOutsidePixels) {
+            break;
+        }
+    }
+    if (!hasAccepted || accepted.isEmpty()) {
+        return {};
+    }
+    return QRectF(
+        static_cast<qreal>(accepted.left()) / static_cast<qreal>(width),
+        static_cast<qreal>(accepted.top()) / static_cast<qreal>(height),
+        static_cast<qreal>(accepted.width()) / static_cast<qreal>(width),
+        static_cast<qreal>(accepted.height()) / static_cast<qreal>(height));
+}
+
+bool effectPresetUsesGeneratedMaskDomain(ClipEffectPreset preset)
+{
+    return isRecursiveZoomPreset(preset) ||
+           preset == ClipEffectPreset::StepRepeatFill ||
+           preset == ClipEffectPreset::SourceMosaicGrid ||
+           preset == ClipEffectPreset::SourceMosaicStagger ||
+           preset == ClipEffectPreset::SourceMosaicHex ||
+           preset == ClipEffectPreset::SourceMosaicRadial ||
+           preset == ClipEffectPreset::SourceMosaicFlow;
+}
+
+QRectF mappedMaskContentBounds(const jcut::core::ImageBuffer& mask,
+                               const QTransform& clipToScreen,
+                               const QRectF& localRect,
+                               const QRectF& outputRect,
+                               qreal outsidePixelsPercent,
+                               bool invert)
+{
+    const QRectF normalized =
+        normalizedMaskContentBounds(mask, outsidePixelsPercent, invert);
+    if (normalized.isEmpty() || localRect.isEmpty() || outputRect.isEmpty()) {
+        return {};
+    }
+    return clipToScreen
+        .mapRect(PreviewViewTransform::localRectForNormalizedRect(
+            normalized, localRect))
+        .intersected(outputRect);
+}
+
+void applyGeneratedEffectMaskDomain(VulkanEffectPipelinePlan& plan,
+                                    const QRectF& domainRect,
+                                    const QRectF& outputRect,
+                                    bool applyMaskMatte,
+                                    const QRectF& maskDomain)
+{
+    if (!plan.usesGeneratedDraws() || domainRect.isEmpty() ||
+        outputRect.isEmpty() || outputRect.width() <= 0.0 ||
+        outputRect.height() <= 0.0) {
+        return;
+    }
+    const QRectF boundedDomain = applyMaskMatte
+        ? outputRect
+        : domainRect.normalized().intersected(outputRect);
+    if (boundedDomain.isEmpty()) {
+        return;
+    }
+    const float x = static_cast<float>(
+        qBound<qreal>(0.0,
+                      (boundedDomain.left() - outputRect.left()) /
+                          outputRect.width(),
+                      1.0));
+    const float y = static_cast<float>(
+        qBound<qreal>(0.0,
+                      (boundedDomain.top() - outputRect.top()) /
+                          outputRect.height(),
+                      1.0));
+    const float width = static_cast<float>(
+        qBound<qreal>(0.0001,
+                      boundedDomain.width() / outputRect.width(),
+                      1.0));
+    const float height = static_cast<float>(
+        qBound<qreal>(0.0001,
+                      boundedDomain.height() / outputRect.height(),
+                      1.0));
+    const QRectF boundedMaskDomain = applyMaskMatte
+        ? QRectF(0.0, 0.0, 1.0, 1.0)
+        : maskDomain.normalized().intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+    const float maskX = static_cast<float>(
+        qBound<qreal>(0.0, boundedMaskDomain.left(), 1.0));
+    const float maskY = static_cast<float>(
+        qBound<qreal>(0.0, boundedMaskDomain.top(), 1.0));
+    const float maskWidth = static_cast<float>(
+        qBound<qreal>(0.0001, boundedMaskDomain.width(), 1.0));
+    const float maskHeight = static_cast<float>(
+        qBound<qreal>(0.0001, boundedMaskDomain.height(), 1.0));
+    for (VulkanEffectPipelinePlan::DrawPass& pass : plan.generatedDraws) {
+        pass.effectDomain[0] = x;
+        pass.effectDomain[1] = y;
+        pass.effectDomain[2] = width;
+        pass.effectDomain[3] = applyMaskMatte ? -height : height;
+        pass.effectMaskDomain[0] = maskX;
+        pass.effectMaskDomain[1] = maskY;
+        pass.effectMaskDomain[2] = maskWidth;
+        pass.effectMaskDomain[3] = maskHeight;
+    }
 }
 
 QVector<QRectF> vulkanPresetEffectRects(const TimelineClip& clip,

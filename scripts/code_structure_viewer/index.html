@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>JCut Code Structure</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">JCUT DIAGNOSTICS</p>
+      <h1>Code Structure Explorer</h1>
+    </div>
+    <div class="freshness" id="freshness">Loading graph…</div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="left-panel panel">
+      <section aria-labelledby="overview-title">
+        <h2 id="overview-title">Overview</h2>
+        <div class="metric-grid" id="metric-grid"></div>
+      </section>
+
+      <section aria-labelledby="controls-title">
+        <h2 id="controls-title">Explore</h2>
+        <label class="field-label" for="view-mode">Graph level</label>
+        <select id="view-mode">
+          <option value="file">Files</option>
+          <option value="target">Build targets</option>
+          <option value="owner">Owners</option>
+        </select>
+        <div class="control-grid">
+          <div>
+            <label class="field-label" for="layout-mode">Layout</label>
+            <select id="layout-mode">
+              <option value="centrality">Centrality</option>
+              <option value="layers">Layers</option>
+              <option value="owners">Owners</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="size-metric">Node size</label>
+            <select id="size-metric">
+              <option value="pagerank">PageRank</option>
+              <option value="degree">Total degree</option>
+              <option value="fan_in">Fan-in</option>
+              <option value="fan_out">Fan-out</option>
+              <option value="uniform">Uniform</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="color-mode">Node color</label>
+            <select id="color-mode">
+              <option value="owner">Owner</option>
+              <option value="layer">Layer</option>
+              <option value="centrality">Centrality</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label" for="focus-depth">Selection</label>
+            <select id="focus-depth">
+              <option value="1">1-hop focus</option>
+              <option value="2">2-hop focus</option>
+              <option value="all">Show all</option>
+            </select>
+          </div>
+        </div>
+        <label class="field-label" for="search">Search</label>
+        <input id="search" type="search" placeholder="File, owner, target, symbol…" autocomplete="off">
+        <div class="edge-filters" id="edge-filters">
+          <label><input type="checkbox" value="include" checked> Includes</label>
+          <label><input type="checkbox" value="call" checked> Calls</label>
+          <label><input type="checkbox" value="dependency" checked> Imports/build</label>
+        </div>
+        <label class="field-label relationship-label" for="edge-strength">
+          Relationship strength <span id="edge-strength-label">all edges</span>
+        </label>
+        <input id="edge-strength" type="range" min="0" max="95" step="5" value="75">
+        <div class="button-row">
+          <button type="button" id="fit-graph">Fit graph</button>
+          <button type="button" id="clear-selection" class="secondary">Clear</button>
+        </div>
+        <p class="hint">Drag to pan, scroll to zoom, click a node for details. Search keeps matches and their immediate neighbors.</p>
+      </section>
+
+      <section aria-labelledby="centrality-title">
+        <h2 id="centrality-title">Central code</h2>
+        <div id="centrality-list" class="centrality-list"></div>
+      </section>
+
+      <section class="findings" aria-labelledby="findings-title">
+        <h2 id="findings-title">Review queues</h2>
+        <div class="finding-tabs" id="finding-tabs" role="tablist"></div>
+        <div id="finding-list" class="finding-list" tabindex="0"></div>
+      </section>
+    </aside>
+
+    <section class="graph-panel panel" aria-label="Interactive dependency graph">
+      <div class="graph-toolbar">
+        <div id="graph-caption">File dependency graph</div>
+        <div class="legend">
+          <span><i class="edge-key include"></i>include</span>
+          <span><i class="edge-key call"></i>call</span>
+          <span><i class="edge-key dependency"></i>import/build</span>
+        </div>
+      </div>
+      <canvas id="graph" tabindex="0" aria-label="Dependency graph canvas"></canvas>
+      <div id="graph-tooltip" class="graph-tooltip" hidden></div>
+      <div id="graph-empty" class="graph-empty" hidden>No nodes match these filters.</div>
+      <div id="graph-status" class="graph-status" aria-live="polite"></div>
+    </section>
+
+    <aside class="right-panel panel" aria-labelledby="details-title">
+      <h2 id="details-title">Selection</h2>
+      <div id="details" class="details">
+        <p class="empty-copy">Select a node or finding to inspect parser health, graph metrics, symbols, and evidence.</p>
+      </div>
+    </aside>
+  </main>
+
+  <template id="metric-template">
+    <div class="metric"><strong></strong><span></span></div>
+  </template>
+  <script src="app.js" defer></script>
+</body>
+</html>

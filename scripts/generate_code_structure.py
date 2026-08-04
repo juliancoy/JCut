@@ -1187,6 +1187,28 @@ def write_viewer(index: dict[str, Any], output_dir: Path) -> Path:
     return viewer_path
 
 
+def viewer_output_errors(index: dict[str, Any], output_dir: Path) -> list[str]:
+    errors = []
+    graph_path = output_dir / "code_structure_graph.json"
+    try:
+        graph_payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"viewer graph is missing or invalid: {error}")
+    else:
+        if graph_payload != viewer_payload(index):
+            errors.append("viewer graph differs from the canonical artifact")
+    asset_dir = Path(__file__).resolve().with_name("code_structure_viewer")
+    for asset_name in VIEWER_ASSET_NAMES:
+        generated = output_dir / asset_name
+        source = asset_dir / asset_name
+        try:
+            if generated.read_bytes() != source.read_bytes():
+                errors.append(f"viewer asset differs from its source: {asset_name}")
+        except OSError as error:
+            errors.append(f"viewer asset is missing or unreadable: {asset_name}: {error}")
+    return errors
+
+
 def render_markdown(index: dict[str, Any], large_file_lines: int) -> str:
     summary = index["summary"]
     files = index["files"]
@@ -1460,7 +1482,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     root = args.root.resolve()
-    excludes = (() if args.include else DEFAULT_EXCLUDES) + tuple(args.exclude)
+    output_dir = args.output_dir
+    if not output_dir.is_absolute():
+        output_dir = root / output_dir
+    output_dir = output_dir.resolve()
+    try:
+        output_relative = output_dir.relative_to(root).as_posix()
+        output_excludes = (output_relative, f"{output_relative}/**")
+    except ValueError:
+        output_excludes = ()
+    excludes = (() if args.include else DEFAULT_EXCLUDES) + tuple(args.exclude) + output_excludes
     paths = discover_files(root, excludes)
     if not paths and not args.check_current:
         print("No source files found", file=sys.stderr)
@@ -1474,9 +1505,6 @@ def main(argv: list[str] | None = None) -> int:
     compile_commands_path = args.compile_commands
     if not compile_commands_path.is_absolute():
         compile_commands_path = root / compile_commands_path
-    output_dir = args.output_dir
-    if not output_dir.is_absolute():
-        output_dir = root / output_dir
     json_path = output_dir / "code_structure.json"
     markdown_path = output_dir / "code_structure.md"
     if args.check_current:
@@ -1496,6 +1524,7 @@ def main(argv: list[str] | None = None) -> int:
             ninja_path,
             compile_commands_path,
         )
+        freshness_errors.extend(viewer_output_errors(existing_index, output_dir))
         if freshness_errors:
             print(f"Freshness check failed: {len(freshness_errors)} difference(s)", file=sys.stderr)
             for error in freshness_errors:
