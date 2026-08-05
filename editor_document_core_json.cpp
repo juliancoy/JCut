@@ -497,6 +497,16 @@ void parseExtendedClip(const json& value, jcut::EditorClip* clip)
         valueOr(value, "speakerSectionMinimumWords", 10),
         0,
         1000);
+    const json& selectedFaceTrackIds =
+        value.value("selectedFaceTrackIds", json::array());
+    if (selectedFaceTrackIds.is_array()) {
+        clip->selectedFaceTrackIds.clear();
+        for (const json& item : selectedFaceTrackIds) {
+            if (item.is_number_integer()) {
+                clip->selectedFaceTrackIds.push_back(item.get<int>());
+            }
+        }
+    }
     clip->brightness = valueOr(value, "brightness", 0.0);
     clip->contrast = valueOr(value, "contrast", 1.0);
     clip->saturation = valueOr(value, "saturation", 1.0);
@@ -1632,6 +1642,7 @@ void writeExtendedClipJson(json* out, const jcut::EditorClip& clip)
         clip.speakerFramingGapHoldFrames;
     (*out)["speakerSectionMinimumWords"] =
         std::clamp(clip.speakerSectionMinimumWords, 0, 1000);
+    (*out)["selectedFaceTrackIds"] = clip.selectedFaceTrackIds;
     (*out)["brightness"] = clip.brightness;
     (*out)["contrast"] = clip.contrast;
     (*out)["saturation"] = clip.saturation;

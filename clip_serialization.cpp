@@ -665,6 +665,12 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("speakerFramingZoomSmoothingStrength")] = clip.speakerFramingZoomSmoothingStrength;
         obj[QStringLiteral("speakerFramingGapHoldFrames")] = clip.speakerFramingGapHoldFrames;
         obj[QStringLiteral("speakerSectionMinimumWords")] = clip.speakerSectionMinimumWords;
+        QJsonArray selectedFaceTrackIds;
+        for (const int trackId : clip.selectedFaceTrackIds)
+        {
+            selectedFaceTrackIds.push_back(trackId);
+        }
+        obj[QStringLiteral("selectedFaceTrackIds")] = selectedFaceTrackIds;
         obj[QStringLiteral("transformSkipAwareTiming")] = clip.transformSkipAwareTiming;
         obj[QStringLiteral("effectSkipAwareTiming")] = clip.effectSkipAwareTiming;
         QJsonArray keyframes;
@@ -1257,6 +1263,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             obj.value(QStringLiteral("speakerFramingGapHoldFrames")).toInt(0);
         clip.speakerSectionMinimumWords =
             qBound(0, obj.value(QStringLiteral("speakerSectionMinimumWords")).toInt(10), 1000);
+        const QJsonArray selectedFaceTrackIds =
+            obj.value(QStringLiteral("selectedFaceTrackIds")).toArray();
+        for (const QJsonValue& value : selectedFaceTrackIds)
+        {
+            clip.selectedFaceTrackIds.push_back(value.toInt(-1));
+        }
         clip.transformSkipAwareTiming = obj.value(QStringLiteral("transformSkipAwareTiming")).toBool(false);
         clip.effectSkipAwareTiming = obj.contains(QStringLiteral("effectSkipAwareTiming"))
                                          ? obj.value(QStringLiteral("effectSkipAwareTiming")).toBool(false)

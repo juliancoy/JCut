@@ -562,8 +562,19 @@ RemoteImageCore downloadRemoteImageCore(
     headers = curl_slist_append(headers, "Accept: image/*");
     curl_easy_setopt(curl, CURLOPT_URL, result.url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+#ifdef CURLOPT_PROTOCOLS_STR
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
+#ifdef CURLOPT_REDIR_PROTOCOLS_STR
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+#else
+    curl_easy_setopt(
+        curl,
+        CURLOPT_REDIR_PROTOCOLS,
+        CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(

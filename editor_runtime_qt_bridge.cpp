@@ -147,6 +147,9 @@ EditorDocumentCore buildEditorDocumentCore(const QString& projectName,
             clip.speakerFramingGapHoldFrames;
         coreClip.speakerSectionMinimumWords =
             clip.speakerSectionMinimumWords;
+        coreClip.selectedFaceTrackIds.assign(
+            clip.selectedFaceTrackIds.begin(),
+            clip.selectedFaceTrackIds.end());
         coreClip.zLevel = clip.zLevel;
         coreClip.zLevelUserSet = clip.zLevelUserSet;
         coreClip.proxyPath = clip.proxyPath.toStdString();

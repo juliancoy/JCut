@@ -604,6 +604,7 @@ struct EditorClip {
     double speakerFramingZoomSmoothingStrength = 1.0;
     int speakerFramingGapHoldFrames = 0;
     int speakerSectionMinimumWords = 10;
+    std::vector<int> selectedFaceTrackIds;
     std::vector<EditorBoolKeyframe>
         speakerFramingEnabledKeyframes;
     std::vector<EditorTransformKeyframe>

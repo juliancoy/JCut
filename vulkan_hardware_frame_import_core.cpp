@@ -21,7 +21,9 @@
 extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
+#if JCUT_HAS_CUDA_DRIVER
 #include <libavutil/hwcontext_cuda.h>
+#endif
 #include <libavutil/pixfmt.h>
 }
 

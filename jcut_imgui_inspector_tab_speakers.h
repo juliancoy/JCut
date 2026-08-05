@@ -1,5 +1,48 @@
 #pragma once
 
+namespace {
+
+std::vector<int> filteredPersistedFaceTrackIds(
+    const jcut::EditorClip& clip,
+    const std::vector<jcut::FaceContinuityTrackCore>& tracks)
+{
+    std::vector<int> selectedTrackIds;
+    selectedTrackIds.reserve(clip.selectedFaceTrackIds.size());
+    for (const int trackId : clip.selectedFaceTrackIds) {
+        if (trackId < 0) {
+            continue;
+        }
+        const auto found = std::find_if(
+            tracks.begin(),
+            tracks.end(),
+            [&](const auto& track) {
+                return track.trackId == trackId;
+            });
+        if (found == tracks.end()) {
+            continue;
+        }
+        if (std::find(
+                selectedTrackIds.begin(),
+                selectedTrackIds.end(),
+                trackId) != selectedTrackIds.end()) {
+            continue;
+        }
+        selectedTrackIds.push_back(trackId);
+    }
+    return selectedTrackIds;
+}
+
+void persistSelectedFaceTrackIds(ShellState* shellState,
+                                 const jcut::EditorClip& clip,
+                                 const std::vector<int>& trackIds)
+{
+    applyCommand(
+        shellState,
+        jcut::SetClipSelectedFaceTrackIdsCommand{clip.id, trackIds});
+}
+
+} // namespace
+
 void drawInspectorTab09(
     ShellState* shellState, const jcut::EditorDocumentCore& snapshot,
     const jcut::EditorClip* currentClip, const jcut::EditorTrack* currentTrack,
@@ -1237,7 +1280,10 @@ void drawInspectorTab09(
                                     : currentClip->persistentId;
                             cache.faceInspection = jcut::inspectFaceArtifacts(
                                 transcript.activePath, completedClipIdentity);
-                            cache.selectedFaceTrackIds.clear();
+                            cache.selectedFaceTrackIds =
+                                filteredPersistedFaceTrackIds(
+                                    *currentClip,
+                                    cache.faceInspection.tracks);
                         } else if (faceJob.state ==
                                    jcut::FaceProcessingJobSnapshot::State::Failed ||
                                    faceJob.state ==
@@ -1427,11 +1473,18 @@ void drawInspectorTab09(
                         cache.faceArtifactContext = artifactContext;
                         cache.faceInspection = jcut::inspectFaceArtifacts(
                             transcript.activePath, clipIdentity);
-                        cache.selectedFaceTrackIds.clear();
+                        cache.selectedFaceTrackIds =
+                            filteredPersistedFaceTrackIds(
+                                *currentClip,
+                                cache.faceInspection.tracks);
                     }
                     if (ImGui::SmallButton("Refresh Face Artifacts")) {
                         cache.faceInspection = jcut::inspectFaceArtifacts(
                             transcript.activePath, clipIdentity);
+                        cache.selectedFaceTrackIds =
+                            filteredPersistedFaceTrackIds(
+                                *currentClip,
+                                cache.faceInspection.tracks);
                     }
                     const auto assignments =
                         jcut::transcriptSpeakerTrackAssignments(
@@ -1497,6 +1550,10 @@ void drawInspectorTab09(
                                                selected != cache.selectedFaceTrackIds.end()) {
                                         cache.selectedFaceTrackIds.erase(selected);
                                     }
+                                    persistSelectedFaceTrackIds(
+                                        shellState,
+                                        *currentClip,
+                                        cache.selectedFaceTrackIds);
                                 }
                                 ImGui::TableNextColumn();
                                 ImGui::Text("%d", track.trackId);

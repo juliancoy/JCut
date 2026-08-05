@@ -160,6 +160,9 @@ TimelineRenderData buildTimelineRenderData(const EditorDocumentCore& document,
             clip.speakerFramingGapHoldFrames;
         timelineClip.speakerSectionMinimumWords =
             std::clamp(clip.speakerSectionMinimumWords, 0, 1000);
+        timelineClip.selectedFaceTrackIds = QVector<int>(
+            clip.selectedFaceTrackIds.begin(),
+            clip.selectedFaceTrackIds.end());
         timelineClip.zLevel = clip.zLevel;
         timelineClip.zLevelUserSet = clip.zLevelUserSet;
         timelineClip.filePath = QString::fromStdString(clip.sourcePath);
