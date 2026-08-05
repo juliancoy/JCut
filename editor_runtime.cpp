@@ -1391,7 +1391,25 @@ std::string normalizedEditorTransformInterpolationMode(const std::string& mode,
         normalized == "depth_linear") {
         return "perspective_linear";
     }
+    if (normalized == "power_law" ||
+        normalized == "power" ||
+        normalized == "power_ease" ||
+        normalized == "logarithmic" ||
+        normalized == "logarithmic_ease" ||
+        normalized == "log") {
+        return "power_law";
+    }
     return "linear";
+}
+
+double editorPowerLawInterpolationAmount(double amount)
+{
+    const double bounded = std::clamp(amount, 0.0, 1.0);
+    constexpr double exponent = 2.0;
+    if (bounded < 0.5) {
+        return 0.5 * std::pow(bounded * 2.0, exponent);
+    }
+    return 1.0 - (0.5 * std::pow((1.0 - bounded) * 2.0, exponent));
 }
 
 bool editorTransformUsesPerspectiveDepth(const jcut::EditorTransformKeyframe& keyframe)
@@ -1433,36 +1451,40 @@ jcut::EditorTransformKeyframe interpolatedEditorTransformKeyframe(
     jcut::EditorTransformKeyframe offset;
     offset.frame = frame;
     offset.title = previous.title;
-    offset.rotation = previous.rotation +
-        (current.rotation - previous.rotation) * amount;
-    offset.linearInterpolation = current.linearInterpolation;
-    offset.interpolationMode = normalizedEditorTransformInterpolationMode(
+    const std::string interpolationMode = normalizedEditorTransformInterpolationMode(
         current.interpolationMode, current.linearInterpolation);
+    const double interpolatedAmount = interpolationMode == "power_law"
+        ? editorPowerLawInterpolationAmount(amount)
+        : amount;
+    offset.rotation = previous.rotation +
+        (current.rotation - previous.rotation) * interpolatedAmount;
+    offset.linearInterpolation = current.linearInterpolation;
+    offset.interpolationMode = interpolationMode;
     if (!editorTransformUsesPerspectiveDepth(current)) {
         offset.translationX = previous.translationX +
-            (current.translationX - previous.translationX) * amount;
+            (current.translationX - previous.translationX) * interpolatedAmount;
         offset.translationY = previous.translationY +
-            (current.translationY - previous.translationY) * amount;
+            (current.translationY - previous.translationY) * interpolatedAmount;
         offset.scaleX = previous.scaleX +
-            (current.scaleX - previous.scaleX) * amount;
+            (current.scaleX - previous.scaleX) * interpolatedAmount;
         offset.scaleY = previous.scaleY +
-            (current.scaleY - previous.scaleY) * amount;
+            (current.scaleY - previous.scaleY) * interpolatedAmount;
         return offset;
     }
 
-    offset.scaleX = editorPerspectiveLinearScale(previous.scaleX, current.scaleX, amount);
-    offset.scaleY = editorPerspectiveLinearScale(previous.scaleY, current.scaleY, amount);
+    offset.scaleX = editorPerspectiveLinearScale(previous.scaleX, current.scaleX, interpolatedAmount);
+    offset.scaleY = editorPerspectiveLinearScale(previous.scaleY, current.scaleY, interpolatedAmount);
     const double previousDepth = editorPerspectiveDepthForTransform(previous);
     const double currentDepth = editorPerspectiveDepthForTransform(current);
     const double depth = std::max(
         0.0001,
-        previousDepth + ((currentDepth - previousDepth) * amount));
+        previousDepth + ((currentDepth - previousDepth) * interpolatedAmount));
     const double previousWorldX = previous.translationX * previousDepth;
     const double currentWorldX = current.translationX * currentDepth;
     const double previousWorldY = previous.translationY * previousDepth;
     const double currentWorldY = current.translationY * currentDepth;
-    offset.translationX = (previousWorldX + ((currentWorldX - previousWorldX) * amount)) / depth;
-    offset.translationY = (previousWorldY + ((currentWorldY - previousWorldY) * amount)) / depth;
+    offset.translationX = (previousWorldX + ((currentWorldX - previousWorldX) * interpolatedAmount)) / depth;
+    offset.translationY = (previousWorldY + ((currentWorldY - previousWorldY) * interpolatedAmount)) / depth;
     return offset;
 }
 

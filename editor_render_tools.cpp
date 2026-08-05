@@ -2,6 +2,7 @@
 
 #include "background_fill_effect.h"
 #include "imgui_preview_window.h"
+#include "render_runtime_controls.h"
 #include "speaker_export_harness.h"
 #include "speaker_section_export_core.h"
 
@@ -96,6 +97,32 @@ private:
     bool m_hasPreviousOsName = false;
 #endif
 };
+
+QJsonObject renderSegmentPrewarmAutotuneSnapshot()
+{
+    return QJsonObject{
+        {QStringLiteral("segment_decode_lookahead_frames"),
+         render_detail::renderSegmentDecodeLookaheadFrames()},
+        {QStringLiteral("segment_decode_lookahead_effective_frames"),
+         render_detail::effectiveRenderSegmentDecodeLookaheadFrames()},
+        {QStringLiteral("segment_decode_lookahead_autotune"),
+         render_detail::renderSegmentDecodeLookaheadAutotuneEnabled()},
+        {QStringLiteral("autotune_last_reason"),
+         QString::fromLatin1(
+             render_detail::renderSegmentDecodeLookaheadLastAutotuneReason())},
+        {QStringLiteral("autotune_adjustment_count"),
+         static_cast<qint64>(
+             render_detail::renderSegmentDecodeLookaheadAdjustmentCount())},
+        {QStringLiteral("autotune_pressure_window_count"),
+         render_detail::renderSegmentDecodeLookaheadPressureWindowCount()},
+        {QStringLiteral("autotune_cooldown_windows_remaining"),
+         render_detail::renderSegmentDecodeLookaheadCooldownWindowsRemaining()},
+        {QStringLiteral("last_decode_wait_share_permille"),
+         render_detail::renderSegmentDecodeLookaheadLastWaitSharePermille()},
+        {QStringLiteral("last_decode_spike_ms"),
+         static_cast<qint64>(
+             render_detail::renderSegmentDecodeLookaheadLastSpikeMs())}};
+}
 
 QString sanitizedExportBaseName(QString value, const QString& fallback)
 {
@@ -1109,6 +1136,13 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("estimated_remaining_ms"), progress.estimatedRemainingMs},
             {QStringLiteral("eta_text"), formatEta(progress.estimatedRemainingMs)},
             {QStringLiteral("fps"), fps},
+            {QStringLiteral("segment_decode_lookahead"),
+             renderSegmentPrewarmAutotuneSnapshot()},
+            {QStringLiteral("segment_decode_lookahead_effective_frames"),
+             render_detail::effectiveRenderSegmentDecodeLookaheadFrames()},
+            {QStringLiteral("segment_decode_lookahead_autotune_reason"),
+             QString::fromLatin1(
+                 render_detail::renderSegmentDecodeLookaheadLastAutotuneReason())},
             {QStringLiteral("render_stage_ms"), progress.renderStageMs},
             {QStringLiteral("render_decode_stage_ms"), progress.renderDecodeStageMs},
             {QStringLiteral("render_texture_stage_ms"), progress.renderTextureStageMs},
@@ -1187,6 +1221,13 @@ bool EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request,
             {QStringLiteral("estimated_remaining_ms"), static_cast<qint64>(0)},
             {QStringLiteral("eta_text"), formatEta(0)},
             {QStringLiteral("fps"), fps},
+            {QStringLiteral("segment_decode_lookahead"),
+             renderSegmentPrewarmAutotuneSnapshot()},
+            {QStringLiteral("segment_decode_lookahead_effective_frames"),
+             render_detail::effectiveRenderSegmentDecodeLookaheadFrames()},
+            {QStringLiteral("segment_decode_lookahead_autotune_reason"),
+             QString::fromLatin1(
+                 render_detail::renderSegmentDecodeLookaheadLastAutotuneReason())},
             {QStringLiteral("render_stage_ms"), result.renderStageMs},
             {QStringLiteral("render_decode_stage_ms"), result.renderDecodeStageMs},
             {QStringLiteral("render_texture_stage_ms"), result.renderTextureStageMs},

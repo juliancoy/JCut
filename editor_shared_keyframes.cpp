@@ -1476,7 +1476,25 @@ QString normalizedTransformInterpolationMode(const QString& mode, bool linearInt
         normalized == QStringLiteral("depth_linear")) {
         return QStringLiteral("perspective_linear");
     }
+    if (normalized == QStringLiteral("power_law") ||
+        normalized == QStringLiteral("power") ||
+        normalized == QStringLiteral("power_ease") ||
+        normalized == QStringLiteral("logarithmic") ||
+        normalized == QStringLiteral("logarithmic_ease") ||
+        normalized == QStringLiteral("log")) {
+        return QStringLiteral("power_law");
+    }
     return QStringLiteral("linear");
+}
+
+qreal powerLawInterpolationAmount(qreal t)
+{
+    const qreal bounded = qBound<qreal>(0.0, t, 1.0);
+    constexpr qreal exponent = 2.0;
+    if (bounded < 0.5) {
+        return 0.5 * std::pow(bounded * 2.0, exponent);
+    }
+    return 1.0 - (0.5 * std::pow((1.0 - bounded) * 2.0, exponent));
 }
 
 bool transformInterpolationUsesPerspectiveDepth(const TimelineClip::TransformKeyframe& keyframe)
@@ -1519,35 +1537,39 @@ TimelineClip::TransformKeyframe interpolatedTransformKeyframe(
 {
     TimelineClip::TransformKeyframe state;
     state.frame = qRound64(localFrame);
-    state.rotation = previous.rotation + ((current.rotation - previous.rotation) * t);
-    state.maskRepeatDeltaX =
-        previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * t);
-    state.maskRepeatDeltaY =
-        previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * t);
-    state.linearInterpolation = current.linearInterpolation;
-    state.interpolationMode =
+    const QString interpolationMode =
         normalizedTransformInterpolationMode(current.interpolationMode, current.linearInterpolation);
+    const qreal amount = interpolationMode == QStringLiteral("power_law")
+        ? powerLawInterpolationAmount(t)
+        : t;
+    state.rotation = previous.rotation + ((current.rotation - previous.rotation) * amount);
+    state.maskRepeatDeltaX =
+        previous.maskRepeatDeltaX + ((current.maskRepeatDeltaX - previous.maskRepeatDeltaX) * amount);
+    state.maskRepeatDeltaY =
+        previous.maskRepeatDeltaY + ((current.maskRepeatDeltaY - previous.maskRepeatDeltaY) * amount);
+    state.linearInterpolation = current.linearInterpolation;
+    state.interpolationMode = interpolationMode;
     if (!transformInterpolationUsesPerspectiveDepth(current)) {
-        state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
-        state.translationY = previous.translationY + ((current.translationY - previous.translationY) * t);
-        state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * t);
-        state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * t);
+        state.translationX = previous.translationX + ((current.translationX - previous.translationX) * amount);
+        state.translationY = previous.translationY + ((current.translationY - previous.translationY) * amount);
+        state.scaleX = previous.scaleX + ((current.scaleX - previous.scaleX) * amount);
+        state.scaleY = previous.scaleY + ((current.scaleY - previous.scaleY) * amount);
         return state;
     }
 
-    state.scaleX = perspectiveLinearScale(previous.scaleX, current.scaleX, t);
-    state.scaleY = perspectiveLinearScale(previous.scaleY, current.scaleY, t);
+    state.scaleX = perspectiveLinearScale(previous.scaleX, current.scaleX, amount);
+    state.scaleY = perspectiveLinearScale(previous.scaleY, current.scaleY, amount);
     const qreal previousDepth = perspectiveDepthForTransform(previous);
     const qreal currentDepth = perspectiveDepthForTransform(current);
     const qreal depth = qMax<qreal>(
         0.0001,
-        previousDepth + ((currentDepth - previousDepth) * t));
+        previousDepth + ((currentDepth - previousDepth) * amount));
     const qreal previousWorldX = previous.translationX * previousDepth;
     const qreal currentWorldX = current.translationX * currentDepth;
     const qreal previousWorldY = previous.translationY * previousDepth;
     const qreal currentWorldY = current.translationY * currentDepth;
-    state.translationX = (previousWorldX + ((currentWorldX - previousWorldX) * t)) / depth;
-    state.translationY = (previousWorldY + ((currentWorldY - previousWorldY) * t)) / depth;
+    state.translationX = (previousWorldX + ((currentWorldX - previousWorldX) * amount)) / depth;
+    state.translationY = (previousWorldY + ((currentWorldY - previousWorldY) * amount)) / depth;
     return state;
 }
 

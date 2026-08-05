@@ -279,10 +279,36 @@ void TestPlaybackPolicy::
     render_detail::observeRenderSegmentBoundaryDecodeWait(100, 33);
     QCOMPARE(render_detail::renderSegmentDecodeLookaheadFrames(), 32);
     QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 48);
-    for (int cleanBoundary = 0; cleanBoundary < 3; ++cleanBoundary) {
+    for (int cleanBoundary = 0; cleanBoundary < 5; ++cleanBoundary) {
         render_detail::observeRenderSegmentBoundaryDecodeWait(0, 33);
     }
     QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 44);
+
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(32));
+    render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(true);
+    render_detail::observeRenderDecodeWaitTelemetry(120, 1000, 300, 0, 33);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 32);
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadPressureWindowCount(), 1);
+    render_detail::observeRenderDecodeWaitTelemetry(240, 2000, 600, 0, 33);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 48);
+    QCOMPARE(QString::fromLatin1(
+                 render_detail::renderSegmentDecodeLookaheadLastAutotuneReason()),
+             QStringLiteral("decode_wait_share_high"));
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadLastWaitSharePermille(),
+             300);
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadCooldownWindowsRemaining(), 2);
+    render_detail::observeRenderDecodeWaitTelemetry(360, 3000, 900, 0, 33);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 48);
+
+    QVERIFY(render_detail::setRenderSegmentDecodeLookaheadFrames(32));
+    render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(true);
+    render_detail::observeRenderDecodeWaitTelemetry(120, 1000, 20, 153, 33);
+    QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 48);
+    QCOMPARE(QString::fromLatin1(
+                 render_detail::renderSegmentDecodeLookaheadLastAutotuneReason()),
+             QStringLiteral("decode_spike_high"));
+    QCOMPARE(render_detail::renderSegmentDecodeLookaheadLastSpikeMs(),
+             static_cast<qint64>(153));
     render_detail::setRenderSegmentDecodeLookaheadAutotuneEnabled(false);
     QCOMPARE(render_detail::effectiveRenderSegmentDecodeLookaheadFrames(), 32);
     render_detail::observeRenderSegmentBoundaryDecodeWait(100, 33);
@@ -295,6 +321,8 @@ void TestPlaybackPolicy::
         QStringLiteral("control_server_worker_routes.cpp"));
     const QString exportSource = readSourceFile(
         QStringLiteral("render_export.cpp"));
+    const QString renderTools = readSourceFile(
+        QStringLiteral("editor_render_tools.cpp"));
     const QString outputTab = readSourceFile(QStringLiteral("output_tab.cpp"));
     const QString inspector = readSourceFile(
         QStringLiteral("inspector_pane_secondary_tabs.cpp"));
@@ -305,14 +333,34 @@ void TestPlaybackPolicy::
                      "segment_decode_lookahead_autotune")) &&
                  routes.contains(QStringLiteral(
                      "segment_decode_lookahead_effective_frames")) &&
+                 routes.contains(QStringLiteral("autotune_last_reason")) &&
+                 routes.contains(QStringLiteral(
+                     "last_decode_wait_share_permille")) &&
+                 routes.contains(QStringLiteral("last_decode_spike_ms")) &&
+                 routes.contains(QStringLiteral(
+                     "autotune_pressure_window_count")) &&
+                 routes.contains(QStringLiteral(
+                     "autotune_cooldown_windows_remaining")) &&
+                 routes.contains(QStringLiteral("\"config\"")) &&
                  routes.contains(QStringLiteral("applies_to_active_render")),
              "REST must expose the bounded lookahead as an active-render control.");
+    QVERIFY2(renderTools.contains(QStringLiteral(
+                 "renderSegmentPrewarmAutotuneSnapshot")) &&
+                 renderTools.contains(QStringLiteral(
+                     "segment_decode_lookahead_effective_frames")) &&
+                 renderTools.contains(QStringLiteral(
+                     "segment_decode_lookahead_autotune_reason")),
+             "Active render progress payloads must report the effective "
+             "lookahead value and current autotune reason directly.");
     QVERIFY2(exportSource.contains(QStringLiteral(
                  "effectiveSegmentDecodeLookaheadFrames")) &&
                  exportSource.contains(QStringLiteral(
-                     "prewarmedDecodeFramesBySegment")),
+                     "prewarmedDecodeFramesBySegment")) &&
+                 exportSource.contains(QStringLiteral(
+                     "observeRenderDecodeWaitTelemetry")),
              "An active export must re-read the live lookahead and extend an "
-             "already-prewarmed segment when the value increases.");
+             "already-prewarmed segment when the value increases, and must "
+             "feed aggregate render decode-wait telemetry into autotune.");
     QVERIFY2(inspector.contains(QStringLiteral(
                  "Auto-tune segment prewarming")) &&
                  outputTab.contains(QStringLiteral(

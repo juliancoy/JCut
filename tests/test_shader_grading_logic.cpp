@@ -281,11 +281,12 @@ void TestShaderGradingLogic::testVulkanRenderersLoadRawMasksForGpuPreprocess()
     QFile previewSource(QStringLiteral(JCUT_SOURCE_DIR "/vulkan_preview_surface.cpp"));
     QVERIFY2(previewSource.open(QIODevice::ReadOnly), "Unable to open Vulkan preview renderer.");
     const QString previewText = QString::fromUtf8(previewSource.readAll());
-    QVERIFY2(previewText.contains(QStringLiteral("rawClipMaskBuffer(")) &&
-                 previewText.contains(QStringLiteral(
-                     "clip, status.frame, &maskIdentity")) &&
+    QVERIFY2(previewText.contains(QStringLiteral("rawClipMaskBufferWaitFor(")) &&
+                 previewText.contains(QStringLiteral("status.frame")) &&
+                 previewText.contains(QStringLiteral("kPreviewExactMaskDecodeWaitMs")) &&
                  previewText.contains(QStringLiteral("&markerStatus.maskIdentity")),
-             "Vulkan preview must resolve masks from the actual presented FrameHandle.");
+             "Vulkan preview must resolve masks from the actual presented "
+             "FrameHandle with bounded waiting for already-prefetched masks.");
     QVERIFY2(!previewText.contains(QStringLiteral("preparedClipMaskImage(clip")),
              "Vulkan preview must not CPU-prepare Vulkan masks.");
 

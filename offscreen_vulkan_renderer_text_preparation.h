@@ -41,18 +41,48 @@
         }
         continue;
       }
-      const ClipFrameMapping mapping =
-          clipFrameMappingForClock(
-              clip, request.clips, clock,
-              request.renderSyncMarkers);
-      const TranscriptOverlayLayout layout =
-          transcriptOverlayLayoutAtSourceFrame(
-              clip,
-              sections,
-              mapping.transcriptFrame,
-              TranscriptOverlayTiming{request.transcriptPrependMs,
-                                      request.transcriptPostpendMs,
-                                      finalSubtitleOffsetMs});
+      QVector<RenderFrameClock> subtitleClocks;
+      subtitleClocks.push_back(clock);
+      const qreal visualTimelineFrame =
+          playbackVisualTimelineFramePosition(clock.timelineFramePosition,
+                                              request.playbackTiming);
+      if (std::abs(visualTimelineFrame - clock.timelineFramePosition) > 0.001) {
+        subtitleClocks.push_back(
+            renderFrameClockForTimelinePosition(visualTimelineFrame));
+      }
+      const PlaybackFrameCrossfade crossfade =
+          playbackFrameCrossfadeAtTimelineFrame(clock.timelineFramePosition,
+                                                request.playbackTiming);
+      if (crossfade.active && crossfade.secondaryTimelineFrame >= 0) {
+        subtitleClocks.push_back(renderFrameClockForTimelinePosition(
+            static_cast<qreal>(crossfade.secondaryTimelineFrame)));
+      }
+
+      ClipFrameMapping mapping;
+      TranscriptOverlayLayout layout;
+      for (const RenderFrameClock &subtitleClock : subtitleClocks) {
+        if (subtitleClock.timelineSample < clipTimelineStartSamples(clip) ||
+            subtitleClock.timelineSample >= clipTimelineEndSamples(clip)) {
+          continue;
+        }
+        const ClipFrameMapping candidateMapping =
+            clipFrameMappingForClock(
+                clip, request.clips, subtitleClock,
+                request.renderSyncMarkers);
+        const TranscriptOverlayLayout candidateLayout =
+            transcriptOverlayLayoutAtSourceFrame(
+                clip,
+                sections,
+                candidateMapping.transcriptFrame,
+                TranscriptOverlayTiming{request.transcriptPrependMs,
+                                        request.transcriptPostpendMs,
+                                        finalSubtitleOffsetMs});
+        if (!candidateLayout.lines.isEmpty()) {
+          mapping = candidateMapping;
+          layout = candidateLayout;
+          break;
+        }
+      }
       if (layout.lines.isEmpty()) {
         continue;
       }

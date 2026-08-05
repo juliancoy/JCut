@@ -1522,8 +1522,9 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_videoInterpolationCombo->addItem(QStringLiteral("Step"));
     m_videoInterpolationCombo->addItem(QStringLiteral("Linear"));
     m_videoInterpolationCombo->addItem(QStringLiteral("Perspective Linear"));
+    m_videoInterpolationCombo->addItem(QStringLiteral("Power Law"));
     m_videoInterpolationCombo->setToolTip(
-        QStringLiteral("Step holds the previous key. Linear lerps transform values. Perspective Linear treats scale as depth so parallax moves more evenly through zoom changes."));
+        QStringLiteral("Step holds the previous key. Linear lerps transform values. Perspective Linear treats scale as depth so parallax moves more evenly through zoom changes. Power Law applies a symmetric professional ease curve to the transition speed."));
     m_lockVideoScaleCheckBox->setChecked(false);
     m_sourceTransformLockCheckBox->setChecked(false);
     m_keyframeSpaceCheckBox->setChecked(true);

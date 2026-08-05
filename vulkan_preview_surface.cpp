@@ -55,6 +55,7 @@ constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
 // Preserve that memory budget as useful decode lead so mask followers are ready
 // before the transport reaches their exact presented frame.
 constexpr int kMaximumMaskLookaheadFrames = 16;
+constexpr int kPreviewExactMaskDecodeWaitMs = 8;
 
 bool gradingPreviewEnabledForTrack(const TimelineClip& clip,
                                    const QVector<TimelineTrack>& tracks)
@@ -354,9 +355,6 @@ const QWidget* VulkanPreviewSurface::asWidget() const
 void VulkanPreviewSurface::requestNativeUpdate()
 {
     if (m_bulkUpdating || !m_presenter) {
-        return;
-    }
-    if (m_interaction.playing && m_presenter->updatePending()) {
         return;
     }
     if (m_interaction.playing) {
@@ -2270,7 +2268,10 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             if (gpuMaskEnabled) {
                 QString maskIdentity;
                 const auto mask =
-                    rawClipMaskBuffer(clip, status.frame, &maskIdentity);
+                    rawClipMaskBufferWaitFor(clip,
+                                             status.frame,
+                                             kPreviewExactMaskDecodeWaitMs,
+                                             &maskIdentity);
                 if (mask && !mask->empty()) {
                     status.maskBuffer = mask;
                     status.maskSourceSize =
@@ -2559,10 +2560,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                     markerStatus.timingOwnerClipId = sourceId;
                     markerStatus.effectsOwnerClipId = clip.id;
                     markerStatus.matteOwnerClipId = clip.id;
-                    markerStatus.maskBuffer = rawClipMaskBuffer(
-                        clip,
-                        markerStatus.frame,
-                        &markerStatus.maskIdentity);
+                    markerStatus.maskBuffer =
+                        rawClipMaskBufferWaitFor(
+                            clip,
+                            markerStatus.frame,
+                            kPreviewExactMaskDecodeWaitMs,
+                            &markerStatus.maskIdentity);
                     if (markerStatus.maskBuffer) {
                         markerStatus.maskSourceSize = QSize(
                             markerStatus.maskBuffer->size.width,
@@ -2573,11 +2576,12 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                         !markerStatus.maskBuffer->empty();
                     markerStatus.frameCrossfadeMaskBuffer =
                         markerStatus.frameCrossfadeActive
-                        ? rawClipMaskBuffer(
-                              clip,
-                              markerStatus.frameCrossfadeFrame,
-                              &markerStatus.frameCrossfadeMaskIdentity)
-                        : std::shared_ptr<const jcut::core::ImageBuffer>{};
+                            ? rawClipMaskBufferWaitFor(
+                                  clip,
+                                  markerStatus.frameCrossfadeFrame,
+                                  kPreviewExactMaskDecodeWaitMs,
+                                  &markerStatus.frameCrossfadeMaskIdentity)
+                            : std::shared_ptr<const jcut::core::ImageBuffer>{};
                     markerStatus.frameCrossfadeMaskTextureEnabled =
                         markerStatus.frameCrossfadeMaskBuffer &&
                         !markerStatus.frameCrossfadeMaskBuffer->empty();

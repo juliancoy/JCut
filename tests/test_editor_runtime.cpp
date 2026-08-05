@@ -73,6 +73,7 @@ private slots:
     void testInspectorCommandsUpdateSharedClipState();
     void testCorrectionPolygonCommandNormalizesAndIsUndoable();
     void testPreviewTransformCommandMatchesQtKeyframeSemantics();
+    void testPowerLawTransformInterpolationMatchesEditorCoreRuntime();
     void testSourceTransformLockMatchesQtChainSemantics();
     void testMaterializeMaskMatteMatchesQtOwnershipDefaults();
     void testResetClipGradingMatchesQtContextSemantics();
@@ -2567,6 +2568,50 @@ void TestEditorRuntime::testPreviewTransformCommandMatchesQtKeyframeSemantics()
     QCOMPARE(childTransform.translationY, ownerTransform.translationY);
     QCOMPARE(childTransform.scaleX, ownerTransform.scaleX);
     QCOMPARE(childTransform.scaleY, ownerTransform.scaleY);
+}
+
+void TestEditorRuntime::testPowerLawTransformInterpolationMatchesEditorCoreRuntime()
+{
+    jcut::EditorClip clip;
+    clip.id = 1;
+    clip.durationFrames = 30;
+
+    jcut::EditorTransformKeyframe start;
+    start.frame = 0;
+    start.translationX = 0.0;
+    start.translationY = 0.0;
+    start.rotation = 0.0;
+    start.scaleX = 1.0;
+    start.scaleY = 1.0;
+    start.linearInterpolation = true;
+    start.interpolationMode = "linear";
+
+    jcut::EditorTransformKeyframe end = start;
+    end.frame = 10;
+    end.translationX = 100.0;
+    end.translationY = 50.0;
+    end.rotation = 90.0;
+    end.scaleX = 3.0;
+    end.scaleY = 5.0;
+    end.interpolationMode = "logarithmic";
+    clip.transformKeyframes = {start, end};
+
+    const jcut::EditorTransformKeyframe quarter =
+        jcut::evaluateEditorClipTransformAtLocalFrame(clip, 2);
+    const jcut::EditorTransformKeyframe midpoint =
+        jcut::evaluateEditorClipTransformAtLocalFrame(clip, 5);
+
+    QCOMPARE(quarter.interpolationMode, std::string("power_law"));
+    QVERIFY2(std::abs(quarter.translationX - 8.0) < 0.000001,
+             "editor runtime should normalize logarithmic aliases to the power-law ease curve");
+    QVERIFY2(std::abs(quarter.translationY - 4.0) < 0.000001,
+             "editor runtime should apply power-law easing to Y translation");
+    QVERIFY2(std::abs(quarter.rotation - 7.2) < 0.000001,
+             "editor runtime should apply power-law easing to rotation");
+    QVERIFY2(std::abs(quarter.scaleX - 1.16) < 0.000001,
+             "editor runtime should apply power-law easing to scale");
+    QVERIFY2(std::abs(midpoint.translationX - 50.0) < 0.000001,
+             "editor runtime power-law easing should preserve the midpoint");
 }
 
 void TestEditorRuntime::testSourceTransformLockMatchesQtChainSemantics()

@@ -964,6 +964,17 @@ static RenderResult renderTimelineSingleFile(
     const QString exportPipeline = exportPath.pipeline;
     const QString gpuTransferLabel = exportPath.gpuTransferLabel;
     const QString exportPathFallbackReason = exportPath.fallbackReason;
+    const qint64 renderFrameBudgetMs = qMax<qint64>(
+        1, static_cast<qint64>(
+               std::ceil(1000.0 / qMax(1.0, outputFps))));
+    const auto observeDecodeAutotuneTelemetry = [&]() {
+        render_detail::observeRenderDecodeWaitTelemetry(
+            framesCompleted,
+            totalRenderStageMs,
+            totalRenderDecodeStageMs,
+            maxFrameDecodeStageMs,
+            renderFrameBudgetMs);
+    };
     struct PendingAsyncGpuFrame {
         AVFrame* frame = nullptr;
         int64_t timelineFrame = 0;
@@ -1054,6 +1065,7 @@ static RenderResult renderTimelineSingleFile(
                              frameConvertMs
                          });
         ++framesCompleted;
+        observeDecodeAutotuneTelemetry();
         return true;
     };
 
@@ -1256,11 +1268,8 @@ static RenderResult renderTimelineSingleFile(
             totalRenderStageMs += renderStageTimer.elapsed();
             totalRenderDecodeStageMs += frameDecodeMs;
             if (segmentOutputFrame == 0) {
-                const qint64 frameBudgetMs = qMax<qint64>(
-                    1, static_cast<qint64>(
-                           std::ceil(1000.0 / qMax(1.0, outputFps))));
                 observeRenderSegmentBoundaryDecodeWait(frameDecodeMs,
-                                                       frameBudgetMs);
+                                                       renderFrameBudgetMs);
             }
             totalRenderTextureStageMs += frameTextureMs;
             totalRenderCompositeStageMs += frameCompositeMs;
@@ -1572,6 +1581,7 @@ static RenderResult renderTimelineSingleFile(
                                          frameConvertMs
                                      });
                     ++framesCompleted;
+                    observeDecodeAutotuneTelemetry();
                     if (!errorMessage.isEmpty()) {
                         break;
                     }
@@ -1633,6 +1643,7 @@ static RenderResult renderTimelineSingleFile(
                                  frameConvertMs
                              });
             ++framesCompleted;
+            observeDecodeAutotuneTelemetry();
             if (!errorMessage.isEmpty()) {
                 break;
             }

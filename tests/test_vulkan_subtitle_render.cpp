@@ -259,6 +259,7 @@ private slots:
     void testOffscreenVulkanSubtitleRenderingEffectChangesPixels();
     void testMasterOutputSubtitleOffsetIsIndependentAndSigned();
     void testMasterOutputSubtitleOffsetRetimesFinalVulkanText();
+    void testOffscreenVulkanSubtitlePersistsThroughSpeechFilterCrossfade();
     void testOffscreenVulkanTranscriptOpacityFadePixels();
     void testOffscreenVulkanTitleTextPixels();
     void testOffscreenVulkanImageTextureOrientation();
@@ -323,6 +324,66 @@ void TestVulkanSubtitleRender::testMasterOutputSubtitleOffsetRetimesFinalVulkanT
     QVERIFY2(countSubtitlePixels(unshifted).nonBlack > 0,
              "unshifted subtitle should still be visible at 0.967 seconds");
     QCOMPARE(countSubtitlePixels(shiftedEarlier).nonBlack, 0);
+}
+
+void TestVulkanSubtitleRender::testOffscreenVulkanSubtitlePersistsThroughSpeechFilterCrossfade()
+{
+    const QSize outputSize(720, 720);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString clipPath = dir.filePath(QStringLiteral("clip.mp4"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+    const QString transcriptPath = dir.filePath(QStringLiteral("clip_editable.json"));
+    QVERIFY(writeTranscript(transcriptPath));
+    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
+
+    render_detail::OffscreenVulkanRenderer renderer;
+    QString error;
+    if (!renderer.initialize(outputSize, &error)) {
+        QSKIP(qPrintable(QStringLiteral("Vulkan unavailable: %1").arg(error)));
+    }
+
+    RenderRequest request;
+    request.masterOutputSubtitleOffsetMs = 0;
+    request.outputPath = QStringLiteral("test://subtitle-speech-filter-crossfade");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = outputSize;
+    request.correctionsEnabled = true;
+    request.transcriptPrependMs = 0;
+    request.transcriptPostpendMs = 0;
+    request.transcriptOffsetMs = 0;
+    request.playbackTiming.frameTransitionMode = PlaybackFrameTransitionMode::Crossfade;
+    request.playbackTiming.frameCrossfadeEnabled = true;
+    request.playbackTiming.frameCrossfadeFrames = 4;
+    request.playbackTiming.playbackRanges = {
+        ExportRangeSegment{0, 14},
+        ExportRangeSegment{40, 54},
+    };
+    request.clips = QVector<TimelineClip>{makeTranscriptClip(clipPath, outputSize)};
+    QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, editor::DecoderContext*> decoders;
+    render_detail::RenderPreparedFrameQueue asyncCache;
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+
+    const QImage transitionFrame = renderer.renderFrame(request,
+                                                        40,
+                                                        decoders,
+                                                        nullptr,
+                                                        &asyncCache,
+                                                        orderedClips,
+                                                        nullptr,
+                                                        &decodeMs,
+                                                        &textureMs,
+                                                        &compositeMs,
+                                                        &readbackMs,
+                                                        nullptr,
+                                                        nullptr);
+    QVERIFY2(!transitionFrame.isNull(), "speech-filter crossfade subtitle frame did not render");
+    QVERIFY2(countSubtitlePixels(transitionFrame).brightText > 0,
+             "subtitle text should persist on speech-filter crossfade transition frames");
 }
 
 void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels_data()

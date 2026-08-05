@@ -284,11 +284,16 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
                source.contains(QStringLiteral("presentQueued(this)")) &&
                source.contains(QStringLiteral("renderNow();")) &&
                source.contains(QStringLiteral("m_owner->beginPreviewFrame()")) &&
+               source.contains(QStringLiteral("m_updateDirty = false")) &&
                unavailableRendererPath.contains(
                    QStringLiteral("m_window->frameReady()")) &&
                unavailableRendererPath.contains(
                    QStringLiteral("m_owner->markPreviewUpdateDelivered()")) &&
                eventBody.contains(QStringLiteral("previewUpdateEventsDelivered.fetch_add(")) &&
+               eventBody.contains(QStringLiteral("if (m_frameInProgress)")) &&
+               eventBody.contains(QStringLiteral("if (!isExposed())")) &&
+               eventBody.contains(QStringLiteral("if (m_updateDirty && !m_failureLatched)")) &&
+               !eventBody.contains(QStringLiteral("m_updateDirty = false")) &&
                eventBody.contains(QStringLiteral("QWindow::event(event)")) &&
                !eventBody.contains(QStringLiteral("if (m_updatePending)")) &&
                frameReady >= 0 && rendererEnd > frameReady &&
@@ -572,10 +577,18 @@ void TestDirectVulkanHandoffPipelineContract::
                effects.contains(QStringLiteral(
                    "prefetchRenderableClipMaskBuffersForClock(")) &&
                effects.contains(QStringLiteral(
-                   "prefetchClipMaskBuffers(clip, qMax<int64_t>(0, mapping.sourceFrame))")),
+                   "prefetchClipMaskBuffers(clip, qMax<int64_t>(0, mapping.sourceFrame))")) &&
+               effects.contains(QStringLiteral("rawClipMaskBufferWaitFor(")) &&
+               effects.contains(QStringLiteral("std::chrono::milliseconds(waitMs)")) &&
+               surface.contains(QStringLiteral("kPreviewExactMaskDecodeWaitMs")) &&
+               surface.contains(QStringLiteral("rawClipMaskBufferWaitFor(clip")) &&
+               surface.contains(QStringLiteral("status.frame")) &&
+               surface.contains(QStringLiteral("markerStatus.frame")) &&
+               surface.contains(QStringLiteral("markerStatus.frameCrossfadeFrame")),
            "mask-sidecar decoding must follow the configured video playback "
-           "window through the shared preview/export prefetch path instead of "
-           "starting only after a frame is presented");
+           "window and then briefly wait for the exact presented-frame mask "
+           "identity instead of dropping a matte after a cold non-blocking "
+           "lookup");
   QVERIFY2(surface.contains(QStringLiteral(
                "&m_maskPrefetchWindowKeys")) &&
                effects.contains(QStringLiteral(
@@ -1428,13 +1441,13 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!previewSurface.isEmpty(),
            "vulkan_preview_surface.cpp must be readable");
   QVERIFY2(previewSurface.contains(
-               QStringLiteral("rawClipMaskBuffer(")) &&
-               previewSurface.contains(
-                   QStringLiteral("clip, status.frame, &maskIdentity")) &&
+               QStringLiteral("rawClipMaskBufferWaitFor(")) &&
+               previewSurface.contains(QStringLiteral("status.frame")) &&
+               previewSurface.contains(QStringLiteral("kPreviewExactMaskDecodeWaitMs")) &&
                previewSurface.contains(
                    QStringLiteral("&markerStatus.maskIdentity")) &&
                previewSurface.contains(
-                   QStringLiteral("clip,\n                            status.frameCrossfadeFrame")) &&
+                   QStringLiteral("markerStatus.frameCrossfadeFrame")) &&
                !previewSurface.contains(QStringLiteral("maskFrameMatchesPresentedFrame")),
            "live Vulkan masks and mask grading must sample the mask for the "
            "exact parent presentation identity, including crossfade frames");

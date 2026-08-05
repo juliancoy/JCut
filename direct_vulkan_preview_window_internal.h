@@ -76,6 +76,7 @@ QSize toQSize(const jcut::core::SizeI& size)
 
 namespace {
 constexpr qint64 kPipelineThumbnailReadbackMinIntervalMs = 250;
+constexpr qint64 kStalePreviewUpdateRecoveryMs = 500;
 constexpr bool kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false;
 constexpr std::uint64_t kPreviewGpuWaitTimeoutNs = 1'000'000'000ull;
 
@@ -476,6 +477,7 @@ public:
 
     void schedulePreviewUpdate()
     {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         m_updateDirty = true;
         if (!isExposed()) {
             if (!m_updateDeferredWhileNotExposed && m_stats) {
@@ -486,13 +488,36 @@ public:
         }
         m_updateDeferredWhileNotExposed = false;
         if (m_frameInProgress) {
-            return;
+            if (m_frameRequestMs >= 0 &&
+                nowMs - m_frameRequestMs > kStalePreviewUpdateRecoveryMs) {
+                if (m_stats) {
+                    ++m_stats->stalePreviewUpdateRecoveries;
+                    m_stats->lastStalePreviewUpdateAgeMs =
+                        static_cast<double>(nowMs - m_frameRequestMs);
+                }
+                m_frameInProgress = false;
+                m_frameRequestMs = -1;
+                m_updateRequestPosted = false;
+            } else {
+                return;
+            }
+        }
+        if (m_updateRequestPosted &&
+            m_updateRequestMs >= 0 &&
+            nowMs - m_updateRequestMs > kStalePreviewUpdateRecoveryMs) {
+            if (m_stats) {
+                ++m_stats->stalePreviewUpdateRecoveries;
+                m_stats->lastStalePreviewUpdateAgeMs =
+                    static_cast<double>(nowMs - m_updateRequestMs);
+            }
+            m_updateRequestPosted = false;
+            m_updateRequestMs = -1;
         }
         if (m_updateRequestPosted) {
             return;
         }
         m_updateRequestPosted = true;
-        m_updateRequestMs = QDateTime::currentMSecsSinceEpoch();
+        m_updateRequestMs = nowMs;
         if (m_presentationTelemetry) {
             m_presentationTelemetry->previewUpdateRequests.fetch_add(
                 1, std::memory_order_relaxed);
@@ -1227,11 +1252,21 @@ protected:
                 m_presentationTelemetry->previewUpdateEventsDelivered.fetch_add(
                     1, std::memory_order_relaxed);
             }
-            if (!m_frameInProgress && isExposed()) {
-                m_updateDirty = false;
-                renderNow();
-                if (!m_frameInProgress) {
-                    m_updateRequestMs = -1;
+            if (m_frameInProgress) {
+                schedulePreviewUpdate();
+                return true;
+            }
+            if (!isExposed()) {
+                m_updateRequestMs = -1;
+                schedulePreviewUpdate();
+                return true;
+            }
+
+            renderNow();
+            if (!m_frameInProgress) {
+                m_updateRequestMs = -1;
+                if (m_updateDirty && !m_failureLatched) {
+                    schedulePreviewUpdate();
                 }
             }
             return true;

@@ -2407,6 +2407,18 @@ bool ControlServerWorker::handleRenderRoutes(QTcpSocket* socket, const Request& 
             {QStringLiteral("autotune_adjustment_count"),
              static_cast<qint64>(
                  render_detail::renderSegmentDecodeLookaheadAdjustmentCount())},
+            {QStringLiteral("autotune_last_reason"),
+             QString::fromLatin1(
+                 render_detail::renderSegmentDecodeLookaheadLastAutotuneReason())},
+            {QStringLiteral("last_decode_wait_share_permille"),
+             render_detail::renderSegmentDecodeLookaheadLastWaitSharePermille()},
+            {QStringLiteral("last_decode_spike_ms"),
+             static_cast<qint64>(
+                 render_detail::renderSegmentDecodeLookaheadLastSpikeMs())},
+            {QStringLiteral("autotune_pressure_window_count"),
+             render_detail::renderSegmentDecodeLookaheadPressureWindowCount()},
+            {QStringLiteral("autotune_cooldown_windows_remaining"),
+             render_detail::renderSegmentDecodeLookaheadCooldownWindowsRemaining()},
             {QStringLiteral("clean_boundary_count"),
              render_detail::renderSegmentDecodeLookaheadCleanBoundaryCount()},
             {QStringLiteral("minimum_frames"), 0},

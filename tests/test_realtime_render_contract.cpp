@@ -59,6 +59,7 @@ private slots:
     void fractionalSourceMappingDoesNotDuplicateThirtyFpsFrames();
     void renderTransformsInterpolateAtOutputFpsPositions();
     void perspectiveLinearTransformInterpolationUsesScaleAsDepth();
+    void powerLawTransformInterpolationUsesNonlinearSpeed();
     void childTransformLockUsesSourceTransformWhenEnabled();
     void maskMatteMappingAlwaysUsesParentClockAndMarkers();
     void maskMatteVisualEffectsUseParentClockAndMarkerIdentity();
@@ -192,6 +193,46 @@ void TestRealtimeRenderContract::perspectiveLinearTransformInterpolationUsesScal
     QVERIFY2(std::abs(midpoint.translationY - 10.0) < 0.000001,
              "perspective-linear Y should interpolate in depth/world space before projection");
     QCOMPARE(midpoint.interpolationMode, QStringLiteral("perspective_linear"));
+}
+
+void TestRealtimeRenderContract::powerLawTransformInterpolationUsesNonlinearSpeed()
+{
+    TimelineClip clip = makeMappedClip(30.0);
+    TimelineClip::TransformKeyframe start;
+    start.frame = 0;
+    start.translationX = 0.0;
+    start.translationY = 0.0;
+    start.rotation = 0.0;
+    start.scaleX = 1.0;
+    start.scaleY = 1.0;
+    start.linearInterpolation = true;
+    start.interpolationMode = QStringLiteral("linear");
+    TimelineClip::TransformKeyframe end = start;
+    end.frame = 10;
+    end.translationX = 100.0;
+    end.translationY = 50.0;
+    end.rotation = 90.0;
+    end.scaleX = 3.0;
+    end.scaleY = 5.0;
+    end.interpolationMode = QStringLiteral("power_law");
+    clip.transformKeyframes = {start, end};
+
+    const TimelineClip::TransformKeyframe quarter =
+        evaluateClipRenderTransformAtPosition(clip, 2.5, QSize(1920, 1080));
+    const TimelineClip::TransformKeyframe midpoint =
+        evaluateClipRenderTransformAtPosition(clip, 5.0, QSize(1920, 1080));
+
+    QVERIFY2(std::abs(quarter.translationX - 12.5) < 0.000001,
+             "power-law transform interpolation should ease slower than linear at the first quarter");
+    QVERIFY2(std::abs(quarter.translationY - 6.25) < 0.000001,
+             "power-law transform interpolation should apply to Y translation");
+    QVERIFY2(std::abs(quarter.rotation - 11.25) < 0.000001,
+             "power-law transform interpolation should apply to rotation");
+    QVERIFY2(std::abs(quarter.scaleX - 1.25) < 0.000001,
+             "power-law transform interpolation should apply to scale");
+    QVERIFY2(std::abs(midpoint.translationX - 50.0) < 0.000001,
+             "power-law transform interpolation should preserve the midpoint");
+    QCOMPARE(quarter.interpolationMode, QStringLiteral("power_law"));
 }
 
 void TestRealtimeRenderContract::childTransformLockUsesSourceTransformWhenEnabled()

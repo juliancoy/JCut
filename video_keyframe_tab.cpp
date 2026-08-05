@@ -35,6 +35,7 @@ public:
             QStringLiteral("Step"),
             QStringLiteral("Linear"),
             QStringLiteral("Perspective Linear"),
+            QStringLiteral("Power Law"),
         });
         return combo;
     }
@@ -282,6 +283,14 @@ QString VideoKeyframeTab::videoInterpolationLabel(bool linearInterpolation, cons
         normalized == QStringLiteral("depth_linear")) {
         return QStringLiteral("Perspective Linear");
     }
+    if (normalized == QStringLiteral("power_law") ||
+        normalized == QStringLiteral("power") ||
+        normalized == QStringLiteral("power_ease") ||
+        normalized == QStringLiteral("logarithmic") ||
+        normalized == QStringLiteral("logarithmic_ease") ||
+        normalized == QStringLiteral("log")) {
+        return QStringLiteral("Power Law");
+    }
     return QStringLiteral("Linear");
 }
 
@@ -296,7 +305,10 @@ QString VideoKeyframeTab::nextVideoInterpolationLabel(const QString& text) const
     if (!linearInterpolation) {
         return QStringLiteral("Linear");
     }
-    return interpolationMode == QStringLiteral("perspective_linear")
+    if (interpolationMode == QStringLiteral("perspective_linear")) {
+        return QStringLiteral("Power Law");
+    }
+    return interpolationMode == QStringLiteral("power_law")
                ? QStringLiteral("Step")
                : QStringLiteral("Perspective Linear");
 }
@@ -322,6 +334,16 @@ bool VideoKeyframeTab::parseVideoInterpolationText(const QString& text,
         normalized == QStringLiteral("depth_linear")) {
         *linearInterpolationOut = true;
         if (interpolationModeOut) *interpolationModeOut = QStringLiteral("perspective_linear");
+        return true;
+    }
+    if (normalized == QStringLiteral("power_law") ||
+        normalized == QStringLiteral("power") ||
+        normalized == QStringLiteral("power_ease") ||
+        normalized == QStringLiteral("logarithmic") ||
+        normalized == QStringLiteral("logarithmic_ease") ||
+        normalized == QStringLiteral("log")) {
+        *linearInterpolationOut = true;
+        if (interpolationModeOut) *interpolationModeOut = QStringLiteral("power_law");
         return true;
     }
     return false;
@@ -561,11 +583,11 @@ void VideoKeyframeTab::refresh()
 
     updateSpinBoxesFromKeyframe(displayed);
     updateMirrorCheckboxesFromScale(displayed.scaleX, displayed.scaleY);
+    const QString interpolationLabel =
+        videoInterpolationLabel(displayed.linearInterpolation, displayed.interpolationMode);
+    const int interpolationIndex = m_widgets.videoInterpolationCombo->findText(interpolationLabel);
     m_widgets.videoInterpolationCombo->setCurrentIndex(
-        videoInterpolationLabel(displayed.linearInterpolation, displayed.interpolationMode) ==
-                QStringLiteral("Perspective Linear")
-            ? 2
-            : (displayed.linearInterpolation ? 1 : 0));
+        interpolationIndex >= 0 ? interpolationIndex : 1);
     if (m_widgets.keyframeSkipAwareTimingCheckBox) {
         m_widgets.keyframeSkipAwareTimingCheckBox->setChecked(clip->transformSkipAwareTiming);
     }
@@ -625,11 +647,12 @@ void VideoKeyframeTab::applyKeyframeFromInspector(bool pushHistory)
         keyframe.scaleY = stored.scaleY;
         keyframe.maskRepeatDeltaX = stored.maskRepeatDeltaX;
         keyframe.maskRepeatDeltaY = stored.maskRepeatDeltaY;
-        keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() != 0;
-        keyframe.interpolationMode =
-            m_widgets.videoInterpolationCombo->currentIndex() == 2
-                ? QStringLiteral("perspective_linear")
-                : (keyframe.linearInterpolation ? QStringLiteral("linear") : QStringLiteral("step"));
+        if (!parseVideoInterpolationText(m_widgets.videoInterpolationCombo->currentText(),
+                                         &keyframe.linearInterpolation,
+                                         &keyframe.interpolationMode)) {
+            keyframe.linearInterpolation = true;
+            keyframe.interpolationMode = QStringLiteral("linear");
+        }
         normalizeClipTransformKeyframes(clip);
     });
 
@@ -672,11 +695,12 @@ void VideoKeyframeTab::upsertKeyframeAtPlayhead()
         displayed.maskRepeatDeltaY = evaluated.maskRepeatDeltaY;
         TimelineClip::TransformKeyframe keyframe = keyframeFromInspectorDisplay(editableClip, displayed);
         keyframe.frame = keyframeFrame;
-        keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() != 0;
-        keyframe.interpolationMode =
-            m_widgets.videoInterpolationCombo->currentIndex() == 2
-                ? QStringLiteral("perspective_linear")
-                : (keyframe.linearInterpolation ? QStringLiteral("linear") : QStringLiteral("step"));
+        if (!parseVideoInterpolationText(m_widgets.videoInterpolationCombo->currentText(),
+                                         &keyframe.linearInterpolation,
+                                         &keyframe.interpolationMode)) {
+            keyframe.linearInterpolation = true;
+            keyframe.interpolationMode = QStringLiteral("linear");
+        }
 
         upsertStoredTransformKeyframe(editableClip, keyframe);
     });
@@ -1112,11 +1136,10 @@ void VideoKeyframeTab::onTableSelectionChanged()
             updateSpinBoxesFromKeyframe(displayed);
             updateMirrorCheckboxesFromScale(displayed.scaleX, displayed.scaleY);
             if (m_widgets.videoInterpolationCombo) {
-                m_widgets.videoInterpolationCombo->setCurrentIndex(
-                    videoInterpolationLabel(displayed.linearInterpolation, displayed.interpolationMode) ==
-                            QStringLiteral("Perspective Linear")
-                        ? 2
-                        : (displayed.linearInterpolation ? 1 : 0));
+                const QString label =
+                    videoInterpolationLabel(displayed.linearInterpolation, displayed.interpolationMode);
+                const int index = m_widgets.videoInterpolationCombo->findText(label);
+                m_widgets.videoInterpolationCombo->setCurrentIndex(index >= 0 ? index : 1);
             }
             m_updating = false;
         }

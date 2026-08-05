@@ -30,6 +30,7 @@
 #include <QtGlobal>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
@@ -1169,7 +1170,8 @@ void storeRawMaskDecodeResult(
 static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
     const QString& path,
     bool blocking = false,
-    QString* artifactRevision = nullptr)
+    QString* artifactRevision = nullptr,
+    int waitMs = 0)
 {
     if (artifactRevision) {
         artifactRevision->clear();
@@ -1212,12 +1214,20 @@ static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
         } else {
             ownsDecode = cache.loadsInFlight.insert(coreCacheKey).second;
             if (!ownsDecode) {
-                if (!blocking) {
+                if (blocking) {
+                    cache.loadCompleted.wait(lock, [&]() {
+                        return !cache.loadsInFlight.contains(coreCacheKey);
+                    });
+                } else if (waitMs > 0) {
+                    cache.loadCompleted.wait_for(
+                        lock,
+                        std::chrono::milliseconds(waitMs),
+                        [&]() {
+                            return !cache.loadsInFlight.contains(coreCacheKey);
+                        });
+                } else {
                     return {};
                 }
-                cache.loadCompleted.wait(lock, [&]() {
-                    return !cache.loadsInFlight.contains(coreCacheKey);
-                });
                 const auto completed = cache.images.find(coreCacheKey);
                 return completed != cache.images.end()
                     ? completed->second
@@ -1243,6 +1253,20 @@ static std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferForPath(
             jcut::core::decodeImageFileGray(corePath));
         storeRawMaskDecodeResult(coreCacheKey, decoded);
     });
+    if (waitMs > 0) {
+        RawMaskCacheCore& cache = rawMaskCacheCore();
+        std::unique_lock<std::mutex> lock(cache.mutex);
+        cache.loadCompleted.wait_for(
+            lock,
+            std::chrono::milliseconds(waitMs),
+            [&]() {
+                return !cache.loadsInFlight.contains(coreCacheKey);
+            });
+        const auto completed = cache.images.find(coreCacheKey);
+        return completed != cache.images.end()
+            ? completed->second
+            : std::shared_ptr<const jcut::core::ImageBuffer>{};
+    }
     return {};
 }
 
@@ -1290,6 +1314,37 @@ std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBuffer(
         maskFramePathForPresentedFrame(clip, presentedFrame),
         false,
         &artifactRevision);
+    if (stableIdentity && !artifactRevision.isEmpty()) {
+        *stableIdentity =
+            QStringLiteral(
+                "sidecar=%1|presented=%2:%3:%4|artifact=%5")
+                .arg(
+                    editor::masks::stableMaskSidecarId(
+                        clip.maskFramesDir),
+                    presentedFrame.sourcePath(),
+                    QString::number(presentedFrame.frameNumber()),
+                    QString::number(
+                        presentedFrame.sourcePresentationTimestamp()),
+                    artifactRevision);
+    }
+    return buffer;
+}
+
+std::shared_ptr<const jcut::core::ImageBuffer> rawClipMaskBufferWaitFor(
+    const TimelineClip& clip,
+    const editor::FrameHandle& presentedFrame,
+    int waitMs,
+    QString* stableIdentity)
+{
+    if (stableIdentity) {
+        stableIdentity->clear();
+    }
+    QString artifactRevision;
+    const auto buffer = rawClipMaskBufferForPath(
+        maskFramePathForPresentedFrame(clip, presentedFrame),
+        false,
+        &artifactRevision,
+        qMax(0, waitMs));
     if (stableIdentity && !artifactRevision.isEmpty()) {
         *stableIdentity =
             QStringLiteral(
