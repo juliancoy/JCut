@@ -242,6 +242,38 @@ std::optional<CommandResult> EditorRuntime::dispatchClipEditCommand(
                 } else if constexpr (
                     std::is_same_v<
                         T,
+                        SetClipSelectedFaceTrackIdsCommand>) {
+                    EditorClip* clip = findClip(
+                        &m_document.clips, typedCommand.clipId);
+                    if (!clip) {
+                        return CommandResult{false, "clip not found"};
+                    }
+                    std::vector<int> filteredTrackIds;
+                    filteredTrackIds.reserve(typedCommand.trackIds.size());
+                    for (const int trackId : typedCommand.trackIds) {
+                        if (trackId < 0) {
+                            continue;
+                        }
+                        if (std::find(
+                                filteredTrackIds.begin(),
+                                filteredTrackIds.end(),
+                                trackId) != filteredTrackIds.end()) {
+                            continue;
+                        }
+                        filteredTrackIds.push_back(trackId);
+                    }
+                    if (clip->selectedFaceTrackIds == filteredTrackIds) {
+                        return CommandResult{
+                            false,
+                            "selected face tracks are unchanged"};
+                    }
+                    clip->selectedFaceTrackIds = std::move(filteredTrackIds);
+                    return CommandResult{
+                        true,
+                        "selected face tracks updated"};
+                } else if constexpr (
+                    std::is_same_v<
+                        T,
                         UpsertSpeakerFramingEnabledKeyframeCommand>) {
                     EditorClip* clip = findClip(
                         &m_document.clips, typedCommand.clipId);

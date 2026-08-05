@@ -1443,6 +1443,8 @@ void runPreviewWorker(ShellState* shellState)
     }
 }
 
+#include "standalone_export_renderer.h"
+
 void runExportWorker(ShellState* shellState)
 {
     for (;;) {
@@ -1495,21 +1497,47 @@ void runExportWorker(ShellState* shellState)
                 shellState->exportQueueLabel =
                     queue[index].label;
             }
-            const jcut::render::RenderResultCore result =
-                shellState->gpuRenderer.exportTimeline(
-                    queue[index].document,
-                    rootDirectory,
-                    [shellState](
-                        const jcut::render::RenderProgressCore&
-                            progress) {
-                        std::lock_guard<std::mutex> lock(
-                            shellState->exportMutex);
-                        shellState->exportProgress = progress;
-                        shellState->exportHasProgress = true;
-                        return !shellState->
-                                    exportCancelRequested &&
-                            !shellState->exportStopRequested;
-                    });
+            const auto progressCallback =
+                [shellState](
+                    const jcut::render::RenderProgressCore&
+                        progress) {
+                    std::lock_guard<std::mutex> lock(
+                        shellState->exportMutex);
+                    shellState->exportProgress = progress;
+                    shellState->exportHasProgress = true;
+                    return !shellState->
+                                exportCancelRequested &&
+                        !shellState->exportStopRequested;
+                };
+            const ImGuiExportBackendDecision exportBackend =
+                decideImGuiExportBackend(shellState);
+            jcut::render::RenderResultCore result;
+            if (exportBackend.useSharedGpu) {
+                result =
+                    shellState->gpuRenderer.exportTimeline(
+                        queue[index].document,
+                        rootDirectory,
+                        progressCallback);
+            } else {
+                result =
+                    jcut::standalone_render::exportTimelineToFile(
+                        jcut::standalone_render::ExportRenderRequest{
+                            queue[index].document,
+                            rootDirectory,
+                            0,
+                            0,
+                            shellState->exportDecoderPolicy},
+                        progressCallback);
+                if (!result.success &&
+                    result.message.empty()) {
+                    result.message =
+                        "CPU fallback export failed";
+                } else if (result.success) {
+                    result.message =
+                        "export completed with " +
+                        exportBackend.label;
+                }
+            }
             summary.framesRendered +=
                 result.framesRendered;
             summary.elapsedMs += result.elapsedMs;
@@ -1834,4 +1862,3 @@ void clearTimelineDrag(ShellState* shellState)
     shellState->timelineDragTrackIndex = -1;
     shellState->timelineSnapIndicatorFrame = -1;
 }
-

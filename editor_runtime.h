@@ -226,6 +226,10 @@ struct SetClipSpeakerSectionMinimumWordsCommand {
     int clipId = 0;
     int minimumWords = 10;
 };
+struct SetClipSelectedFaceTrackIdsCommand {
+    int clipId = 0;
+    std::vector<int> trackIds;
+};
 struct UpsertSpeakerFramingEnabledKeyframeCommand {
     int clipId = 0;
     EditorBoolKeyframe keyframe;
@@ -502,6 +506,7 @@ using EditorCommand = std::variant<
     SetClipSourceTransformLockedCommand,
     SetClipSpeakerFramingCommand,
     SetClipSpeakerSectionMinimumWordsCommand,
+    SetClipSelectedFaceTrackIdsCommand,
     UpsertSpeakerFramingEnabledKeyframeCommand,
     UpsertSpeakerFramingKeyframeCommand,
     UpsertSpeakerFramingTargetKeyframeCommand,

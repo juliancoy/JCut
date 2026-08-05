@@ -17,10 +17,28 @@ struct AudioOutputBackendCapability {
   std::string reason;
 };
 
+enum class RenderExportBackendKind {
+  SharedGpu,
+  StandaloneCpu,
+};
+
+struct RenderExportBackendCapability {
+  RenderExportBackendKind kind = RenderExportBackendKind::StandaloneCpu;
+  std::string id;
+  std::string label;
+  std::string operatingSystem;
+  int preference = 0;
+  bool compiled = false;
+  bool operatingSystemSupported = false;
+  bool available = false;
+  std::string reason;
+};
+
 struct RuntimeCapabilities {
   std::string operatingSystem;
   std::vector<AudioOutputBackendCapability> audioOutputBackends;
   std::vector<jcut::VideoDecodeBackendCapability> videoDecodeBackends;
+  std::vector<RenderExportBackendCapability> renderExportBackends;
 };
 
 struct AudioOutputBackendProbe {
@@ -39,5 +57,11 @@ struct AudioOutputBackendSelection {
 };
 
 RuntimeCapabilities detectRuntimeCapabilities();
+RuntimeCapabilities detectRuntimeCapabilities(
+    bool sharedGpuRendererAvailable,
+    const std::string& sharedGpuRendererStatus = {});
 AudioOutputBackendSelection
 selectBestAudioOutputBackend(const AudioOutputBackendConfig& config);
+const RenderExportBackendCapability*
+selectPreferredRenderExportBackend(
+    const RuntimeCapabilities& capabilities);

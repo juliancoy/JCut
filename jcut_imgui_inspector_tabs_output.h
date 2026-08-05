@@ -401,6 +401,26 @@ void drawInspectorTab21(
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 commitExportOutputPathDraft(shellState);
             }
+            jcut::EditorDocumentCore exportDraft = snapshot;
+            exportDraft.exportRequest.outputPath =
+                shellState->exportOutputPath.data();
+            const std::string exportValidationError =
+                validateExportRequest(exportDraft);
+            const ImGuiExportBackendDecision preferredExportBackend =
+                decideImGuiExportBackend(shellState);
+            if (!exportValidationError.empty()) {
+                ImGui::TextColored(
+                    ImVec4(0.92f, 0.45f, 0.36f, 1.0f),
+                    "%s",
+                    exportValidationError.c_str());
+            } else if (!preferredExportBackend.useSharedGpu) {
+                ImGui::TextDisabled(
+                    "Export backend: %s",
+                    preferredExportBackend.label.c_str());
+                ImGui::TextDisabled(
+                    "%s",
+                    preferredExportBackend.reason.c_str());
+            }
             if (ImGui::Combo("Format", &formatIndex, formats.data(), static_cast<int>(formats.size()))) {
                 applyCommand(shellState, jcut::SetExportFormatCommand{formats[formatIndex]});
             }
@@ -461,13 +481,18 @@ void drawInspectorTab21(
                     shellState->statusMessage = "export cancellation requested";
                 }
             } else {
+                ImGui::BeginDisabled(!exportValidationError.empty());
                 if (ImGui::Button("Export")) {
                     if (requestExportRender(shellState)) {
                         shellState->statusMessage = "export started";
                     } else {
-                        shellState->statusMessage = "export already running";
+                        shellState->statusMessage =
+                            shellState->statusMessage.empty()
+                                ? "export could not start"
+                                : shellState->statusMessage;
                     }
                 }
+                ImGui::EndDisabled();
                 if (exportHasProgress || !exportResult.message.empty()) {
                     ImGui::Separator();
                     ImGui::Text("Frames %lld",

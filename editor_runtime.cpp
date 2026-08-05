@@ -1791,6 +1791,7 @@ bool recordsUndoHistory(const jcut::EditorCommand& command)
                    std::is_same_v<T, jcut::SetClipSourceTransformLockedCommand> ||
                    std::is_same_v<T, jcut::SetClipSpeakerFramingCommand> ||
                    std::is_same_v<T, jcut::SetClipSpeakerSectionMinimumWordsCommand> ||
+                   std::is_same_v<T, jcut::SetClipSelectedFaceTrackIdsCommand> ||
                    std::is_same_v<T, jcut::UpsertSpeakerFramingEnabledKeyframeCommand> ||
                    std::is_same_v<T, jcut::UpsertSpeakerFramingKeyframeCommand> ||
                    std::is_same_v<T, jcut::UpsertSpeakerFramingTargetKeyframeCommand> ||
