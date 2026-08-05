@@ -19,6 +19,12 @@ std::string operatingSystemId() {
 } // namespace
 
 RuntimeCapabilities detectRuntimeCapabilities() {
+  return detectRuntimeCapabilities(false, {});
+}
+
+RuntimeCapabilities detectRuntimeCapabilities(
+    bool sharedGpuRendererAvailable,
+    const std::string& sharedGpuRendererStatus) {
   RuntimeCapabilities result;
   result.operatingSystem = operatingSystemId();
   result.videoDecodeBackends = jcut::detectedVideoDecodeCapabilities();
@@ -58,11 +64,47 @@ RuntimeCapabilities detectRuntimeCapabilities() {
 #endif
   result.audioOutputBackends.push_back(rtaudio);
 
+  RenderExportBackendCapability sharedGpu;
+  sharedGpu.kind = RenderExportBackendKind::SharedGpu;
+  sharedGpu.id = "shared_gpu";
+  sharedGpu.label = "Shared GPU Renderer";
+  sharedGpu.operatingSystem = result.operatingSystem;
+  sharedGpu.compiled = true;
+  sharedGpu.operatingSystemSupported = true;
+  sharedGpu.preference = 100;
+  sharedGpu.available = sharedGpuRendererAvailable;
+  sharedGpu.reason = sharedGpuRendererAvailable
+      ? "preferred accelerated export backend"
+      : (sharedGpuRendererStatus.empty()
+             ? "shared GPU renderer is unavailable"
+             : sharedGpuRendererStatus);
+  result.renderExportBackends.push_back(sharedGpu);
+
+  RenderExportBackendCapability standaloneCpu;
+  standaloneCpu.kind = RenderExportBackendKind::StandaloneCpu;
+  standaloneCpu.id = "standalone_cpu";
+  standaloneCpu.label = "Standalone CPU Renderer";
+  standaloneCpu.operatingSystem = result.operatingSystem;
+  standaloneCpu.compiled = true;
+  standaloneCpu.operatingSystemSupported = true;
+  standaloneCpu.preference = 50;
+  standaloneCpu.available = true;
+  standaloneCpu.reason =
+      "portable fallback export backend when shared GPU export is unavailable";
+  result.renderExportBackends.push_back(standaloneCpu);
+
   std::stable_sort(
       result.audioOutputBackends.begin(),
       result.audioOutputBackends.end(),
       [](const AudioOutputBackendCapability& left,
          const AudioOutputBackendCapability& right) {
+        return left.preference > right.preference;
+      });
+  std::stable_sort(
+      result.renderExportBackends.begin(),
+      result.renderExportBackends.end(),
+      [](const RenderExportBackendCapability& left,
+         const RenderExportBackendCapability& right) {
         return left.preference > right.preference;
       });
   return result;
@@ -107,4 +149,20 @@ selectBestAudioOutputBackend(const AudioOutputBackendConfig& config) {
     break;
   }
   return selection;
+}
+
+const RenderExportBackendCapability*
+selectPreferredRenderExportBackend(
+    const RuntimeCapabilities& capabilities) {
+  for (const RenderExportBackendCapability& capability :
+       capabilities.renderExportBackends) {
+    if (capability.compiled &&
+        capability.operatingSystemSupported &&
+        capability.available) {
+      return &capability;
+    }
+  }
+  return capabilities.renderExportBackends.empty()
+      ? nullptr
+      : &capabilities.renderExportBackends.front();
 }

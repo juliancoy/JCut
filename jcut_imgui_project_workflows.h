@@ -1,5 +1,27 @@
 #pragma once
 
+std::string validateExportRequest(
+    const jcut::EditorDocumentCore& document)
+{
+    if (document.tracks.empty() || document.clips.empty()) {
+        return "export requires at least one track and clip";
+    }
+    if (!document.exportRequest.outputSize.valid()) {
+        return "export output size is invalid";
+    }
+    if (document.exportRequest.outputPath.empty()) {
+        return "export output path is empty";
+    }
+    if (document.exportRequest.outputFormat.empty()) {
+        return "export format is empty";
+    }
+    if (document.exportRequest.exportEndFrame <
+        document.exportRequest.exportStartFrame) {
+        return "export range end is before export range start";
+    }
+    return {};
+}
+
 void requestPreviewRender(ShellState* shellState)
 {
     jcut::EditorDocumentCore snapshot;
@@ -42,6 +64,8 @@ bool commitExportOutputPathDraft(ShellState* shellState)
 bool requestExportRender(ShellState* shellState)
 {
     if (!commitExportOutputPathDraft(shellState)) {
+        shellState->statusMessage =
+            "could not commit export output path";
         return false;
     }
     jcut::EditorDocumentCore snapshot;
@@ -49,8 +73,15 @@ bool requestExportRender(ShellState* shellState)
         std::lock_guard<std::mutex> runtimeLock(shellState->runtimeMutex);
         snapshot = shellState->runtime.snapshot();
     }
+    const std::string validationError =
+        validateExportRequest(snapshot);
+    if (!validationError.empty()) {
+        shellState->statusMessage = validationError;
+        return false;
+    }
     std::lock_guard<std::mutex> lock(shellState->exportMutex);
     if (shellState->exportRunning || shellState->exportRequested) {
+        shellState->statusMessage = "export already running";
         return false;
     }
     shellState->exportDocument = snapshot;
@@ -867,4 +898,3 @@ void finishRuntimeHistoryTransactionIfIdle(ShellState* shellState)
     }
     endRuntimeHistoryTransaction(shellState);
 }
-

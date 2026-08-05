@@ -1437,6 +1437,7 @@ target_include_directories(jcut_imgui_application PRIVATE
     ${X11_INCLUDE_DIR}
 )
 target_link_libraries(jcut_imgui_application PRIVATE
+    jcut_audio_output_backend
     jcut_imgui_runtime
     Vulkan::Vulkan
     ${X11_LIBRARIES}

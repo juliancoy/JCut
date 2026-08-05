@@ -9,6 +9,7 @@
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QSignalBlocker>
+#include <QWidget>
 
 #include <cmath>
 
@@ -55,6 +56,39 @@ bool isSafeRenderCacheRoot(const QString& path)
            QDir(absolutePath).isAbsolute() &&
            info.fileName().endsWith(QStringLiteral(".jcut-render-cache")) &&
            info.fileName().size() > QStringLiteral(".jcut-render-cache").size();
+}
+
+QWidget* outputDialogParent(const OutputTab::Widgets& widgets)
+{
+    if (widgets.renderButton && widgets.renderButton->window()) {
+        return widgets.renderButton->window();
+    }
+    if (widgets.outputFormatCombo && widgets.outputFormatCombo->window()) {
+        return widgets.outputFormatCombo->window();
+    }
+    if (widgets.outputWidthSpin && widgets.outputWidthSpin->window()) {
+        return widgets.outputWidthSpin->window();
+    }
+    return nullptr;
+}
+
+QString chooseRenderOutputPath(QWidget* parent,
+                               const QString& title,
+                               const QString& defaultPath,
+                               const QString& outputFormat)
+{
+    QFileDialog dialog(parent, title, defaultPath);
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setFileMode(QFileDialog::AnyFile);
+    dialog.setNameFilter(
+        QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
+    dialog.selectFile(defaultPath);
+    dialog.setOption(QFileDialog::DontUseNativeDialog, true);
+    if (dialog.exec() != QDialog::Accepted) {
+        return QString();
+    }
+    const QStringList selectedFiles = dialog.selectedFiles();
+    return selectedFiles.isEmpty() ? QString() : selectedFiles.constFirst();
 }
 
 } // namespace
@@ -473,18 +507,19 @@ void OutputTab::renderFromInspector()
         }
     }
 
+    QWidget* const dialogParent = outputDialogParent(m_widgets);
     QString selectedPath = rememberedPath;
     if (selectedPath.isEmpty()) {
-        selectedPath = QFileDialog::getSaveFileName(
-            nullptr,
+        selectedPath = chooseRenderOutputPath(
+            dialogParent,
             QStringLiteral("Render Output"),
             defaultPath,
-            QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
+            outputFormat);
         if (selectedPath.isEmpty()) {
             return;
         }
     } else if (QFileInfo::exists(selectedPath)) {
-        QMessageBox prompt;
+        QMessageBox prompt(dialogParent);
         prompt.setIcon(QMessageBox::Question);
         prompt.setWindowTitle(QStringLiteral("Render Output"));
         prompt.setText(QStringLiteral("Use the previous render target?"));
@@ -496,11 +531,11 @@ void OutputTab::renderFromInspector()
         prompt.exec();
 
         if (prompt.clickedButton() == chooseNewButton) {
-            selectedPath = QFileDialog::getSaveFileName(
-                nullptr,
+            selectedPath = chooseRenderOutputPath(
+                dialogParent,
                 QStringLiteral("Render Output"),
                 defaultPath,
-                QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
+                outputFormat);
             if (selectedPath.isEmpty()) {
                 return;
             }

@@ -3,6 +3,7 @@
 #include "ai_credential_store_core.h"
 #include "ai_gateway_core.h"
 #include "birefnet_job_core.h"
+#include "capabilities_detector.h"
 #include "editor_auto_oppose_core.h"
 #include "editor_document_core_json.h"
 #include "editor_grading_core.h"
@@ -1210,6 +1211,33 @@ void changeUiFontSize(ShellState* shellState, float delta)
     applyUiFontScale(*shellState);
     saveUiPreferences(*shellState);
     shellState->statusMessage = "UI font size " + std::to_string(static_cast<int>(std::lround(nextSize))) + "px";
+}
+
+struct ImGuiExportBackendDecision {
+    bool useSharedGpu = false;
+    std::string label = "Standalone CPU Renderer";
+    std::string reason =
+        "portable fallback export backend when shared GPU export is unavailable";
+};
+
+ImGuiExportBackendDecision decideImGuiExportBackend(
+    ShellState* shellState)
+{
+    const RuntimeCapabilities capabilities =
+        detectRuntimeCapabilities(
+            shellState && shellState->gpuRenderer.available(),
+            shellState ? shellState->gpuRenderer.status() : std::string{});
+    const RenderExportBackendCapability* capability =
+        selectPreferredRenderExportBackend(capabilities);
+    if (!capability) {
+        return {};
+    }
+    ImGuiExportBackendDecision decision;
+    decision.useSharedGpu =
+        capability->kind == RenderExportBackendKind::SharedGpu;
+    decision.label = capability->label;
+    decision.reason = capability->reason;
+    return decision;
 }
 
 #include "jcut_imgui_project_workflows.h"
