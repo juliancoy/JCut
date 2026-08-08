@@ -55,7 +55,7 @@ QHash<QString, QPixmap>& hoverSpeakerImageCache()
     return cache;
 }
 
-const VulkanPreviewClipFrameStatus* presentedFrameStatusForClip(const PreviewInteractionState* state,
+const VulkanPreviewClipFrameStatus* presentedFrameStatusForClip(const PreviewRenderSnapshot* state,
                                                                 const QString& clipId)
 {
     if (!state) {
@@ -71,7 +71,7 @@ const VulkanPreviewClipFrameStatus* presentedFrameStatusForClip(const PreviewInt
 }
 
 int64_t transcriptFrameForClipAtPreviewState(const TimelineClip& clip,
-                                             const PreviewInteractionState* state)
+                                             const PreviewRenderSnapshot* state)
 {
     if (const VulkanPreviewClipFrameStatus* status =
             presentedFrameStatusForClip(state, clip.id)) {
@@ -88,7 +88,7 @@ int64_t transcriptFrameForClipAtPreviewState(const TimelineClip& clip,
 }
 
 int64_t mediaSourceFrameForClipAtPreviewState(const TimelineClip& clip,
-                                              const PreviewInteractionState* state)
+                                              const PreviewRenderSnapshot* state)
 {
     if (const VulkanPreviewClipFrameStatus* status =
             presentedFrameStatusForClip(state, clip.id)) {
@@ -393,7 +393,7 @@ QPixmap fallbackSpeakerAvatar(const QString& speakerId, const QString& displayNa
     return avatar;
 }
 
-QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* state)
+QList<TimelineClip> activeAudioClipsForState(const PreviewRenderSnapshot* state)
 {
     QList<TimelineClip> active;
     if (!state) {
@@ -427,7 +427,7 @@ QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* stat
     return active;
 }
 
-CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* state)
+CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewRenderSnapshot* state)
 {
     if (!state) {
         return {};
@@ -494,7 +494,7 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
     return {};
 }
 
-QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* state)
+QJsonObject currentSpeakerLabelDebugForState(const PreviewRenderSnapshot* state)
 {
     QJsonObject debug;
     if (!state) {
@@ -655,7 +655,7 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
     return debug;
 }
 
-render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(const PreviewInteractionState* state)
+render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(const PreviewRenderSnapshot* state)
 {
     render_detail::SpeakerLabelOverlaySpec spec;
     if (!state) {

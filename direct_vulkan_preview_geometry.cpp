@@ -58,7 +58,7 @@ VkClearValue clipColor(const TimelineClip& clip, int ordinal, bool selected)
     return clear;
 }
 
-const VulkanPreviewClipFrameStatus* frameStatusForClip(const PreviewInteractionState* state, const QString& clipId)
+const VulkanPreviewClipFrameStatus* frameStatusForClip(const PreviewRenderSnapshot* state, const QString& clipId)
 {
     if (!state) {
         return nullptr;
@@ -102,7 +102,7 @@ VkClearValue clipColorForStatus(const TimelineClip& clip,
     return clear;
 }
 
-VkClearValue facedetectionsOverlayColor(const PreviewInteractionState* state,
+VkClearValue facedetectionsOverlayColor(const PreviewRenderSnapshot* state,
                                    const VulkanPreviewFacestreamOverlay& overlay)
 {
     if (overlay.source.compare(QStringLiteral("raw_detection"), Qt::CaseInsensitive) == 0) {
@@ -200,7 +200,7 @@ VkClearRect faceDetectionBoxToSwapchainRect(const QRectF& normalizedBox,
     return clearRectFromQRect(marker, swapSize);
 }
 
-const TimelineClip* selectedClipForTargetBox(const PreviewInteractionState* state)
+const TimelineClip* selectedClipForTargetBox(const PreviewRenderSnapshot* state)
 {
     if (!state) {
         return nullptr;

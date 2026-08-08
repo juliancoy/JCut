@@ -518,7 +518,7 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
     ++m_timelineClipRevision;
     m_clipParentChildRelationships.rebuild(m_interaction.clips, m_timelineClipRevision);
     m_interaction.clipCount = clips.size();
-    if (m_interaction.transient.dragMode == PreviewDragMode::None &&
+    if (m_interaction.ui.dragMode == PreviewDragMode::None &&
         (m_interaction.transient.transformOverrideActive ||
          m_interaction.transient.transcriptOverrideActive)) {
         jcut::direct_vulkan_preview::clearVulkanDragOverrides(&m_interaction);
@@ -1170,9 +1170,9 @@ void VulkanPreviewSurface::setTranscriptOverlayInteractionEnabled(bool enabled)
         return;
     }
     m_interaction.transcriptOverlayInteractionEnabled = enabled;
-    if (!enabled && m_interaction.transient.dragMode != PreviewDragMode::None) {
-        m_interaction.transient.dragMode = PreviewDragMode::None;
-        m_interaction.transient.dragOriginBounds = QRectF();
+    if (!enabled && m_interaction.ui.dragMode != PreviewDragMode::None) {
+        m_interaction.ui.dragMode = PreviewDragMode::None;
+        m_interaction.ui.dragOriginBounds = QRectF();
     }
     requestNativeUpdate();
 }
@@ -1192,8 +1192,8 @@ void VulkanPreviewSurface::setTitleOverlayInteractionOnly(bool enabled)
             }
         }
         if (!selectedClipIsTitle) {
-            m_interaction.transient.dragMode = PreviewDragMode::None;
-            m_interaction.transient.dragOriginBounds = QRectF();
+            m_interaction.ui.dragMode = PreviewDragMode::None;
+            m_interaction.ui.dragOriginBounds = QRectF();
         }
     }
     requestNativeUpdate();
@@ -1209,8 +1209,8 @@ void VulkanPreviewSurface::setFaceDetectionsAssignmentInteractionEnabled(bool en
     m_interaction.transient.hoveredFaceDetectionsClipId.clear();
     m_interaction.transient.hoveredFaceDetectionsId.clear();
     if (enabled) {
-        m_interaction.transient.dragMode = PreviewDragMode::None;
-        m_interaction.transient.dragOriginBounds = QRectF();
+        m_interaction.ui.dragMode = PreviewDragMode::None;
+        m_interaction.ui.dragOriginBounds = QRectF();
     }
     refreshFacestreamOverlays();
     requestNativeUpdate();
@@ -1253,7 +1253,7 @@ bool VulkanPreviewSurface::faceStreamAssignmentInteractionEnabled() const
 
 void VulkanPreviewSurface::setCorrectionDraftPoints(const QVector<QPointF>& points)
 {
-    m_interaction.transient.correctionDraftPoints = points;
+    m_interaction.ui.correctionDraftPoints = points;
     requestNativeUpdate();
 }
 

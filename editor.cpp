@@ -172,6 +172,10 @@ void EditorWindow::startupProfileMark(const QString& phase, const QJsonObject& e
         mark[QStringLiteral("extra")] = extra;
     }
     m_startupProfileEvents.push_back(mark);
+    if (phase == QStringLiteral("startup_load.complete")) {
+        m_startupProfileCompletedMs = nowMs;
+        m_startupProfileCompleted = true;
+    }
     startupReadinessMark(phase, extra);
 }
 
@@ -198,10 +202,16 @@ void EditorWindow::startupReadinessMark(const QString& phase, const QJsonObject&
             milestones.removeAt(0);
         }
         m_startupReadinessSnapshot[QStringLiteral("started")] = true;
-        m_startupReadinessSnapshot[QStringLiteral("completed")] = m_startupProfileCompleted;
+        const bool completed =
+            phase == QStringLiteral("startup_load.complete") ||
+            m_startupProfileCompleted;
+        m_startupReadinessSnapshot[QStringLiteral("completed")] = completed;
         m_startupReadinessSnapshot[QStringLiteral("ready_to_play")] = false;
         m_startupReadinessSnapshot[QStringLiteral("last_phase")] = phase;
         m_startupReadinessSnapshot[QStringLiteral("elapsed_ms")] = nowMs;
+        m_startupReadinessSnapshot[QStringLiteral("total_ms")] = nowMs;
+        m_startupReadinessSnapshot[QStringLiteral("note")] = QStringLiteral(
+            "Cheap startup/readiness trace. It is safe for REST fast snapshots and does not require a live UI profile.");
         m_startupReadinessSnapshot[QStringLiteral("milestones")] = milestones;
 
         const QJsonObject previousReadiness =

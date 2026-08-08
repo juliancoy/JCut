@@ -47,6 +47,8 @@
 #include <QMenu>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointer>
+#include <QThread>
 #include <QWheelEvent>
 #include <QTransform>
 #include <QVulkanFunctions>
@@ -137,7 +139,7 @@ void drawOutputPlacementGuides(QVulkanDeviceFunctions* funcs,
     }
 }
 
-bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& transient,
+bool computeVulkanVisualResizeTransform(const PreviewInteractionUiState& ui,
                                         PreviewDragMode dragMode,
                                         const QPointF& surfacePosition,
                                         const QPointF& previewScale,
@@ -148,49 +150,49 @@ bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& 
         (dragMode != PreviewDragMode::ResizeX &&
          dragMode != PreviewDragMode::ResizeY &&
          dragMode != PreviewDragMode::ResizeBoth) ||
-        transient.dragOriginBounds.width() <= 1.0 ||
-        transient.dragOriginBounds.height() <= 1.0) {
+        ui.dragOriginBounds.width() <= 1.0 ||
+        ui.dragOriginBounds.height() <= 1.0) {
         return false;
     }
 
-    qreal scaleX = transient.dragOriginTransform.scaleX;
-    qreal scaleY = transient.dragOriginTransform.scaleY;
+    qreal scaleX = ui.dragOriginTransform.scaleX;
+    qreal scaleY = ui.dragOriginTransform.scaleY;
     if (dragMode == PreviewDragMode::ResizeX ||
         dragMode == PreviewDragMode::ResizeBoth) {
         const qreal factorX =
-            (transient.dragOriginBounds.width() +
-             (surfacePosition.x() - transient.dragOriginPos.x())) /
-            transient.dragOriginBounds.width();
-        scaleX = sanitizeScaleValue(transient.dragOriginTransform.scaleX * factorX);
+            (ui.dragOriginBounds.width() +
+             (surfacePosition.x() - ui.dragOriginPos.x())) /
+            ui.dragOriginBounds.width();
+        scaleX = sanitizeScaleValue(ui.dragOriginTransform.scaleX * factorX);
     }
     if (dragMode == PreviewDragMode::ResizeY ||
         dragMode == PreviewDragMode::ResizeBoth) {
         const qreal factorY =
-            (transient.dragOriginBounds.height() +
-             (surfacePosition.y() - transient.dragOriginPos.y())) /
-            transient.dragOriginBounds.height();
-        scaleY = sanitizeScaleValue(transient.dragOriginTransform.scaleY * factorY);
+            (ui.dragOriginBounds.height() +
+             (surfacePosition.y() - ui.dragOriginPos.y())) /
+            ui.dragOriginBounds.height();
+        scaleY = sanitizeScaleValue(ui.dragOriginTransform.scaleY * factorY);
     }
     if (dragMode == PreviewDragMode::ResizeBoth) {
         const qreal factorX =
-            (transient.dragOriginBounds.width() +
-             (surfacePosition.x() - transient.dragOriginPos.x())) /
-            transient.dragOriginBounds.width();
+            (ui.dragOriginBounds.width() +
+             (surfacePosition.x() - ui.dragOriginPos.x())) /
+            ui.dragOriginBounds.width();
         const qreal factorY =
-            (transient.dragOriginBounds.height() +
-             (surfacePosition.y() - transient.dragOriginPos.y())) /
-            transient.dragOriginBounds.height();
+            (ui.dragOriginBounds.height() +
+             (surfacePosition.y() - ui.dragOriginPos.y())) /
+            ui.dragOriginBounds.height();
         const qreal uniformFactor =
             std::abs(factorX) >= std::abs(factorY) ? factorX : factorY;
-        scaleX = sanitizeScaleValue(transient.dragOriginTransform.scaleX * uniformFactor);
-        scaleY = sanitizeScaleValue(transient.dragOriginTransform.scaleY * uniformFactor);
+        scaleX = sanitizeScaleValue(ui.dragOriginTransform.scaleX * uniformFactor);
+        scaleY = sanitizeScaleValue(ui.dragOriginTransform.scaleY * uniformFactor);
     }
 
     const QPointF translation = PreviewViewTransform::translationForAnchoredResize(
-        QPointF(transient.dragOriginTransform.translationX, transient.dragOriginTransform.translationY),
-        QPointF(transient.dragOriginTransform.scaleX, transient.dragOriginTransform.scaleY),
+        QPointF(ui.dragOriginTransform.translationX, ui.dragOriginTransform.translationY),
+        QPointF(ui.dragOriginTransform.scaleX, ui.dragOriginTransform.scaleY),
         QPointF(scaleX, scaleY),
-        transient.dragOriginBounds,
+        ui.dragOriginBounds,
         (dragMode == PreviewDragMode::ResizeX
              ? PreviewResizeAnchor::Left
              : (dragMode == PreviewDragMode::ResizeY
@@ -198,7 +200,7 @@ bool computeVulkanVisualResizeTransform(const PreviewInteractionTransientState& 
                     : PreviewResizeAnchor::TopLeft)),
         clipPixelSizeIsKnown ? previewScale : QPointF(1.0, 1.0));
 
-    TimelineClip::TransformKeyframe transform = transient.dragOriginTransform;
+    TimelineClip::TransformKeyframe transform = ui.dragOriginTransform;
     transform.scaleX = scaleX;
     transform.scaleY = scaleY;
     transform.translationX = translation.x();
@@ -479,6 +481,16 @@ public:
     {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         m_updateDirty = true;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->previewUpdateDirty.store(
+                true, std::memory_order_relaxed);
+            m_presentationTelemetry->previewWindowExposed.store(
+                isExposed(), std::memory_order_relaxed);
+            m_presentationTelemetry->previewFrameInProgress.store(
+                m_frameInProgress, std::memory_order_relaxed);
+            m_presentationTelemetry->previewUpdatePosted.store(
+                m_updateRequestPosted, std::memory_order_relaxed);
+        }
         if (!isExposed()) {
             if (!m_updateDeferredWhileNotExposed && m_stats) {
                 ++m_stats->previewUpdatesDeferredWhileNotExposed;
@@ -488,30 +500,44 @@ public:
         }
         m_updateDeferredWhileNotExposed = false;
         if (m_frameInProgress) {
-            if (m_frameRequestMs >= 0 &&
+            if (m_frameRequestMs < 0 ||
                 nowMs - m_frameRequestMs > kStalePreviewUpdateRecoveryMs) {
                 if (m_stats) {
                     ++m_stats->stalePreviewUpdateRecoveries;
                     m_stats->lastStalePreviewUpdateAgeMs =
-                        static_cast<double>(nowMs - m_frameRequestMs);
+                        m_frameRequestMs >= 0
+                            ? static_cast<double>(nowMs - m_frameRequestMs)
+                            : -1.0;
                 }
                 m_frameInProgress = false;
                 m_frameRequestMs = -1;
                 m_updateRequestPosted = false;
+                if (m_presentationTelemetry) {
+                    m_presentationTelemetry->previewFrameInProgress.store(
+                        false, std::memory_order_relaxed);
+                    m_presentationTelemetry->previewUpdatePosted.store(
+                        false, std::memory_order_relaxed);
+                }
             } else {
                 return;
             }
         }
         if (m_updateRequestPosted &&
-            m_updateRequestMs >= 0 &&
-            nowMs - m_updateRequestMs > kStalePreviewUpdateRecoveryMs) {
+            (m_updateRequestMs < 0 ||
+             nowMs - m_updateRequestMs > kStalePreviewUpdateRecoveryMs)) {
             if (m_stats) {
                 ++m_stats->stalePreviewUpdateRecoveries;
                 m_stats->lastStalePreviewUpdateAgeMs =
-                    static_cast<double>(nowMs - m_updateRequestMs);
+                    m_updateRequestMs >= 0
+                        ? static_cast<double>(nowMs - m_updateRequestMs)
+                        : -1.0;
             }
             m_updateRequestPosted = false;
             m_updateRequestMs = -1;
+            if (m_presentationTelemetry) {
+                m_presentationTelemetry->previewUpdatePosted.store(
+                    false, std::memory_order_relaxed);
+            }
         }
         if (m_updateRequestPosted) {
             return;
@@ -521,6 +547,10 @@ public:
         if (m_presentationTelemetry) {
             m_presentationTelemetry->previewUpdateRequests.fetch_add(
                 1, std::memory_order_relaxed);
+            m_presentationTelemetry->lastPreviewUpdateRequestMs.store(
+                nowMs, std::memory_order_relaxed);
+            m_presentationTelemetry->previewUpdatePosted.store(
+                true, std::memory_order_relaxed);
         }
         // Diagnostic: JCUT_DEBUG_UPDATE_STORM=1 dumps who keeps re-arming
         // preview updates (first 40 requests). Off by default.
@@ -674,7 +704,7 @@ protected:
                     surfacePosition,
                     m_faceStreamBoxFocusClearRequested,
                     m_faceStreamBoxClickStatus)) {
-                m_state->transient.faceDetectionsRightClickHandled = true;
+                m_state->ui.faceDetectionsRightClickHandled = true;
                 schedulePreviewUpdate();
                 event->accept();
                 return;
@@ -698,9 +728,10 @@ protected:
         }
         const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
 
+        PreviewInteractionUiState& ui = m_state->ui;
         PreviewInteractionTransientState& transient = m_state->transient;
         VulkanInteractionOverlayInfo selectedInfo;
-        transient.dragMode = PreviewDragMode::None;
+        ui.dragMode = PreviewDragMode::None;
 
         if (m_state->correctionDrawMode) {
             QString hitClipId = m_state->selectedClipId;
@@ -781,10 +812,10 @@ protected:
                 selectedInfo.bounds.isValid() &&
                 selectedInfo.bounds.width() > 1.0 &&
                 selectedInfo.bounds.height() > 1.0) {
-                transient.speakerPickDragActive = true;
-                transient.speakerPickClipId = hitClipId;
-                transient.speakerPickStartPos = surfacePosition;
-                transient.speakerPickCurrentPos = surfacePosition;
+                ui.speakerPickDragActive = true;
+                ui.speakerPickClipId = hitClipId;
+                ui.speakerPickStartPos = surfacePosition;
+                ui.speakerPickCurrentPos = surfacePosition;
                 if (m_state->selectedClipId != hitClipId) {
                     m_state->selectedClipId = hitClipId;
                     if (m_selectionRequested) {
@@ -820,22 +851,22 @@ protected:
                     selectedInfo.kind != PreviewOverlayKind::TranscriptOverlay ||
                     m_state->transcriptOverlayInteractionEnabled;
                 if (!selectedInfoInteractive) {
-                    m_state->transient.dragMode = PreviewDragMode::None;
+                    m_state->ui.dragMode = PreviewDragMode::None;
                 } else if (selectedInfo.cornerHandle.contains(surfacePosition)) {
-                    transient.dragMode = PreviewDragMode::ResizeBoth;
+                    ui.dragMode = PreviewDragMode::ResizeBoth;
                 } else if (selectedInfo.rightHandle.contains(surfacePosition)) {
-                    transient.dragMode = PreviewDragMode::ResizeX;
+                    ui.dragMode = PreviewDragMode::ResizeX;
                 } else if (selectedInfo.bottomHandle.contains(surfacePosition)) {
-                    transient.dragMode = PreviewDragMode::ResizeY;
+                    ui.dragMode = PreviewDragMode::ResizeY;
                 } else if (selectedInfo.bounds.contains(surfacePosition)) {
-                    transient.dragMode = PreviewDragMode::Move;
+                    ui.dragMode = PreviewDragMode::Move;
                 }
-                if (allowSelectedClipDrag && transient.dragMode != PreviewDragMode::None) {
+                if (allowSelectedClipDrag && ui.dragMode != PreviewDragMode::None) {
                     const auto originTransform = currentTransformForVulkanClip(m_state, m_state->selectedClipId);
-                    transient.dragOriginPos = surfacePosition;
-                    transient.dragOriginTransform = originTransform;
-                    transient.dragOriginBounds = selectedInfo.bounds;
-                    transient.dragOriginTranscriptTranslation = QPointF();
+                    ui.dragOriginPos = surfacePosition;
+                    ui.dragOriginTransform = originTransform;
+                    ui.dragOriginBounds = selectedInfo.bounds;
+                    ui.dragOriginTranscriptTranslation = QPointF();
                     transient.transformOverrideActive = false;
                     transient.transformOverrideClipId.clear();
                     transient.transcriptOverrideActive = false;
@@ -843,7 +874,7 @@ protected:
                     if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
                         const TimelineClip* selectedClip = clipForId(m_state, m_state->selectedClipId);
                         if (selectedClip) {
-                            transient.dragOriginTranscriptTranslation =
+                            ui.dragOriginTranscriptTranslation =
                                 QPointF(selectedClip->transcriptOverlay.placement.translationX,
                                         selectedClip->transcriptOverlay.placement.translationY);
                             transient.transcriptSizeOverride =
@@ -876,12 +907,12 @@ protected:
             if (clipIdIsTitleForVulkan(m_state, hitClipId) &&
                 lookupVulkanInteractionInfo(infos, hitClipId, &hitInfo) &&
                 hitInfo.bounds.contains(surfacePosition)) {
-                transient.dragMode = PreviewDragMode::Move;
-                transient.dragOriginPos = surfacePosition;
-                transient.dragOriginTransform =
+                ui.dragMode = PreviewDragMode::Move;
+                ui.dragOriginPos = surfacePosition;
+                ui.dragOriginTransform =
                     currentTransformForVulkanClip(m_state, hitClipId);
-                transient.dragOriginBounds = hitInfo.bounds;
-                transient.dragOriginTranscriptTranslation = QPointF();
+                ui.dragOriginBounds = hitInfo.bounds;
+                ui.dragOriginTranscriptTranslation = QPointF();
                 transient.transformOverrideActive = false;
                 transient.transformOverrideClipId.clear();
                 transient.transcriptOverrideActive = false;
@@ -893,8 +924,8 @@ protected:
             return;
         }
 
-        transient.dragMode = PreviewDragMode::None;
-        transient.dragOriginBounds = QRectF();
+        ui.dragMode = PreviewDragMode::None;
+        ui.dragOriginBounds = QRectF();
         QWindow::mousePressEvent(event);
     }
 
@@ -907,7 +938,7 @@ protected:
         const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
         m_state->transient.lastMousePos = surfacePosition;
-        if (!(event->buttons() & Qt::LeftButton) || m_state->transient.dragMode == PreviewDragMode::None ||
+        if (!(event->buttons() & Qt::LeftButton) || m_state->ui.dragMode == PreviewDragMode::None ||
             m_state->selectedClipId.isEmpty()) {
             updatePreviewCursor(surfacePosition);
             schedulePreviewUpdate();
@@ -933,15 +964,15 @@ protected:
             return;
         }
 
-        const PreviewInteractionTransientState& transient = m_state->transient;
+        const PreviewInteractionUiState& ui = m_state->ui;
         const QPointF previewScale = viewTransform.outputScale();
         const QPointF safeScale(
             qMax<qreal>(0.0001, previewScale.x()),
             qMax<qreal>(0.0001, previewScale.y()));
 
-        if (m_state->transient.dragMode == PreviewDragMode::Move) {
+        if (m_state->ui.dragMode == PreviewDragMode::Move) {
             if (m_state->titleOverlayInteractionOnly && !clipIdIsTitleForVulkan(m_state, clipId)) {
-                m_state->transient.dragMode = PreviewDragMode::None;
+                m_state->ui.dragMode = PreviewDragMode::None;
                 QWindow::mouseMoveEvent(event);
                 return;
             }
@@ -951,25 +982,25 @@ protected:
                                                 : QSize(1080, 1920);
                 const qreal halfOutputWidth = qMax<qreal>(1.0, safeOutputSize.width() * 0.5);
                 const qreal halfOutputHeight = qMax<qreal>(1.0, safeOutputSize.height() * 0.5);
-                const qreal deltaX = (surfacePosition.x() - transient.dragOriginPos.x()) / safeScale.x();
-                const qreal deltaY = (surfacePosition.y() - transient.dragOriginPos.y()) / safeScale.y();
+                const qreal deltaX = (surfacePosition.x() - ui.dragOriginPos.x()) / safeScale.x();
+                const qreal deltaY = (surfacePosition.y() - ui.dragOriginPos.y()) / safeScale.y();
                 const qreal nextTranslationX =
                     qBound<qreal>(-1.0,
-                                  transient.dragOriginTranscriptTranslation.x() + (deltaX / halfOutputWidth),
+                                  ui.dragOriginTranscriptTranslation.x() + (deltaX / halfOutputWidth),
                                   1.0);
                 const qreal nextTranslationY =
                     qBound<qreal>(-1.0,
-                                  transient.dragOriginTranscriptTranslation.y() + (deltaY / halfOutputHeight),
+                                  ui.dragOriginTranscriptTranslation.y() + (deltaY / halfOutputHeight),
                                   1.0);
                 m_state->transient.transcriptOverrideActive = true;
                 m_state->transient.transcriptOverrideClipId = clipId;
                 m_state->transient.transcriptTranslationOverride = QPointF(nextTranslationX, nextTranslationY);
             } else {
-                const qreal deltaX = (surfacePosition.x() - transient.dragOriginPos.x()) / safeScale.x();
-                const qreal deltaY = (surfacePosition.y() - transient.dragOriginPos.y()) / safeScale.y();
-                TimelineClip::TransformKeyframe overrideTransform = transient.dragOriginTransform;
-                overrideTransform.translationX = transient.dragOriginTransform.translationX + deltaX;
-                overrideTransform.translationY = transient.dragOriginTransform.translationY + deltaY;
+                const qreal deltaX = (surfacePosition.x() - ui.dragOriginPos.x()) / safeScale.x();
+                const qreal deltaY = (surfacePosition.y() - ui.dragOriginPos.y()) / safeScale.y();
+                TimelineClip::TransformKeyframe overrideTransform = ui.dragOriginTransform;
+                overrideTransform.translationX = ui.dragOriginTransform.translationX + deltaX;
+                overrideTransform.translationY = ui.dragOriginTransform.translationY + deltaY;
                 m_state->transient.transformOverrideActive = true;
                 m_state->transient.transformOverrideClipId = clipId;
                 m_state->transient.transformOverride = overrideTransform;
@@ -979,9 +1010,9 @@ protected:
             return;
         }
 
-        if (m_state->transient.speakerPickDragActive &&
+        if (m_state->ui.speakerPickDragActive &&
             (event->buttons() & Qt::LeftButton)) {
-            m_state->transient.speakerPickCurrentPos = surfacePosition;
+            m_state->ui.speakerPickCurrentPos = surfacePosition;
             schedulePreviewUpdate();
             event->accept();
             return;
@@ -993,8 +1024,8 @@ protected:
                                             : QSize(1080, 1920);
             const qreal halfOutputWidth = qMax<qreal>(1.0, safeOutputSize.width() * 0.5);
             const qreal halfOutputHeight = qMax<qreal>(1.0, safeOutputSize.height() * 0.5);
-            const QRectF originBounds = transient.dragOriginBounds.isValid()
-                                            ? transient.dragOriginBounds
+            const QRectF originBounds = ui.dragOriginBounds.isValid()
+                                            ? ui.dragOriginBounds
                                             : activeInfo.bounds;
             const qreal originWidth =
                 originBounds.width() / qMax<qreal>(0.0001, previewScale.x());
@@ -1002,32 +1033,32 @@ protected:
                 originBounds.height() / qMax<qreal>(0.0001, previewScale.y());
             qreal width = originWidth;
             qreal height = originHeight;
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeX ||
-                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
+            if (m_state->ui.dragMode == PreviewDragMode::ResizeX ||
+                m_state->ui.dragMode == PreviewDragMode::ResizeBoth) {
                 width = qMax<qreal>(80.0,
                                     originWidth +
-                                        ((surfacePosition.x() - transient.dragOriginPos.x()) /
+                                        ((surfacePosition.x() - ui.dragOriginPos.x()) /
                                          qMax<qreal>(0.0001, safeScale.x())));
             }
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeY ||
-                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
+            if (m_state->ui.dragMode == PreviewDragMode::ResizeY ||
+                m_state->ui.dragMode == PreviewDragMode::ResizeBoth) {
                 height = qMax<qreal>(40.0,
                                      originHeight +
-                                         ((surfacePosition.y() - transient.dragOriginPos.y()) /
+                                         ((surfacePosition.y() - ui.dragOriginPos.y()) /
                                           qMax<qreal>(0.0001, safeScale.y())));
             }
             m_state->transient.transcriptOverrideActive = true;
             m_state->transient.transcriptOverrideClipId = clipId;
-            QPointF translation = transient.dragOriginTranscriptTranslation;
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeX ||
-                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
+            QPointF translation = ui.dragOriginTranscriptTranslation;
+            if (m_state->ui.dragMode == PreviewDragMode::ResizeX ||
+                m_state->ui.dragMode == PreviewDragMode::ResizeBoth) {
                 translation.setX(qBound<qreal>(
                     -1.0,
                     translation.x() + (((width - originWidth) * 0.5) / halfOutputWidth),
                     1.0));
             }
-            if (m_state->transient.dragMode == PreviewDragMode::ResizeY ||
-                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
+            if (m_state->ui.dragMode == PreviewDragMode::ResizeY ||
+                m_state->ui.dragMode == PreviewDragMode::ResizeBoth) {
                 translation.setY(qBound<qreal>(
                     -1.0,
                     translation.y() + (((height - originHeight) * 0.5) / halfOutputHeight),
@@ -1037,8 +1068,8 @@ protected:
             m_state->transient.transcriptSizeOverride = QSizeF(width, height);
         } else {
             TimelineClip::TransformKeyframe overrideTransform;
-            if (computeVulkanVisualResizeTransform(transient,
-                                                   m_state->transient.dragMode,
+            if (computeVulkanVisualResizeTransform(ui,
+                                                   m_state->ui.dragMode,
                                                    surfacePosition,
                                                    previewScale,
                                                    activeInfo.clipPixelSize.isValid(),
@@ -1059,7 +1090,7 @@ protected:
             return;
         }
 
-        if (m_state->transient.dragMode != PreviewDragMode::None) {
+        if (m_state->ui.dragMode != PreviewDragMode::None) {
             const QString& clipId = m_state->selectedClipId;
             const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
                 this, PreviewSurfaceCoordinateSpace::DeviceSurface);
@@ -1075,14 +1106,14 @@ protected:
             const bool activeInfoIsTranscript =
                 lookupVulkanInteractionInfo(infos, clipId, &activeInfo) &&
                 activeInfo.kind == PreviewOverlayKind::TranscriptOverlay;
-            if (m_state->transient.dragMode == PreviewDragMode::Move) {
+            if (m_state->ui.dragMode == PreviewDragMode::Move) {
                 if (m_moveRequested) {
                     if (activeInfoIsTranscript) {
                         const QPointF translation =
                             m_state->transient.transcriptOverrideActive &&
                                     m_state->transient.transcriptOverrideClipId == clipId
                                 ? m_state->transient.transcriptTranslationOverride
-                                : m_state->transient.dragOriginTranscriptTranslation;
+                                : m_state->ui.dragOriginTranscriptTranslation;
                         m_moveRequested(clipId, translation.x(), translation.y(), true);
                     } else {
                         const TimelineClip::TransformKeyframe transform =
@@ -1104,7 +1135,7 @@ protected:
                         m_state->transient.transcriptOverrideActive &&
                                 m_state->transient.transcriptOverrideClipId == clipId
                             ? m_state->transient.transcriptTranslationOverride
-                            : m_state->transient.dragOriginTranscriptTranslation;
+                            : m_state->ui.dragOriginTranscriptTranslation;
                     m_transformRequested(clipId,
                                          translation.x(),
                                          translation.y(),
@@ -1121,8 +1152,8 @@ protected:
                             : TimelineClip::TransformKeyframe();
                     if (!hasResizeOverride) {
                         hasResizeOverride = computeVulkanVisualResizeTransform(
-                            m_state->transient,
-                            m_state->transient.dragMode,
+                            m_state->ui,
+                            m_state->ui.dragMode,
                             PreviewViewTransform::pointForWindowPoint(
                                 this,
                                 event->position(),
@@ -1135,10 +1166,10 @@ protected:
                         qWarning().noquote()
                             << QStringLiteral("[preview-transform-release] ok=false reason=missing_resize_override clip=%1 drag_mode=%2")
                                    .arg(clipId)
-                                   .arg(static_cast<int>(m_state->transient.dragMode));
-                        m_state->transient.dragMode = PreviewDragMode::None;
-                        m_state->transient.dragOriginBounds = QRectF();
-                        m_state->transient.dragOriginTranscriptTranslation = QPointF();
+                                   .arg(static_cast<int>(m_state->ui.dragMode));
+                        m_state->ui.dragMode = PreviewDragMode::None;
+                        m_state->ui.dragOriginBounds = QRectF();
+                        m_state->ui.dragOriginTranscriptTranslation = QPointF();
                         clearVulkanDragOverrides(m_state);
                         schedulePreviewUpdate();
                         event->accept();
@@ -1147,7 +1178,7 @@ protected:
                     qInfo().noquote()
                         << QStringLiteral("[preview-transform-release] ok=true clip=%1 drag_mode=%2 tx=%3 ty=%4 sx=%5 sy=%6")
                                .arg(clipId)
-                               .arg(static_cast<int>(m_state->transient.dragMode))
+                               .arg(static_cast<int>(m_state->ui.dragMode))
                                .arg(transform.translationX, 0, 'f', 3)
                                .arg(transform.translationY, 0, 'f', 3)
                                .arg(transform.scaleX, 0, 'f', 4)
@@ -1160,16 +1191,16 @@ protected:
                                          true);
                 }
             }
-            m_state->transient.dragMode = PreviewDragMode::None;
-            m_state->transient.dragOriginBounds = QRectF();
-            m_state->transient.dragOriginTranscriptTranslation = QPointF();
+            m_state->ui.dragMode = PreviewDragMode::None;
+            m_state->ui.dragOriginBounds = QRectF();
+            m_state->ui.dragOriginTranscriptTranslation = QPointF();
             clearVulkanDragOverrides(m_state);
             schedulePreviewUpdate();
             event->accept();
             return;
         }
-        if (m_state->transient.speakerPickDragActive) {
-            const QString clipId = m_state->transient.speakerPickClipId;
+        if (m_state->ui.speakerPickDragActive) {
+            const QString clipId = m_state->ui.speakerPickClipId;
             const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
                 this, PreviewSurfaceCoordinateSpace::DeviceSurface);
             const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
@@ -1177,10 +1208,10 @@ protected:
             const bool haveActiveInfo = lookupVulkanInteractionInfo(infos, clipId, &info);
             const QPointF endPos = PreviewViewTransform::pointForWindowPoint(
                 this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
-            m_state->transient.speakerPickCurrentPos = endPos;
+            m_state->ui.speakerPickCurrentPos = endPos;
             if (haveActiveInfo && info.bounds.isValid() &&
                 info.bounds.width() > 1.0 && info.bounds.height() > 1.0) {
-                const QPointF startNorm = mapScreenPointToNormalizedClipForVulkan(info, m_state->transient.speakerPickStartPos);
+                const QPointF startNorm = mapScreenPointToNormalizedClipForVulkan(info, m_state->ui.speakerPickStartPos);
                 const QPointF endNorm = mapScreenPointToNormalizedClipForVulkan(info, endPos);
                 const qreal dx = endNorm.x() - startNorm.x();
                 const qreal dy = endNorm.y() - startNorm.y();
@@ -1188,8 +1219,8 @@ protected:
                 if (dragDistance < 0.01 && m_speakerPointRequested) {
                     m_speakerPointRequested(clipId, startNorm.x(), startNorm.y());
                 } else if (m_speakerBoxRequested) {
-                    const qreal startScreenX = m_state->transient.speakerPickStartPos.x();
-                    const qreal startScreenY = m_state->transient.speakerPickStartPos.y();
+                    const qreal startScreenX = m_state->ui.speakerPickStartPos.x();
+                    const qreal startScreenY = m_state->ui.speakerPickStartPos.y();
                     const qreal endScreenX = endPos.x();
                     const qreal endScreenY = endPos.y();
                     const qreal sideScreenPx = qMax(qAbs(endScreenX - startScreenX),
@@ -1205,10 +1236,10 @@ protected:
                     m_speakerBoxRequested(clipId, cx, cy, side);
                 }
             }
-            m_state->transient.speakerPickDragActive = false;
-            m_state->transient.speakerPickClipId.clear();
-            m_state->transient.speakerPickStartPos = QPointF();
-            m_state->transient.speakerPickCurrentPos = QPointF();
+            m_state->ui.speakerPickDragActive = false;
+            m_state->ui.speakerPickClipId.clear();
+            m_state->ui.speakerPickStartPos = QPointF();
+            m_state->ui.speakerPickCurrentPos = QPointF();
             schedulePreviewUpdate();
             event->accept();
             return;
@@ -1247,10 +1278,19 @@ protected:
         }
 
         if (event->type() == QEvent::UpdateRequest) {
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
             m_updateRequestPosted = false;
             if (m_presentationTelemetry) {
                 m_presentationTelemetry->previewUpdateEventsDelivered.fetch_add(
                     1, std::memory_order_relaxed);
+                m_presentationTelemetry->lastPreviewUpdateEventMs.store(
+                    nowMs, std::memory_order_relaxed);
+                m_presentationTelemetry->previewUpdatePosted.store(
+                    false, std::memory_order_relaxed);
+                m_presentationTelemetry->previewWindowExposed.store(
+                    isExposed(), std::memory_order_relaxed);
+                m_presentationTelemetry->previewFrameInProgress.store(
+                    m_frameInProgress, std::memory_order_relaxed);
             }
             if (m_frameInProgress) {
                 schedulePreviewUpdate();
@@ -1264,7 +1304,9 @@ protected:
 
             renderNow();
             if (!m_frameInProgress) {
-                m_updateRequestMs = -1;
+                if (!m_updateRequestPosted) {
+                    m_updateRequestMs = -1;
+                }
                 if (m_updateDirty && !m_failureLatched) {
                     schedulePreviewUpdate();
                 }
@@ -1275,11 +1317,11 @@ protected:
         if (event->type() == QEvent::Leave) {
             if (m_state) {
                 m_state->transient.lastMousePos = QPointF(-10000.0, -10000.0);
-                m_state->transient.speakerPickCurrentPos = QPointF(-10000.0, -10000.0);
+                m_state->ui.speakerPickCurrentPos = QPointF(-10000.0, -10000.0);
                 m_state->transient.hoveredFaceDetectionsTrackId = -1;
                 m_state->transient.hoveredFaceDetectionsClipId.clear();
                 m_state->transient.hoveredFaceDetectionsId.clear();
-                if (!m_state->transient.speakerPickDragActive) {
+                if (!m_state->ui.speakerPickDragActive) {
                     unsetCursor();
                     schedulePreviewUpdate();
                 }
@@ -1297,8 +1339,8 @@ protected:
             const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
                 this, contextMenu->pos(), PreviewSurfaceCoordinateSpace::DeviceSurface);
             const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
-            if (m_state->transient.faceDetectionsRightClickHandled) {
-                m_state->transient.faceDetectionsRightClickHandled = false;
+            if (m_state->ui.faceDetectionsRightClickHandled) {
+                m_state->ui.faceDetectionsRightClickHandled = false;
                 contextMenu->accept();
                 return true;
             }
@@ -1346,15 +1388,15 @@ private:
         if (!m_state) {
             return;
         }
-        m_state->transient.speakerPickCurrentPos = position;
+        m_state->ui.speakerPickCurrentPos = position;
         const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
             this, PreviewSurfaceCoordinateSpace::DeviceSurface);
         const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
         const QString currentClipId = m_state->selectedClipId;
 
         if (m_state->correctionDrawMode) {
-            if (!m_state->transient.speakerPickHintClipId.isEmpty()) {
-                m_state->transient.speakerPickHintClipId.clear();
+            if (!m_state->ui.speakerPickHintClipId.isEmpty()) {
+                m_state->ui.speakerPickHintClipId.clear();
             }
             setCursor(Qt::CrossCursor);
             return;
@@ -1365,8 +1407,8 @@ private:
             (m_speakerPointRequested || m_speakerBoxRequested);
         const QString speakerPickHintClipId =
             speakerPickModifierActive ? clipIdAtPositionForVulkan(infos, position) : QString();
-        if (m_state->transient.speakerPickHintClipId != speakerPickHintClipId) {
-            m_state->transient.speakerPickHintClipId = speakerPickHintClipId;
+        if (m_state->ui.speakerPickHintClipId != speakerPickHintClipId) {
+            m_state->ui.speakerPickHintClipId = speakerPickHintClipId;
         }
         if (!speakerPickHintClipId.isEmpty()) {
             setCursor(Qt::CrossCursor);
@@ -1418,8 +1460,8 @@ private:
                     return;
                 }
                 if (selectedInfo.bounds.contains(position)) {
-                    setCursor(m_state->transient.dragMode == PreviewDragMode::Move ? Qt::ClosedHandCursor
-                                                                                  : Qt::OpenHandCursor);
+                    setCursor(m_state->ui.dragMode == PreviewDragMode::Move ? Qt::ClosedHandCursor
+                                                                            : Qt::OpenHandCursor);
                     return;
                 }
             }
@@ -1438,9 +1480,17 @@ public:
         m_frameRequestMs =
             m_updateRequestMs >= 0 ? m_updateRequestMs : nowMs;
         m_updateRequestMs = -1;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->previewFrameInProgress.store(
+                true, std::memory_order_relaxed);
+            m_presentationTelemetry->previewUpdateDirty.store(
+                false, std::memory_order_relaxed);
+            m_presentationTelemetry->previewWindowExposed.store(
+                isExposed(), std::memory_order_relaxed);
+        }
     }
     void markPresented(
-        const PreviewInteractionState* presentedState = nullptr,
+        const PreviewRenderSnapshot* presentedState = nullptr,
         const QSet<QString>* submittedClipIds = nullptr,
         const QSet<QString>* submittedCrossfadeClipIds = nullptr)
     {
@@ -1499,6 +1549,8 @@ public:
         if (m_presentationTelemetry) {
             m_presentationTelemetry->presentedFrames.fetch_add(
                 1, std::memory_order_relaxed);
+            m_presentationTelemetry->lastPresentedMs.store(
+                nowMs, std::memory_order_relaxed);
         }
         if (m_stats) {
             editor::accumulatePlaybackStageMetric(&m_stats->presentationStageMetric,
@@ -1520,9 +1572,10 @@ public:
     }
     void markPreviewUpdateDelivered()
     {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (m_frameRequestMs >= 0 && m_stats) {
             const double latencyMs =
-                static_cast<double>(QDateTime::currentMSecsSinceEpoch() - m_frameRequestMs);
+                static_cast<double>(nowMs - m_frameRequestMs);
             m_stats->lastPreviewUpdateLatencyMs = latencyMs;
             m_stats->maxPreviewUpdateLatencyMs =
                 std::max(m_stats->maxPreviewUpdateLatencyMs, latencyMs);
@@ -1530,9 +1583,19 @@ public:
         if (m_presentationTelemetry) {
             m_presentationTelemetry->previewUpdatesDelivered.fetch_add(
                 1, std::memory_order_relaxed);
+            m_presentationTelemetry->lastPreviewUpdateDeliveredMs.store(
+                nowMs, std::memory_order_relaxed);
         }
         m_frameInProgress = false;
         m_frameRequestMs = -1;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->previewFrameInProgress.store(
+                false, std::memory_order_relaxed);
+            m_presentationTelemetry->previewUpdateDirty.store(
+                m_updateDirty, std::memory_order_relaxed);
+            m_presentationTelemetry->previewWindowExposed.store(
+                isExposed(), std::memory_order_relaxed);
+        }
         if (m_updateDirty && isExposed()) {
             schedulePreviewUpdate();
         }
@@ -1541,13 +1604,6 @@ public:
     {
         m_presentationMissTracker.reset();
         m_lastPresentMs = 0;
-        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-        if (m_updateRequestMs >= 0) {
-            m_updateRequestMs = nowMs;
-        }
-        if (m_frameRequestMs >= 0) {
-            m_frameRequestMs = nowMs;
-        }
     }
     void setLatestVulkanReadbackImage(const QImage& image)
     {

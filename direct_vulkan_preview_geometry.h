@@ -24,14 +24,14 @@ void mvpForVulkanClipTransform(const QTransform& clipToSwapchain,
                                const QSize& swapSize,
                                float outMvp[16]);
 VkClearValue clipColor(const TimelineClip& clip, int ordinal, bool selected);
-const VulkanPreviewClipFrameStatus* frameStatusForClip(const PreviewInteractionState* state,
+const VulkanPreviewClipFrameStatus* frameStatusForClip(const PreviewRenderSnapshot* state,
                                                        const QString& clipId);
 QByteArray curveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade);
 VkClearValue clipColorForStatus(const TimelineClip& clip,
                                 int ordinal,
                                 bool selected,
                                 const VulkanPreviewClipFrameStatus* status);
-VkClearValue facedetectionsOverlayColor(const PreviewInteractionState* state,
+VkClearValue facedetectionsOverlayColor(const PreviewRenderSnapshot* state,
                                         const VulkanPreviewFacestreamOverlay& overlay);
 VkClearRect normalizedBoxToSwapchainRect(const QRectF& normalizedBox,
                                          const QTransform& clipToSwapchain,
@@ -42,7 +42,7 @@ VkClearRect faceDetectionBoxToSwapchainRect(const QRectF& normalizedBox,
                                             const QTransform& clipToSwapchain,
                                             const QRectF& localRect,
                                             const QSize& swapSize);
-const TimelineClip* selectedClipForTargetBox(const PreviewInteractionState* state);
+const TimelineClip* selectedClipForTargetBox(const PreviewRenderSnapshot* state);
 VkClearValue targetBoxOverlayColor();
 VkClearRect targetBoxRectForComposite(const TimelineClip& clip,
                                       int64_t timelineFrame,

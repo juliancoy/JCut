@@ -1,23 +1,21 @@
 Biggest errant couplings
-Shared editor catch-alls
-[editor_shared_core.h (line 1)](/home/julian/Documents/JCut/editor_shared_core.h:1) is PageRank #1 with 37 include consumers. It combines media probing, transcript structures, speaker profiles, overlay layout, visual effects, fonts, and audio timing constants.
-The nine-line editor_shared.h remains PageRank #3 with 55 consumers across nine owners. Together these headers make unrelated subsystems rebuild and depend on one another.
-Next refactor: split editor_shared_core.h into narrow media, transcript, speaker, overlay, effects, and audio contracts, then eliminate the remaining umbrella consumers owner-by-owner.
-Production code depends on editor_test_support
-The target defined at [CMakeLists.txt (line 977)](/home/julian/Documents/JCut/CMakeLists.txt:977) combines project management, transcript widgets, detector settings, face UI, preview transforms, and profiling.
-Production dependencies include:
-editor_core: 31 file edges
-Vulkan face tool: 5
-Qt application: 4
-Project CLI: 1
-This is not really test support. It should be split into focused widget-support targets so consumers do not acquire Qt Widgets, Qt Concurrent, transcript UI, project management, and detector UI as one package.
-Preview contract ownership is inverted
-[preview_interaction_state.h (line 1)](/home/julian/Documents/JCut/preview_interaction_state.h:1) is owned as UI but consumed by eight render files, two face-detection files, and audio runtime. Its 181 lines mix UI drag state, Vulkan handles, render packets, audio visualization, transcript state, and speaker overlays.
-There are 29 render-runtime → Qt-editor-UI include edges. Extract a widget-free preview/render contract and leave interaction/transient UI state in a separate adapter.
-Global debug configuration
-[debug_controls.h (line 1)](/home/julian/Documents/JCut/debug_controls.h:1) has 42 include consumers across ten owners; its implementation is 975 lines. It is effectively a global configuration bus spanning UI, audio, decode, render, control-server, and face detection.
-Split it into typed domain snapshots, with the control server and UI acting as adapters rather than every subsystem importing the global registry.
+
 Editor window mega-header
-[editor.h (line 1)](/home/julian/Documents/JCut/editor.h:1) is 915 lines, includes 31 repository headers, and is included by 19 implementation files. Internal implementation fragments should depend on narrower EditorWindow state/command interfaces instead of the complete application window.
-I would address item 1 next because it is both the strongest centrality signal and the root of much of the remaining cross-owner coupling. The 35 reported layer violations are all L3→L2 edges, which ordinarily represent valid inward dependencies; the layer-direction policy should be corrected before treating those as refactoring findings.
+[editor.h (line 1)](/home/julian/Documents/JCut/editor.h:1) is still the broadest app-level umbrella: 915 lines, 737 symbols, 19 include consumers, and 31 repository headers in fan-out. Internal implementation fragments should move to narrower `EditorWindow` state/command interfaces instead of depending on the full application window.
+
+Preview snapshot split landed; the next cut is smaller render overrides
+[preview_interaction_state.h (line 1)](/home/julian/Documents/JCut/preview_interaction_state.h:1) is now 189 lines and 151 symbols, with 13 include consumers and 8 fan-out edges. Renderer-facing fields now live in `PreviewRenderSnapshot`, and drag-only state moved into `PreviewInteractionUiState`. The next bounded step is to move the remaining interaction/transient overrides out of the renderer snapshot and keep preview render helpers on that narrower contract.
+
+Global debug configuration
+[debug_controls.h (line 1)](/home/julian/Documents/JCut/debug_controls.h:1) has 42 include consumers across 10 owners, and its implementation is 975 lines. It is still acting as a global configuration bus spanning UI, audio, decode, render, control-server, and face detection. Split it into typed domain snapshots and keep UI/control-server code as adapters.
+
+Render internals are still too monolithic
+[direct_vulkan_preview_window_internal.h (line 1)](/home/julian/Documents/JCut/direct_vulkan_preview_window_internal.h:1) is 1,698 lines and 232 symbols with 37 fan-out edges. [direct_vulkan_preview_renderer_recording.cpp (line 1)](/home/julian/Documents/JCut/direct_vulkan_preview_renderer_recording.cpp:1) is 2,039 lines with 34 fan-out edges, [offscreen_vulkan_renderer_backend.cpp (line 1)](/home/julian/Documents/JCut/offscreen_vulkan_renderer_backend.cpp:1) is 1,582 lines / 209 symbols with 35 fan-out edges, and [vulkan_preview_surface.cpp (line 1)](/home/julian/Documents/JCut/vulkan_preview_surface.cpp:1) is 3,678 lines / 123 symbols with 53 fan-out edges. After the snapshot split, the next productive boundary is a narrow preview-window services interface so recording, resource ownership, and presentation bookkeeping stop reaching through the full internal header.
+
+The earlier shared-header issue is now secondary
+[editor_shared.h (line 1)](/home/julian/Documents/JCut/editor_shared.h:1) still has 53 include consumers, and [editor_shared_core.h (line 1)](/home/julian/Documents/JCut/editor_shared_core.h:1) still has 29. That is still broad, but it is no longer the strongest structural signal after the narrow type headers were split out.
+
+Secondary cleanup candidates
+The fresh graph now reports 48 dead or unreachable implementations and 2 duplicate-responsibility clusters: `null_preview_surface.cpp` / `vulkan_preview_surface.cpp`, and `timeline_layout.cpp` / `timeline_widget_layout.cpp`. Those are lower priority than the app/render umbrellas, but they are still worth pruning once the main boundaries are smaller.
+
 The current viewer is available at [index.html](/home/julian/Documents/JCut/build/code-structure/index.html).

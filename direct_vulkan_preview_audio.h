@@ -21,7 +21,7 @@ class VulkanAudioTab;
 }
 
 struct DirectVulkanAudioRenderContext {
-    const PreviewInteractionState* state = nullptr;
+    const PreviewRenderSnapshot* state = nullptr;
     QVulkanDeviceFunctions* deviceFunctions = nullptr;
     jcut::VulkanAudioTab* audioTab = nullptr;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -46,5 +46,5 @@ struct DirectVulkanAudioOverlayWidgets {
 bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
                                   bool* waitingForWaveformOut = nullptr);
 
-void updateDirectVulkanAudioOverlay(const PreviewInteractionState* state,
+void updateDirectVulkanAudioOverlay(const PreviewRenderSnapshot* state,
                                     const DirectVulkanAudioOverlayWidgets& widgets);

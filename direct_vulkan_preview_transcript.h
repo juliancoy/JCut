@@ -30,7 +30,7 @@ struct TranscriptOverlayCollectionStats {
     int64_t lastPreparedPresentedMediaSourceFrame = -1;
 };
 
-PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInteractionState* state,
+PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewRenderSnapshot* state,
                                                                const QSize& swapSize,
                                                                TranscriptOverlayCollectionStats* stats = nullptr);
 QString transcriptOverlayTextPrepMaterial(const PreparedTranscriptOverlayMap& overlays,

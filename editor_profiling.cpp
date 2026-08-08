@@ -128,20 +128,7 @@ QJsonObject EditorWindow::startupProfileSnapshot() const
 QJsonObject EditorWindow::startupReadinessSnapshot() const
 {
     std::lock_guard<std::mutex> lock(m_startupReadinessMutex);
-    QJsonObject snapshot = m_startupReadinessSnapshot;
-    const qint64 elapsedMs =
-        m_startupProfileCompleted && m_startupProfileCompletedMs >= 0
-            ? m_startupProfileCompletedMs
-            : (m_startupProfileTimer.isValid() ? m_startupProfileTimer.elapsed() : 0);
-    snapshot[QStringLiteral("completed")] = m_startupProfileCompleted;
-    snapshot[QStringLiteral("elapsed_ms")] = elapsedMs;
-    snapshot[QStringLiteral("total_ms")] = elapsedMs;
-    snapshot[QStringLiteral("ready_to_play")] =
-        snapshot.value(QStringLiteral("readiness")).toObject()
-            .value(QStringLiteral("startup_load_complete")).toBool(false);
-    snapshot[QStringLiteral("note")] = QStringLiteral(
-        "Cheap startup/readiness trace. It is safe for REST fast snapshots and does not require a live UI profile.");
-    return snapshot;
+    return m_startupReadinessSnapshot;
 }
 
 QJsonObject EditorWindow::profilingSnapshot() const

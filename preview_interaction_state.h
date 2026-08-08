@@ -31,11 +31,6 @@ enum class PreviewDragMode {
 };
 
 struct PreviewInteractionTransientState {
-    PreviewDragMode dragMode = PreviewDragMode::None;
-    QPointF dragOriginPos;
-    QRectF dragOriginBounds;
-    TimelineClip::TransformKeyframe dragOriginTransform;
-    QPointF dragOriginTranscriptTranslation;
     bool transformOverrideActive = false;
     QString transformOverrideClipId;
     TimelineClip::TransformKeyframe transformOverride;
@@ -43,17 +38,25 @@ struct PreviewInteractionTransientState {
     QString transcriptOverrideClipId;
     QPointF transcriptTranslationOverride;
     QSizeF transcriptSizeOverride;
+    QString hoveredFaceDetectionsClipId;
+    QString hoveredFaceDetectionsId;
+    int hoveredFaceDetectionsTrackId = -1;
+    QPointF lastMousePos = QPointF(-10000.0, -10000.0);
+};
+
+struct PreviewInteractionUiState {
+    PreviewDragMode dragMode = PreviewDragMode::None;
+    QPointF dragOriginPos;
+    QRectF dragOriginBounds;
+    TimelineClip::TransformKeyframe dragOriginTransform;
+    QPointF dragOriginTranscriptTranslation;
     QVector<QPointF> correctionDraftPoints;
     bool speakerPickDragActive = false;
     QString speakerPickClipId;
     QPointF speakerPickStartPos;
     QPointF speakerPickCurrentPos;
     QString speakerPickHintClipId;
-    QString hoveredFaceDetectionsClipId;
-    QString hoveredFaceDetectionsId;
-    int hoveredFaceDetectionsTrackId = -1;
     bool faceDetectionsRightClickHandled = false;
-    QPointF lastMousePos = QPointF(-10000.0, -10000.0);
 };
 
 struct VulkanPreviewClipFrameStatus
@@ -122,7 +125,7 @@ struct VulkanPreviewFacestreamOverlay {
     qreal confidence = 0.0;
 };
 
-struct PreviewInteractionState {
+struct PreviewRenderSnapshot {
     bool playing = false;
     bool audioMuted = false;
     qreal audioVolume = 0.8;
@@ -179,4 +182,8 @@ struct PreviewInteractionState {
     qreal playbackStatusOverlayProgress = -1.0;
     QString temporalDebugOverlayText;
     PreviewInteractionTransientState transient;
+};
+
+struct PreviewInteractionState : public PreviewRenderSnapshot {
+    PreviewInteractionUiState ui;
 };

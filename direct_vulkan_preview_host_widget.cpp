@@ -10,7 +10,7 @@ namespace {
 
 class DirectVulkanPreviewHostWidget final : public QWidget {
 public:
-    DirectVulkanPreviewHostWidget(PreviewInteractionState* state,
+    DirectVulkanPreviewHostWidget(PreviewRenderSnapshot* state,
                                   std::function<void()> updateCallback,
                                   QWidget* parent = nullptr)
         : QWidget(parent), m_state(state), m_updateCallback(std::move(updateCallback)) {}
@@ -54,7 +54,7 @@ protected:
     }
 
 private:
-    PreviewInteractionState* m_state = nullptr;
+    PreviewRenderSnapshot* m_state = nullptr;
     std::function<void()> m_updateCallback;
 };
 

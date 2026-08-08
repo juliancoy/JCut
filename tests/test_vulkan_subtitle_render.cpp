@@ -684,7 +684,7 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTitleTextPixels()
     request.outputSize = outputSize;
     request.correctionsEnabled = true;
     request.clips = QVector<TimelineClip>{makeTitleClip(outputSize)};
-    request.exportStartFrame = 15;
+    request.exportStartFrame = 0;
     request.exportEndFrame = 15;
 
     QVector<TimelineClip> orderedClips = request.clips;
@@ -694,6 +694,43 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTitleTextPixels()
     qint64 textureMs = 0;
     qint64 compositeMs = 0;
     qint64 readbackMs = 0;
+    const int framePixels = outputSize.width() * outputSize.height();
+    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
+    AVFrame rawFrame{};
+    rawFrame.format = AV_PIX_FMT_BGRA;
+    rawFrame.width = outputSize.width();
+    rawFrame.height = outputSize.height();
+    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
+    rawFrame.linesize[0] = outputSize.width() * 4;
+
+    render_detail::OffscreenRenderFrame rawOutput;
+    QVERIFY2(renderer.renderFrameToOutput(request,
+                                          0,
+                                          decoders,
+                                          nullptr,
+                                          &asyncCache,
+                                          orderedClips,
+                                          &rawOutput,
+                                          false),
+             qPrintable(rawOutput.failureReason.isEmpty()
+                            ? QStringLiteral("Offscreen Vulkan renderer failed to render first title frame for raw export readback")
+                            : rawOutput.failureReason));
+    QVERIFY2(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs),
+             "Offscreen Vulkan renderer failed to copy first export-facing BGRA title frame");
+    const QImage firstRawImage(reinterpret_cast<const uchar*>(bgra.constData()),
+                               outputSize.width(),
+                               outputSize.height(),
+                               outputSize.width() * 4,
+                               QImage::Format_ARGB32);
+    const QString firstRawArtifactPath =
+        QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(QStringLiteral("vulkan_title_raw_bgra_first_frame_720x720.png"));
+    QVERIFY2(firstRawImage.copy().save(firstRawArtifactPath),
+             qPrintable(QStringLiteral("Failed to save %1").arg(firstRawArtifactPath)));
+    const PixelCounts firstRawCounts = countSubtitlePixels(firstRawImage);
+    QVERIFY2(firstRawCounts.brightText > framePixels * 0.00024,
+             qPrintable(QStringLiteral("Expected bright title glyph pixels in first export-facing frame, got %1")
+                            .arg(firstRawCounts.brightText)));
+
     const QImage frame = renderer.renderFrame(request,
                                               15,
                                               decoders,
@@ -714,11 +751,10 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTitleTextPixels()
     QVERIFY2(frame.save(artifactPath), qPrintable(QStringLiteral("Failed to save %1").arg(artifactPath)));
 
     const PixelCounts counts = countSubtitlePixels(frame);
-    const int framePixels = frame.width() * frame.height();
     QVERIFY2(counts.brightText > framePixels * 0.00024,
              qPrintable(QStringLiteral("Expected bright title glyph pixels, got %1").arg(counts.brightText)));
 
-    render_detail::OffscreenRenderFrame rawOutput;
+    rawOutput = {};
     QVERIFY2(renderer.renderFrameToOutput(request,
                                           15,
                                           decoders,
@@ -728,24 +764,21 @@ void TestVulkanSubtitleRender::testOffscreenVulkanTitleTextPixels()
                                           &rawOutput,
                                           false),
              "Offscreen Vulkan renderer failed to render title frame for raw export readback");
-    QByteArray bgra(outputSize.width() * outputSize.height() * 4, '\0');
-    AVFrame rawFrame{};
-    rawFrame.format = AV_PIX_FMT_BGRA;
-    rawFrame.width = outputSize.width();
-    rawFrame.height = outputSize.height();
-    rawFrame.data[0] = reinterpret_cast<uint8_t*>(bgra.data());
-    rawFrame.linesize[0] = outputSize.width() * 4;
     QVERIFY2(renderer.copyLastFrameToBgra(&rawFrame, &readbackMs),
              "Offscreen Vulkan renderer failed to copy raw export-facing BGRA frame");
-    QImage rawImage(reinterpret_cast<const uchar*>(bgra.constData()),
-                    outputSize.width(),
-                    outputSize.height(),
-                    outputSize.width() * 4,
-                    QImage::Format_ARGB32);
-    const QString rawArtifactPath =
+    const QImage steadyRawImage(reinterpret_cast<const uchar*>(bgra.constData()),
+                                outputSize.width(),
+                                outputSize.height(),
+                                outputSize.width() * 4,
+                                QImage::Format_ARGB32);
+    const QString steadyRawArtifactPath =
         QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(QStringLiteral("vulkan_title_raw_bgra_720x720.png"));
-    QVERIFY2(rawImage.copy().save(rawArtifactPath),
-             qPrintable(QStringLiteral("Failed to save %1").arg(rawArtifactPath)));
+    QVERIFY2(steadyRawImage.copy().save(steadyRawArtifactPath),
+             qPrintable(QStringLiteral("Failed to save %1").arg(steadyRawArtifactPath)));
+    const PixelCounts steadyRawCounts = countSubtitlePixels(steadyRawImage);
+    QVERIFY2(steadyRawCounts.brightText > framePixels * 0.00024,
+             qPrintable(QStringLiteral("Expected bright title glyph pixels in steady export-facing frame, got %1")
+                            .arg(steadyRawCounts.brightText)));
 }
 
 void TestVulkanSubtitleRender::testOffscreenVulkanImageTextureOrientation()

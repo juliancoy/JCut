@@ -1052,44 +1052,33 @@
 
     const QRectF outputTargetRect(
         QPointF(0.0, 0.0), QSizeF(m_outputSize));
-    auto finishTextDrawBeforeAtlasMutation = [&]() -> bool {
-      if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS ||
-          !submitAndWait()) {
-        return false;
-      }
-      vkResetCommandBuffer(m_commandBuffer, 0);
-      VkCommandBufferBeginInfo nextBegin{};
-      nextBegin.sType =
-          VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      return vkBeginCommandBuffer(
-                 m_commandBuffer, &nextBegin) == VK_SUCCESS;
-    };
-    if (!textInputs.transcripts.isEmpty() &&
+    if ((!textInputs.transcripts.isEmpty() || !textInputs.title3D.isEmpty()) &&
         (!m_transcriptTextRenderer ||
          !m_transcriptTextRenderer->isReady())) {
       if (failureReason) {
         *failureReason = QStringLiteral(
-            "Vulkan export refused to drop %1 subtitle overlay(s): "
+            "Vulkan export refused to drop %1 subtitle overlay(s) and %2 "
+            "title overlay(s): "
             "transcript text renderer is unavailable.")
-            .arg(textInputs.transcripts.size());
+            .arg(textInputs.transcripts.size())
+            .arg(textInputs.title3D.size());
+      }
+      return QImage();
+    }
+    if (textInputs.hasSpeakerLabel &&
+        (!m_speakerTextRenderer ||
+         !m_speakerTextRenderer->isReady())) {
+      if (failureReason) {
+        *failureReason = QStringLiteral(
+            "Vulkan export refused to drop speaker label overlay: "
+            "speaker text renderer is unavailable.");
       }
       return QImage();
     }
     if (m_transcriptTextRenderer &&
         m_transcriptTextRenderer->isReady()) {
-      bool textRendererDrawRecorded = false;
       for (const TranscriptTextInput& text :
            std::as_const(textInputs.transcripts)) {
-        const bool atlasUploadRequired =
-            m_transcriptTextRenderer->transcriptOverlayAtlasNeedsUpload(
-                m_outputSize, text.clip, text.layout, text.outputRect,
-                text.speakerTitle);
-        if (textRendererDrawRecorded && atlasUploadRequired) {
-          if (!finishTextDrawBeforeAtlasMutation()) {
-            return QImage();
-          }
-          textRendererDrawRecorded = false;
-        }
         if (!m_transcriptTextRenderer->prepareTranscriptOverlayAtlas(
                 m_commandBuffer, m_outputSize, text.clip, text.layout,
                 text.outputRect, text.speakerTitle)) {
@@ -1105,6 +1094,43 @@
           vkEndCommandBuffer(m_commandBuffer);
           return QImage();
         }
+      }
+      for (const EvaluatedTitle& title :
+           std::as_const(textInputs.title3D)) {
+        if (!m_transcriptTextRenderer->prepareTitleOverlayAtlas(
+                m_commandBuffer, m_outputSize, title)) {
+          if (failureReason) {
+            *failureReason = QStringLiteral(
+                "Vulkan export refused to drop title overlay \"%1\": %2")
+                .arg(title.text,
+                     m_transcriptTextRenderer->lastFailureReason().isEmpty()
+                         ? QStringLiteral("title_prepare_failed")
+                         : m_transcriptTextRenderer->lastFailureReason());
+          }
+          vkEndCommandBuffer(m_commandBuffer);
+          return QImage();
+        }
+      }
+    }
+    if (textInputs.hasSpeakerLabel) {
+      if (!m_speakerTextRenderer->prepareSpeakerLabelAtlas(
+              m_commandBuffer, m_outputSize,
+              textInputs.speakerLabel)) {
+        if (failureReason) {
+          *failureReason = QStringLiteral(
+              "Vulkan export refused to drop speaker label overlay: %1")
+              .arg(m_speakerTextRenderer->lastFailureReason().isEmpty()
+                       ? QStringLiteral("speaker_prepare_failed")
+                       : m_speakerTextRenderer->lastFailureReason());
+        }
+        vkEndCommandBuffer(m_commandBuffer);
+        return QImage();
+      }
+    }
+    if (m_transcriptTextRenderer &&
+        m_transcriptTextRenderer->isReady()) {
+      for (const TranscriptTextInput& text :
+           std::as_const(textInputs.transcripts)) {
         vkCmdBeginRenderPass(
             m_commandBuffer, &renderPassBeginInfo,
             VK_SUBPASS_CONTENTS_INLINE);
@@ -1128,45 +1154,51 @@
           vkEndCommandBuffer(m_commandBuffer);
           return QImage();
         }
-        textRendererDrawRecorded = true;
       }
       for (const EvaluatedTitle& title :
            std::as_const(textInputs.title3D)) {
-        const bool atlasUploadRequired =
-            m_transcriptTextRenderer->titleOverlayAtlasNeedsUpload(
-                m_outputSize, title);
-        if (textRendererDrawRecorded && atlasUploadRequired) {
-          if (!finishTextDrawBeforeAtlasMutation()) {
-            return QImage();
-          }
-          textRendererDrawRecorded = false;
-        }
-        if (!m_transcriptTextRenderer->prepareTitleOverlayAtlas(
-                m_commandBuffer, m_outputSize, title)) {
-          continue;
-        }
         vkCmdBeginRenderPass(
             m_commandBuffer, &renderPassBeginInfo,
             VK_SUBPASS_CONTENTS_INLINE);
-        m_transcriptTextRenderer->drawTitleOverlay3D(
-            m_commandBuffer, m_outputSize, m_outputSize,
-            outputTargetRect, title);
+        const bool titleDrawn =
+            m_transcriptTextRenderer->drawTitleOverlay3D(
+                m_commandBuffer, m_outputSize, m_outputSize,
+                outputTargetRect, title);
         vkCmdEndRenderPass(m_commandBuffer);
-        textRendererDrawRecorded = true;
+        if (!titleDrawn) {
+          if (failureReason) {
+            *failureReason = QStringLiteral(
+                "Vulkan export refused to drop title overlay \"%1\": %2")
+                .arg(title.text,
+                     m_transcriptTextRenderer->lastFailureReason().isEmpty()
+                         ? QStringLiteral("title_draw_failed")
+                         : m_transcriptTextRenderer->lastFailureReason());
+          }
+          vkEndCommandBuffer(m_commandBuffer);
+          return QImage();
+        }
       }
     }
-    if (textInputs.hasSpeakerLabel && m_speakerTextRenderer &&
-        m_speakerTextRenderer->isReady() &&
-        m_speakerTextRenderer->prepareSpeakerLabelAtlas(
-            m_commandBuffer, m_outputSize,
-            textInputs.speakerLabel)) {
+    if (textInputs.hasSpeakerLabel) {
       vkCmdBeginRenderPass(
           m_commandBuffer, &renderPassBeginInfo,
           VK_SUBPASS_CONTENTS_INLINE);
-      m_speakerTextRenderer->drawSpeakerLabel(
-          m_commandBuffer, m_outputSize, m_outputSize,
-          outputTargetRect, textInputs.speakerLabel);
+      const bool speakerDrawn =
+          m_speakerTextRenderer->drawSpeakerLabel(
+              m_commandBuffer, m_outputSize, m_outputSize,
+              outputTargetRect, textInputs.speakerLabel);
       vkCmdEndRenderPass(m_commandBuffer);
+      if (!speakerDrawn) {
+        if (failureReason) {
+          *failureReason = QStringLiteral(
+              "Vulkan export refused to drop speaker label overlay: %1")
+              .arg(m_speakerTextRenderer->lastFailureReason().isEmpty()
+                       ? QStringLiteral("speaker_draw_failed")
+                       : m_speakerTextRenderer->lastFailureReason());
+        }
+        vkEndCommandBuffer(m_commandBuffer);
+        return QImage();
+      }
     }
 
     transitionImageLayout(m_commandBuffer, m_colorImage,

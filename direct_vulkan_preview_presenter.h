@@ -105,6 +105,14 @@ struct DirectVulkanPresentationTelemetry {
     std::atomic<int64_t> previewUpdatesDelivered{0};
     std::atomic<int64_t> activeRequestedSourceFrame{-1};
     std::atomic<int64_t> activePresentedSourceFrame{-1};
+    std::atomic<int64_t> lastPreviewUpdateRequestMs{0};
+    std::atomic<int64_t> lastPreviewUpdateEventMs{0};
+    std::atomic<int64_t> lastPreviewUpdateDeliveredMs{0};
+    std::atomic<int64_t> lastPresentedMs{0};
+    std::atomic<bool> previewUpdatePosted{false};
+    std::atomic<bool> previewFrameInProgress{false};
+    std::atomic<bool> previewUpdateDirty{false};
+    std::atomic<bool> previewWindowExposed{false};
 };
 
 class DirectVulkanPreviewPresenter final {

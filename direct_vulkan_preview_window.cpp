@@ -1,5 +1,30 @@
 #include "direct_vulkan_preview_window_internal.h"
 
+namespace {
+
+template <typename Fn>
+void runOnPreviewWindowThread(DirectVulkanPreviewWindow* window, Fn&& fn)
+{
+    if (!window) {
+        return;
+    }
+    if (window->thread() == QThread::currentThread()) {
+        std::forward<Fn>(fn)(window);
+        return;
+    }
+    QPointer<DirectVulkanPreviewWindow> guarded(window);
+    QMetaObject::invokeMethod(
+        window,
+        [guarded, fn = std::forward<Fn>(fn)]() mutable {
+            if (guarded) {
+                fn(guarded);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
+} // namespace
+
 DirectVulkanPreviewWindow::~DirectVulkanPreviewWindow()
 {
     cleanupDevice();
@@ -918,24 +943,30 @@ bool directVulkanPreviewWindowIsValid(DirectVulkanPreviewWindow* window)
 
 void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* window)
 {
-    if (window) {
-        window->schedulePreviewUpdate();
-    }
+    runOnPreviewWindowThread(
+        window,
+        [](DirectVulkanPreviewWindow* target) {
+            target->schedulePreviewUpdate();
+        });
 }
 
 void directVulkanPreviewWindowResetProfilingAnchors(
     DirectVulkanPreviewWindow* window)
 {
-    if (window) {
-        window->resetProfilingAnchors();
-    }
+    runOnPreviewWindowThread(
+        window,
+        [](DirectVulkanPreviewWindow* target) {
+            target->resetProfilingAnchors();
+        });
 }
 
 void directVulkanPreviewWindowRequestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window)
 {
-    if (window) {
-        window->requestPipelineThumbnailReadback();
-    }
+    runOnPreviewWindowThread(
+        window,
+        [](DirectVulkanPreviewWindow* target) {
+            target->requestPipelineThumbnailReadback();
+        });
 }
 
 QImage directVulkanPreviewWindowLatestPipelineThumbnailReadback(DirectVulkanPreviewWindow* window)
@@ -950,40 +981,50 @@ bool directVulkanPreviewWindowPipelineThumbnailReadbackPending(DirectVulkanPrevi
 
 void directVulkanPreviewWindowRaise(DirectVulkanPreviewWindow* window)
 {
-    if (window) {
-        window->raise();
-    }
+    runOnPreviewWindowThread(
+        window,
+        [](DirectVulkanPreviewWindow* target) {
+            target->raise();
+        });
 }
 
 void directVulkanPreviewWindowHide(DirectVulkanPreviewWindow* window)
 {
-    if (window) {
-        window->hide();
-    }
+    runOnPreviewWindowThread(
+        window,
+        [](DirectVulkanPreviewWindow* target) {
+            target->hide();
+        });
 }
 
 void directVulkanPreviewWindowSetTitle(DirectVulkanPreviewWindow* window, const QString& title)
 {
-    if (window) {
-        window->setTitle(title);
-    }
+    runOnPreviewWindowThread(
+        window,
+        [title](DirectVulkanPreviewWindow* target) {
+            target->setTitle(title);
+        });
 }
 
 void directVulkanPreviewWindowSetGpuExportPreviewFrame(
     DirectVulkanPreviewWindow* window,
     const render_detail::OffscreenVulkanFrame& frame)
 {
-    if (window) {
-        window->setGpuExportPreviewFrame(frame);
-    }
+    runOnPreviewWindowThread(
+        window,
+        [frame](DirectVulkanPreviewWindow* target) {
+            target->setGpuExportPreviewFrame(frame);
+        });
 }
 
 void directVulkanPreviewWindowClearGpuExportPreview(
     DirectVulkanPreviewWindow* window)
 {
-    if (window) {
-        window->clearGpuExportPreview();
-    }
+    runOnPreviewWindowThread(
+        window,
+        [](DirectVulkanPreviewWindow* target) {
+            target->clearGpuExportPreview();
+        });
 }
 
 bool directVulkanPreviewWindowIsVisible(DirectVulkanPreviewWindow* window)

@@ -36,7 +36,7 @@ struct OverlayGeometry {
     QRectF localRect;
 };
 
-QSize sourceSizeForClipId(const PreviewInteractionState* state, const QString& clipId)
+QSize sourceSizeForClipId(const PreviewRenderSnapshot* state, const QString& clipId)
 {
     if (!state) {
         return QSize();
@@ -50,7 +50,7 @@ QSize sourceSizeForClipId(const PreviewInteractionState* state, const QString& c
 }
 
 TimelineClip::TransformKeyframe transientAwareTransform(
-    const PreviewInteractionState* state,
+    const PreviewRenderSnapshot* state,
     const QString& clipId,
     const TimelineClip::TransformKeyframe& fallback)
 {
@@ -62,7 +62,7 @@ TimelineClip::TransformKeyframe transientAwareTransform(
     return fallback;
 }
 
-QHash<QString, OverlayGeometry> activeClipGeometryById(const PreviewInteractionState* state,
+QHash<QString, OverlayGeometry> activeClipGeometryById(const PreviewRenderSnapshot* state,
                                                        QWidget* widget)
 {
     QHash<QString, OverlayGeometry> geometries;
@@ -107,7 +107,7 @@ QHash<QString, OverlayGeometry> activeClipGeometryById(const PreviewInteractionS
 
 class DirectVulkanPreviewOverlayWidget final : public QWidget {
 public:
-    explicit DirectVulkanPreviewOverlayWidget(PreviewInteractionState* state, QWidget* parent = nullptr)
+    explicit DirectVulkanPreviewOverlayWidget(PreviewRenderSnapshot* state, QWidget* parent = nullptr)
         : QWidget(parent)
         , m_state(state)
     {
@@ -386,7 +386,7 @@ private:
         painter->restore();
     }
 
-    PreviewInteractionState* m_state = nullptr;
+    PreviewRenderSnapshot* m_state = nullptr;
 };
 
 } // namespace
@@ -667,6 +667,22 @@ DirectVulkanPreviewPresenter::presentationTelemetrySnapshot() const
         m_presentationTelemetry.activeRequestedSourceFrame.load(
             std::memory_order_relaxed),
         m_presentationTelemetry.activePresentedSourceFrame.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.lastPreviewUpdateRequestMs.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.lastPreviewUpdateEventMs.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.lastPreviewUpdateDeliveredMs.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.lastPresentedMs.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewUpdatePosted.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewFrameInProgress.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewUpdateDirty.load(
+            std::memory_order_relaxed),
+        m_presentationTelemetry.previewWindowExposed.load(
             std::memory_order_relaxed)};
 }
 
@@ -1238,6 +1254,18 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("preview_update_events_delivered"),
          static_cast<double>(presentationTelemetry.previewUpdateEventsDelivered)},
         {QStringLiteral("preview_updates_delivered"), static_cast<double>(presentationTelemetry.previewUpdatesDelivered)},
+        {QStringLiteral("last_preview_update_request_ms"),
+         static_cast<double>(presentationTelemetry.lastPreviewUpdateRequestMs)},
+        {QStringLiteral("last_preview_update_event_ms"),
+         static_cast<double>(presentationTelemetry.lastPreviewUpdateEventMs)},
+        {QStringLiteral("last_preview_update_delivered_ms"),
+         static_cast<double>(presentationTelemetry.lastPreviewUpdateDeliveredMs)},
+        {QStringLiteral("last_presented_ms"),
+         static_cast<double>(presentationTelemetry.lastPresentedMs)},
+        {QStringLiteral("preview_update_posted"), presentationTelemetry.previewUpdatePosted},
+        {QStringLiteral("preview_frame_in_progress"), presentationTelemetry.previewFrameInProgress},
+        {QStringLiteral("preview_update_dirty"), presentationTelemetry.previewUpdateDirty},
+        {QStringLiteral("preview_window_exposed"), presentationTelemetry.previewWindowExposed},
         {QStringLiteral("preview_updates_deferred_not_exposed"),
          static_cast<double>(m_stats.previewUpdatesDeferredWhileNotExposed)},
         {QStringLiteral("preview_updates_discarded_not_exposed"),
@@ -1383,6 +1411,18 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("preview_update_events_delivered"),
          static_cast<double>(presentationTelemetry.previewUpdateEventsDelivered)},
         {QStringLiteral("preview_updates_delivered"), static_cast<double>(presentationTelemetry.previewUpdatesDelivered)},
+        {QStringLiteral("last_preview_update_request_ms"),
+         static_cast<double>(presentationTelemetry.lastPreviewUpdateRequestMs)},
+        {QStringLiteral("last_preview_update_event_ms"),
+         static_cast<double>(presentationTelemetry.lastPreviewUpdateEventMs)},
+        {QStringLiteral("last_preview_update_delivered_ms"),
+         static_cast<double>(presentationTelemetry.lastPreviewUpdateDeliveredMs)},
+        {QStringLiteral("last_presented_ms"),
+         static_cast<double>(presentationTelemetry.lastPresentedMs)},
+        {QStringLiteral("preview_update_posted"), presentationTelemetry.previewUpdatePosted},
+        {QStringLiteral("preview_frame_in_progress"), presentationTelemetry.previewFrameInProgress},
+        {QStringLiteral("preview_update_dirty"), presentationTelemetry.previewUpdateDirty},
+        {QStringLiteral("preview_window_exposed"), presentationTelemetry.previewWindowExposed},
         {QStringLiteral("preview_updates_deferred_not_exposed"),
          static_cast<double>(m_stats.previewUpdatesDeferredWhileNotExposed)},
         {QStringLiteral("preview_updates_discarded_not_exposed"),
@@ -1458,6 +1498,22 @@ void DirectVulkanPreviewPresenter::resetProfilingStats()
         -1, std::memory_order_relaxed);
     m_presentationTelemetry.activePresentedSourceFrame.store(
         -1, std::memory_order_relaxed);
+    m_presentationTelemetry.lastPreviewUpdateRequestMs.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.lastPreviewUpdateEventMs.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.lastPreviewUpdateDeliveredMs.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.lastPresentedMs.store(
+        0, std::memory_order_relaxed);
+    m_presentationTelemetry.previewUpdatePosted.store(
+        false, std::memory_order_relaxed);
+    m_presentationTelemetry.previewFrameInProgress.store(
+        false, std::memory_order_relaxed);
+    m_presentationTelemetry.previewUpdateDirty.store(
+        false, std::memory_order_relaxed);
+    m_presentationTelemetry.previewWindowExposed.store(
+        false, std::memory_order_relaxed);
     m_stats = DirectVulkanPreviewStats{};
     directVulkanPreviewWindowResetProfilingAnchors(m_window);
 }

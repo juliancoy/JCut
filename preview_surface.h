@@ -60,7 +60,7 @@ public:
         int prefetchMaxPerTick = 1;
         int visibleQueueReserve = 4;
         int playbackWindowAhead = 2;
-        bool decodeAutotuneEnabled = true;
+        bool decodeAutotuneEnabled = false;
         int decodeAutotuneMaxBoostLevel = 3;
         int decodeAutotuneMinAdjustIntervalMs = 1200;
         int decodeAutotuneWindowMs = 5000;
@@ -95,6 +95,14 @@ public:
         qint64 previewUpdatesDelivered = 0;
         qint64 activeRequestedSourceFrame = -1;
         qint64 activePresentedSourceFrame = -1;
+        qint64 lastPreviewUpdateRequestMs = 0;
+        qint64 lastPreviewUpdateEventMs = 0;
+        qint64 lastPreviewUpdateDeliveredMs = 0;
+        qint64 lastPresentedMs = 0;
+        bool previewUpdatePosted = false;
+        bool previewFrameInProgress = false;
+        bool previewUpdateDirty = false;
+        bool previewWindowExposed = false;
     };
 
     virtual ~PreviewSurface() = default;

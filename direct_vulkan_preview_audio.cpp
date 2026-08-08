@@ -341,7 +341,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
     if (waitingForWaveformOut) {
         *waitingForWaveformOut = false;
     }
-    const PreviewInteractionState* state = context.state;
+    const PreviewRenderSnapshot* state = context.state;
     if (!state ||
         state->viewMode != PreviewSurface::ViewMode::Audio ||
         !context.deviceFunctions ||
@@ -634,7 +634,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
     return true;
 }
 
-void updateDirectVulkanAudioOverlay(const PreviewInteractionState* state,
+void updateDirectVulkanAudioOverlay(const PreviewRenderSnapshot* state,
                                     const DirectVulkanAudioOverlayWidgets& widgets)
 {
     if (!widgets.host || !widgets.infoPanel || !widgets.hoverCard || !state) {

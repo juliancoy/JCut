@@ -2069,6 +2069,22 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                            preview.value(
                                       QStringLiteral("preview_updates_delivered"))
                                .toDouble());
+        diagnostics.insert(QStringLiteral("last_preview_update_request_ms"),
+                           preview.value(QStringLiteral("last_preview_update_request_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("last_preview_update_event_ms"),
+                           preview.value(QStringLiteral("last_preview_update_event_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("last_preview_update_delivered_ms"),
+                           preview.value(QStringLiteral("last_preview_update_delivered_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("last_presented_ms"),
+                           preview.value(QStringLiteral("last_presented_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("preview_update_posted"),
+                           preview.value(QStringLiteral("preview_update_posted")).toBool());
+        diagnostics.insert(QStringLiteral("preview_frame_in_progress"),
+                           preview.value(QStringLiteral("preview_frame_in_progress")).toBool());
+        diagnostics.insert(QStringLiteral("preview_update_dirty"),
+                           preview.value(QStringLiteral("preview_update_dirty")).toBool());
+        diagnostics.insert(QStringLiteral("preview_window_exposed"),
+                           preview.value(QStringLiteral("preview_window_exposed")).toBool());
         diagnostics.insert(QStringLiteral("playback_decode"),
                            preview.value(QStringLiteral("playback_decode")).toObject());
         diagnostics.insert(QStringLiteral("playback_smoothness"),

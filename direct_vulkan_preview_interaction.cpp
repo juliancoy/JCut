@@ -41,7 +41,7 @@ void emitThrottledInteractionStatus(const std::function<void(const QString&)>& s
 
 } // namespace
 
-bool applyVideoPreviewWheelZoom(PreviewInteractionState* state,
+bool applyVideoPreviewWheelZoom(PreviewRenderSnapshot* state,
                                const QRectF& surfaceRect,
                                const QPointF& surfacePosition,
                                int deltaY)
@@ -65,7 +65,7 @@ bool applyVideoPreviewWheelZoom(PreviewInteractionState* state,
     return true;
 }
 
-bool applyAudioPreviewWheelZoom(PreviewInteractionState* state,
+bool applyAudioPreviewWheelZoom(PreviewRenderSnapshot* state,
                                 const QRectF& surfaceRect,
                                 const QPointF& surfacePosition,
                                 int deltaY)
@@ -93,7 +93,7 @@ bool applyAudioPreviewWheelZoom(PreviewInteractionState* state,
     return true;
 }
 
-bool audioSeekSampleAtSurfacePosition(const PreviewInteractionState& state,
+bool audioSeekSampleAtSurfacePosition(const PreviewRenderSnapshot& state,
                                       const QRectF& surfaceRect,
                                       const QPointF& surfacePosition,
                                       int64_t* sampleOut)
@@ -169,7 +169,7 @@ bool clipSupportsTranscriptOverlay(const TimelineClip& clip)
     return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
 }
 
-const TimelineClip* clipForId(const PreviewInteractionState* state, const QString& clipId)
+const TimelineClip* clipForId(const PreviewRenderSnapshot* state, const QString& clipId)
 {
     if (!state) {
         return nullptr;
@@ -182,7 +182,7 @@ const TimelineClip* clipForId(const PreviewInteractionState* state, const QStrin
     return nullptr;
 }
 
-TimelineClip clipWithTransientTranscriptOverride(const PreviewInteractionState* state, const TimelineClip& clip)
+TimelineClip clipWithTransientTranscriptOverride(const PreviewRenderSnapshot* state, const TimelineClip& clip)
 {
     if (!state ||
         !state->transient.transcriptOverrideActive ||
@@ -205,7 +205,7 @@ TimelineClip clipWithTransientTranscriptOverride(const PreviewInteractionState* 
     return effective;
 }
 
-TimelineClip::TransformKeyframe transformWithTransientOverride(const PreviewInteractionState* state,
+TimelineClip::TransformKeyframe transformWithTransientOverride(const PreviewRenderSnapshot* state,
                                                                const QString& clipId,
                                                                const TimelineClip::TransformKeyframe& fallback)
 {
@@ -217,7 +217,7 @@ TimelineClip::TransformKeyframe transformWithTransientOverride(const PreviewInte
     return fallback;
 }
 
-void clearVulkanDragOverrides(PreviewInteractionState* state)
+void clearVulkanDragOverrides(PreviewRenderSnapshot* state)
 {
     if (!state) {
         return;
@@ -231,7 +231,7 @@ void clearVulkanDragOverrides(PreviewInteractionState* state)
     state->transient.transcriptSizeOverride = QSizeF();
 }
 
-QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
+QRectF transcriptOverlayBoundsForClip(const PreviewRenderSnapshot* state,
                                       const TimelineClip& clip,
                                       const PreviewViewTransform& viewTransform,
                                       bool requireInteraction)
@@ -280,7 +280,7 @@ QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
                   size.height());
 }
 
-VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewInteractionState* state,
+VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewRenderSnapshot* state,
                                                           const QRectF& surfaceRect)
 {
     VulkanInteractionOverlayInfos infos;
@@ -470,7 +470,7 @@ QPainterPath faceDetectionScreenPathForVulkan(const VulkanInteractionOverlayInfo
     return markerPath;
 }
 
-bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
+bool dispatchFaceDetectionsBoxAtPosition(const PreviewRenderSnapshot* state,
                                      const VulkanInteractionOverlayInfos& infos,
                                      const QPointF& surfacePosition,
                                      const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
@@ -591,7 +591,7 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
 }
 
 bool dispatchFaceDetectionsFocusClearAtPosition(
-    const PreviewInteractionState* state,
+    const PreviewRenderSnapshot* state,
     const VulkanInteractionOverlayInfos& infos,
     const QPointF& surfacePosition,
     const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
@@ -605,7 +605,7 @@ bool dispatchFaceDetectionsFocusClearAtPosition(
         statusCallback);
 }
 
-bool updateHoveredFaceDetectionsBox(const PreviewInteractionState* state,
+bool updateHoveredFaceDetectionsBox(const PreviewRenderSnapshot* state,
                                 const VulkanInteractionOverlayInfos& infos,
                                 const QPointF& surfacePosition)
 {
@@ -670,7 +670,7 @@ bool updateHoveredFaceDetectionsBox(const PreviewInteractionState* state,
     }
 
     PreviewInteractionTransientState& transient =
-        const_cast<PreviewInteractionState*>(state)->transient;
+        const_cast<PreviewRenderSnapshot*>(state)->transient;
     const bool changed =
         transient.hoveredFaceDetectionsTrackId != hoveredTrackId ||
         transient.hoveredFaceDetectionsClipId != hoveredClipId ||
@@ -683,7 +683,7 @@ bool updateHoveredFaceDetectionsBox(const PreviewInteractionState* state,
     return hoveredTrackId >= 0;
 }
 
-bool clipIdIsTitleForVulkan(const PreviewInteractionState* state, const QString& clipId)
+bool clipIdIsTitleForVulkan(const PreviewRenderSnapshot* state, const QString& clipId)
 {
     if (!state || clipId.isEmpty()) {
         return false;
@@ -712,7 +712,7 @@ bool lookupVulkanInteractionInfo(const VulkanInteractionOverlayInfos& infos,
     return false;
 }
 
-TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInteractionState* state, const QString& clipId)
+TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewRenderSnapshot* state, const QString& clipId)
 {
     if (!state) {
         return TimelineClip::TransformKeyframe();

@@ -68,13 +68,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                       QStringLiteral("start_next_frame"));
     }
 
-    const PreviewInteractionState* liveState = m_owner->state();
-    PreviewInteractionState renderSnapshot;
+    const PreviewRenderSnapshot* liveState = m_owner->state();
+    PreviewRenderSnapshot renderSnapshot;
     if (liveState) {
-        // Latch a per-frame render snapshot so UI/overlay/status updates cannot mutate command recording inputs.
+        // Latch only the render contract so UI/overlay/status updates cannot
+        // mutate command recording inputs or leak window-thread UI scratch.
         renderSnapshot = *liveState;
     }
-    const PreviewInteractionState* state = liveState ? &renderSnapshot : nullptr;
+    const PreviewRenderSnapshot* state = liveState ? &renderSnapshot : nullptr;
     QColor base = state ? state->backgroundColor : QColor(Qt::black);
     if (!base.isValid()) {
         base = QColor(Qt::black);

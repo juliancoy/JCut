@@ -30,30 +30,30 @@ struct VulkanInteractionOverlayInfo {
 
 using VulkanInteractionOverlayInfos = QVector<VulkanInteractionOverlayInfo>;
 
-bool applyVideoPreviewWheelZoom(PreviewInteractionState* state,
+bool applyVideoPreviewWheelZoom(PreviewRenderSnapshot* state,
                                 const QRectF& surfaceRect,
                                 const QPointF& surfacePosition,
                                 int deltaY);
-bool applyAudioPreviewWheelZoom(PreviewInteractionState* state,
+bool applyAudioPreviewWheelZoom(PreviewRenderSnapshot* state,
                                 const QRectF& surfaceRect,
                                 const QPointF& surfacePosition,
                                 int deltaY);
-bool audioSeekSampleAtSurfacePosition(const PreviewInteractionState& state,
+bool audioSeekSampleAtSurfacePosition(const PreviewRenderSnapshot& state,
                                       const QRectF& surfaceRect,
                                       const QPointF& surfacePosition,
                                       int64_t* sampleOut);
 bool clipSupportsTranscriptOverlay(const TimelineClip& clip);
-const TimelineClip* clipForId(const PreviewInteractionState* state, const QString& clipId);
-TimelineClip clipWithTransientTranscriptOverride(const PreviewInteractionState* state, const TimelineClip& clip);
-TimelineClip::TransformKeyframe transformWithTransientOverride(const PreviewInteractionState* state,
+const TimelineClip* clipForId(const PreviewRenderSnapshot* state, const QString& clipId);
+TimelineClip clipWithTransientTranscriptOverride(const PreviewRenderSnapshot* state, const TimelineClip& clip);
+TimelineClip::TransformKeyframe transformWithTransientOverride(const PreviewRenderSnapshot* state,
                                                                const QString& clipId,
                                                                const TimelineClip::TransformKeyframe& transform);
-void clearVulkanDragOverrides(PreviewInteractionState* state);
-QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
+void clearVulkanDragOverrides(PreviewRenderSnapshot* state);
+QRectF transcriptOverlayBoundsForClip(const PreviewRenderSnapshot* state,
                                       const TimelineClip& clip,
                                       const PreviewViewTransform& viewTransform,
                                       bool requireInteraction = true);
-VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewInteractionState* state,
+VulkanInteractionOverlayInfos collectVulkanInteractionInfos(const PreviewRenderSnapshot* state,
                                                             const QRectF& surfaceRect);
 QString clipIdAtPositionForVulkan(const VulkanInteractionOverlayInfos& infos, const QPointF& position);
 QPointF mapScreenPointToNormalizedClipForVulkan(const VulkanInteractionOverlayInfo& info,
@@ -67,22 +67,22 @@ bool lookupVulkanInteractionInfo(const VulkanInteractionOverlayInfos& infos,
                                  const QString& clipId,
                                  VulkanInteractionOverlayInfo* outInfo);
 bool dispatchFaceDetectionsBoxAtPosition(
-    const PreviewInteractionState* state,
+    const PreviewRenderSnapshot* state,
     const VulkanInteractionOverlayInfos& infos,
     const QPointF& surfacePosition,
     const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
     const std::function<void(const QString&)>& statusCallback);
 bool dispatchFaceDetectionsFocusClearAtPosition(
-    const PreviewInteractionState* state,
+    const PreviewRenderSnapshot* state,
     const VulkanInteractionOverlayInfos& infos,
     const QPointF& surfacePosition,
     const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
     const std::function<void(const QString&)>& statusCallback);
-bool updateHoveredFaceDetectionsBox(const PreviewInteractionState* state,
+bool updateHoveredFaceDetectionsBox(const PreviewRenderSnapshot* state,
                                     const VulkanInteractionOverlayInfos& infos,
                                     const QPointF& surfacePosition);
-bool clipIdIsTitleForVulkan(const PreviewInteractionState* state, const QString& clipId);
-TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInteractionState* state,
+bool clipIdIsTitleForVulkan(const PreviewRenderSnapshot* state, const QString& clipId);
+TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewRenderSnapshot* state,
                                                               const QString& clipId);
 
 } // namespace jcut::direct_vulkan_preview

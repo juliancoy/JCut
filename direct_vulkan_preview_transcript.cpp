@@ -18,7 +18,7 @@
 namespace jcut::direct_vulkan_preview {
 namespace {
 
-PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* state,
+PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewRenderSnapshot* state,
                                                  const PreviewViewTransform& viewTransform,
                                                  const TimelineClip& effectiveClip,
                                                  int64_t samplePosition,
@@ -127,7 +127,7 @@ PreparedTranscriptOverlay buildTranscriptOverlay(const PreviewInteractionState* 
 
 } // namespace
 
-PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewInteractionState* state,
+PreparedTranscriptOverlayMap collectPreparedTranscriptOverlays(const PreviewRenderSnapshot* state,
                                                                const QSize& swapSize,
                                                                TranscriptOverlayCollectionStats* stats)
 {

@@ -29,10 +29,10 @@ const HoverSpeakerProfile* hoverSpeakerProfileFor(const QString& transcriptPath,
 QPixmap hoverSpeakerImage(const HoverSpeakerProfile& profile, int edgePx);
 QPixmap fallbackSpeakerAvatar(const QString& speakerId, const QString& displayName, int edgePx);
 
-QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* state);
-CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* state);
-QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* state);
-render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(const PreviewInteractionState* state);
+QList<TimelineClip> activeAudioClipsForState(const PreviewRenderSnapshot* state);
+CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewRenderSnapshot* state);
+QJsonObject currentSpeakerLabelDebugForState(const PreviewRenderSnapshot* state);
+render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(const PreviewRenderSnapshot* state);
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame);
 QColor speakerColor(const QString& speakerId, int alpha);
 void fillShortUnknownSpeakerGaps(QVector<int>* speakerIndexByBin, int maxGapBins);

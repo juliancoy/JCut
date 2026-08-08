@@ -285,6 +285,22 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
                source.contains(QStringLiteral("renderNow();")) &&
                source.contains(QStringLiteral("m_owner->beginPreviewFrame()")) &&
                source.contains(QStringLiteral("m_updateDirty = false")) &&
+               source.contains(QStringLiteral("void runOnPreviewWindowThread(")) &&
+               source.contains(QStringLiteral("window->thread() == QThread::currentThread()")) &&
+               source.contains(QStringLiteral("QPointer<DirectVulkanPreviewWindow> guarded(window)")) &&
+               source.contains(QStringLiteral("QMetaObject::invokeMethod(\n"
+                                             "        window")) &&
+               source.contains(QStringLiteral("Qt::QueuedConnection")) &&
+               source.contains(QStringLiteral("directVulkanPreviewWindowSchedulePreviewUpdate")) &&
+               source.contains(QStringLiteral("target->schedulePreviewUpdate();")) &&
+               source.contains(QStringLiteral("directVulkanPreviewWindowResetProfilingAnchors")) &&
+               source.contains(QStringLiteral("target->resetProfilingAnchors();")) &&
+               source.contains(QStringLiteral("directVulkanPreviewWindowRequestPipelineThumbnailReadback")) &&
+               source.contains(QStringLiteral("target->requestPipelineThumbnailReadback();")) &&
+               source.contains(QStringLiteral("directVulkanPreviewWindowSetGpuExportPreviewFrame")) &&
+               source.contains(QStringLiteral("target->setGpuExportPreviewFrame(frame);")) &&
+               source.contains(QStringLiteral("directVulkanPreviewWindowClearGpuExportPreview")) &&
+               source.contains(QStringLiteral("target->clearGpuExportPreview();")) &&
                unavailableRendererPath.contains(
                    QStringLiteral("m_window->frameReady()")) &&
                unavailableRendererPath.contains(
@@ -292,6 +308,8 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
                eventBody.contains(QStringLiteral("previewUpdateEventsDelivered.fetch_add(")) &&
                eventBody.contains(QStringLiteral("if (m_frameInProgress)")) &&
                eventBody.contains(QStringLiteral("if (!isExposed())")) &&
+               eventBody.contains(QStringLiteral("if (!m_updateRequestPosted)")) &&
+               eventBody.contains(QStringLiteral("m_updateRequestMs = -1;")) &&
                eventBody.contains(QStringLiteral("if (m_updateDirty && !m_failureLatched)")) &&
                !eventBody.contains(QStringLiteral("m_updateDirty = false")) &&
                eventBody.contains(QStringLiteral("QWindow::event(event)")) &&
@@ -303,6 +321,26 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
            "preview rendering must use a native Vulkan swapchain presenter on "
            "a plain QWindow host, with timeline playback ticks driving direct "
            "render/present work instead of QVulkanWindow frame callbacks");
+  QVERIFY2(source.contains(QStringLiteral("m_frameRequestMs < 0 ||")) &&
+               source.contains(QStringLiteral("m_updateRequestMs < 0 ||")),
+           "preview scheduling stale recovery must clear invalid in-flight "
+           "latches as well as old timestamped latches");
+  const qsizetype resetAnchorsStart =
+      source.indexOf(QStringLiteral("void resetProfilingAnchors()"));
+  const qsizetype resetAnchorsEnd =
+      source.indexOf(QStringLiteral("void setLatestVulkanReadbackImage"),
+                     resetAnchorsStart);
+  const QString resetAnchorsBody =
+      resetAnchorsStart >= 0 && resetAnchorsEnd > resetAnchorsStart
+          ? source.mid(resetAnchorsStart, resetAnchorsEnd - resetAnchorsStart)
+          : QString();
+  QVERIFY2(resetAnchorsBody.contains(QStringLiteral("m_presentationMissTracker.reset()")) &&
+               !resetAnchorsBody.contains(QStringLiteral("m_updateRequestMs")) &&
+               !resetAnchorsBody.contains(QStringLiteral("m_frameRequestMs")) &&
+               !resetAnchorsBody.contains(QStringLiteral("QDateTime::currentMSecsSinceEpoch")),
+           "profiling reset must not rewrite live preview scheduler timestamps; "
+           "otherwise diagnostics can postpone stale-latch recovery while "
+           "playback advances");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -911,9 +949,25 @@ void TestDirectVulkanHandoffPipelineContract::
 void TestDirectVulkanHandoffPipelineContract::
     directPreviewUsesPerClipHandoffDescriptors() {
   const QString backend =
-      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window_internal.h"));
   QVERIFY2(!backend.isEmpty(),
-           "direct_vulkan_preview_window.cpp must be readable");
+           "direct_vulkan_preview_window_internal.h must be readable");
+  const QString backendImpl =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"));
+  QVERIFY2(!backendImpl.isEmpty(),
+           "direct_vulkan_preview_renderer_recording.cpp must be readable");
+  const QString resourceImpl =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_renderer_resources.cpp"));
+  QVERIFY2(!resourceImpl.isEmpty(),
+           "direct_vulkan_preview_renderer_resources.cpp must be readable");
+  const QString presenterHeader =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.h"));
+  QVERIFY2(!presenterHeader.isEmpty(),
+           "direct_vulkan_preview_presenter.h must be readable");
+  const QString presenterImpl =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+  QVERIFY2(!presenterImpl.isEmpty(),
+           "direct_vulkan_preview_presenter.cpp must be readable");
 
   QVERIFY2(
       backend.contains(QStringLiteral(
@@ -925,25 +979,25 @@ void TestDirectVulkanHandoffPipelineContract::
                                       "m_retiredClipHandoffResources")),
       "inactive handoff resources must be retired briefly instead of destroyed "
       "while swapchain frames may still be in flight");
-  QVERIFY2(backend.contains(
+  QVERIFY2(backendImpl.contains(
                QStringLiteral("ensureClipHandoffResources(handoffResourceId)")),
            "direct preview must resolve handoff resources by clip identity");
   const QString handoffPlan =
       readSourceFile(QStringLiteral("direct_vulkan_media_handoff_plan.h"));
   QVERIFY2(!handoffPlan.isEmpty(),
            "direct_vulkan_media_handoff_plan.h must be readable");
-  QVERIFY2(backend.contains(QStringLiteral("const QString handoffResourceId = status.clipId")) &&
+  QVERIFY2(backendImpl.contains(QStringLiteral("const QString handoffResourceId = status.clipId")) &&
                handoffPlan.contains(QStringLiteral("status.mediaOwnerClipId.trimmed()")) &&
-               backend.contains(QStringLiteral("handoffResources->resources->setSampledImage(ownerResult.imageView")),
+               backendImpl.contains(QStringLiteral("handoffResources->resources->setSampledImage(ownerResult.imageView")),
            "virtual mask children must reuse the parent's sampled image through a child-owned descriptor bundle");
-  const qsizetype prepareOwnerBegin = backend.indexOf(
+  const qsizetype prepareOwnerBegin = backendImpl.indexOf(
       QStringLiteral("const auto prepareBaseMediaOwner"));
-  const qsizetype prepareOwnerEnd = backend.indexOf(
+  const qsizetype prepareOwnerEnd = backendImpl.indexOf(
       QStringLiteral("// Upload/import each decoded media payload exactly once"),
       prepareOwnerBegin);
   const QString prepareOwnerBody =
       prepareOwnerBegin >= 0 && prepareOwnerEnd > prepareOwnerBegin
-          ? backend.mid(prepareOwnerBegin, prepareOwnerEnd - prepareOwnerBegin)
+          ? backendImpl.mid(prepareOwnerBegin, prepareOwnerEnd - prepareOwnerBegin)
           : QString();
   QVERIFY2(prepareOwnerBody.contains(QStringLiteral(
                "mediaOwnerResources->resources->uploadImageTexture")) &&
@@ -951,55 +1005,59 @@ void TestDirectVulkanHandoffPipelineContract::
                    "mediaOwnerResources->pipeline->record")),
            "the single media-owner preparation path must cover both CPU uploads "
            "and hardware/external Vulkan handoff");
-  QVERIFY2(backend.contains(QStringLiteral(
+  QVERIFY2(backendImpl.contains(QStringLiteral(
                "mediaOwnerHandoffResults.insert(entry.mediaOwnerClipId, ownerResult)")) &&
-               backend.contains(QStringLiteral(
+               backendImpl.contains(QStringLiteral(
                    "mediaOwnerPayloadMatches(providerStatus, status)")),
            "children must reuse one canonical owner result and fail closed when "
            "their cloned payload identity diverges");
-  const qsizetype childReuseBegin = backend.indexOf(QStringLiteral(
+  const qsizetype childReuseBegin = backendImpl.indexOf(QStringLiteral(
       "const DirectVulkanFrameHandoffPipeline::Result ownerResult ="));
-  const qsizetype childReuseEnd = backend.indexOf(
+  const qsizetype childReuseEnd = backendImpl.indexOf(
       QStringLiteral("const auto prepareAuxiliaryFrame"), childReuseBegin);
   const QString childReuseBody =
       childReuseBegin >= 0 && childReuseEnd > childReuseBegin
-          ? backend.mid(childReuseBegin, childReuseEnd - childReuseBegin)
+          ? backendImpl.mid(childReuseBegin, childReuseEnd - childReuseBegin)
           : QString();
   QVERIFY2(childReuseBody.contains(QStringLiteral("setSampledImage")) &&
                !childReuseBody.contains(QStringLiteral("pipeline->record")) &&
                !childReuseBody.contains(QStringLiteral("uploadImageTexture")),
            "a Mask Matte consumer must bind its owner's prepared image and "
            "must never upload or import that primary FrameHandle independently");
-  QVERIFY2(backend.contains(QStringLiteral("const QString ownerSecondaryKey")) &&
-               backend.contains(QStringLiteral(
+  QVERIFY2(backendImpl.contains(QStringLiteral("const QString ownerSecondaryKey")) &&
+               backendImpl.contains(QStringLiteral(
                    "mediaOwnerHandoffResults.value(ownerSecondaryKey)")) &&
-               backend.contains(QStringLiteral(
+               backendImpl.contains(QStringLiteral(
                    "secondaryHandoffResources->resources->setSampledImage")),
            "frame-crossfade payloads inherited by mask children must also be "
            "handed off once per media owner and rebound through child descriptors");
-  QVERIFY2(backend.contains(QStringLiteral("if (!status.maskClipSource && !curveLut.isEmpty())")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("if (!status.maskClipSource && !curveLut.isEmpty())")),
            "mask children must not overwrite the parent's normal grading LUT");
-  QVERIFY2(backend.contains(QStringLiteral("if (!handoffResources->resources->beginFrameUploads(")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("if (!handoffResources->resources->beginFrameUploads(")),
            "every clip-owned descriptor bundle must select the acquired frame upload slot");
-  QVERIFY2(backend.contains(QStringLiteral(
+  QVERIFY2(backendImpl.contains(QStringLiteral(
                "pruneClipHandoffResources(activeHandoffClipIds)")),
            "direct preview must release per-clip handoff resources when clips "
            "leave the active render set");
-  QVERIFY2(backend.contains(QStringLiteral(
+  QVERIFY2(resourceImpl.contains(QStringLiteral(
                "static_cast<int>(VulkanResources::kDescriptorSetCount) + 1")),
            "retired handoff resources must stay alive for at least the "
            "descriptor ring depth");
-  QVERIFY2(backend.contains(QStringLiteral("handoffResult.descriptorSet")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("handoffResult.descriptorSet")),
            "clip draws must bind the descriptor set captured by that clip's "
            "handoff result");
-  QVERIFY2(backend.contains(QStringLiteral("activeClipHandoffResourceCount")),
+  QVERIFY2(presenterHeader.contains(QStringLiteral("activeClipHandoffResourceCount")) &&
+               presenterImpl.contains(QStringLiteral("active_clip_handoff_resource_count")),
            "direct preview diagnostics must expose active per-clip handoff "
            "resource ownership");
-  QVERIFY2(backend.contains(QStringLiteral("retiredClipHandoffResourceCount")),
+  QVERIFY2(presenterHeader.contains(QStringLiteral("retiredClipHandoffResourceCount")) &&
+               presenterImpl.contains(QStringLiteral("retired_clip_handoff_resource_count")),
            "direct preview diagnostics must expose retired in-flight handoff "
            "resource ownership");
-  QVERIFY2(!backend.contains(
-               QStringLiteral("multi_clip_handoff_requires_descriptor_pool")),
+  QVERIFY2(!backend.contains(QStringLiteral("multi_clip_handoff_requires_descriptor_pool")) &&
+               !backendImpl.contains(QStringLiteral("multi_clip_handoff_requires_descriptor_pool")) &&
+               !resourceImpl.contains(QStringLiteral("multi_clip_handoff_requires_descriptor_pool")) &&
+               !presenterImpl.contains(QStringLiteral("multi_clip_handoff_requires_descriptor_pool")),
            "multiple active clips must not be rejected due to a shared "
            "sampled-image descriptor");
 
@@ -1248,9 +1306,13 @@ void TestDirectVulkanHandoffPipelineContract::
 void TestDirectVulkanHandoffPipelineContract::
     directPreviewDisablesCpuAndQtTextOverlayFallbacks() {
   const QString backend =
-      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+      readSourceFile(QStringLiteral("direct_vulkan_preview_window_internal.h"));
   QVERIFY2(!backend.isEmpty(),
-           "direct_vulkan_preview_window.cpp must be readable");
+           "direct_vulkan_preview_window_internal.h must be readable");
+  const QString backendImpl =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"));
+  QVERIFY2(!backendImpl.isEmpty(),
+           "direct_vulkan_preview_renderer_recording.cpp must be readable");
   QVERIFY2(backend.contains(QStringLiteral(
                "kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false")),
            "direct Vulkan preview must not CPU-rasterize "
@@ -1327,6 +1389,8 @@ void TestDirectVulkanHandoffPipelineContract::
       "across fly-in/fade frames and apply position/opacity at draw time");
   const QString exportBackend =
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString exportComposition =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_composition.h"));
   QVERIFY2(
       textRendererHeader.contains(QStringLiteral("transcriptOverlayAtlasNeedsUpload")) &&
           textRendererHeader.contains(QStringLiteral("titleOverlayAtlasNeedsUpload")) &&
@@ -1343,14 +1407,19 @@ void TestDirectVulkanHandoffPipelineContract::
           textRenderer.contains(QStringLiteral("first_attempt=%1")) &&
           textRenderer.contains(QStringLiteral("m_atlasResources->descriptorSetLayout()")) &&
           textRenderer.contains(QStringLiteral("!atlasIsResident")) &&
-          exportBackend.contains(QStringLiteral("const bool atlasUploadRequired")) &&
-          exportBackend.contains(QStringLiteral("textRendererDrawRecorded && atlasUploadRequired")) &&
-          !exportBackend.contains(QStringLiteral(
-              "if (textRendererDrawRecorded) {\n"
-              "          if (!finishTextDrawBeforeAtlasMutation())")),
-      "offscreen export must not submit-and-wait between text overlays that "
-      "reuse any resident atlas; only a missing atlas upload may force the "
-      "text draw fence");
+          exportComposition.indexOf(QStringLiteral("prepareTranscriptOverlayAtlas(")) >= 0 &&
+          exportComposition.indexOf(QStringLiteral("prepareTitleOverlayAtlas(")) >= 0 &&
+          exportComposition.indexOf(QStringLiteral("prepareSpeakerLabelAtlas(")) >= 0 &&
+          exportComposition.indexOf(QStringLiteral("drawTranscriptOverlay(")) >
+              exportComposition.indexOf(QStringLiteral("prepareSpeakerLabelAtlas(")) &&
+          exportComposition.indexOf(QStringLiteral("drawTitleOverlay3D(")) >
+              exportComposition.indexOf(QStringLiteral("prepareSpeakerLabelAtlas(")) &&
+          exportComposition.indexOf(QStringLiteral("drawSpeakerLabel(")) >
+              exportComposition.indexOf(QStringLiteral("prepareSpeakerLabelAtlas(")) &&
+          !exportComposition.contains(QStringLiteral("finishTextDrawBeforeAtlasMutation")) &&
+          !exportComposition.contains(QStringLiteral("textRendererDrawRecorded")),
+      "offscreen export must preflight all required text atlases before "
+      "recording subtitle, title, or speaker-label draw passes");
   const QString vulkanResources = readSourceFile(QStringLiteral("vulkan_resources.cpp"));
   QVERIFY2(vulkanResources.contains(QStringLiteral("texture_size_exceeds_device_limit")) &&
                vulkanResources.contains(QStringLiteral("texture_create_image_failed")) &&
@@ -1399,23 +1468,23 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!textRenderer.contains(QStringLiteral("QPainter")),
            "Vulkan text renderer must not use Qt painter text rendering");
 
-  QVERIFY2(backend.contains(QStringLiteral("drawTranscriptOverlay(cb")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("drawTranscriptOverlay(cb")),
            "direct Vulkan preview must route transcript subtitles through the "
            "Vulkan text renderer");
-  QVERIFY2(backend.contains(QStringLiteral("m_speakerTextRenderer")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("m_speakerTextRenderer")),
            "speaker labels and transcript subtitles must not share one mutable "
            "glyph atlas image");
-  QVERIFY2(backend.contains(QStringLiteral("m_temporalDebugTextRenderer")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("m_temporalDebugTextRenderer")),
            "temporal debug overlay must have a dedicated Vulkan text renderer "
            "so it does not evict speaker/subtitle text atlases");
-  QVERIFY2(backend.contains(QStringLiteral("temporalDebugOverlayText")) &&
-               backend.contains(QStringLiteral("TEMPORAL DEBUG")),
+  QVERIFY2(backendImpl.contains(QStringLiteral("temporalDebugOverlayText")) &&
+               backendImpl.contains(QStringLiteral("TEMPORAL DEBUG")),
            "direct Vulkan preview must draw the temporal debug overlay through "
            "the Vulkan text path");
   QVERIFY2(
-      backend.contains(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) &&
-          backend.indexOf(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) <
-              backend.indexOf(QStringLiteral("vkCmdBeginRenderPass")),
+      backendImpl.contains(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) &&
+          backendImpl.indexOf(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) <
+              backendImpl.indexOf(QStringLiteral("vkCmdBeginRenderPass")),
       "transcript glyph atlas upload must be recorded before "
       "vkCmdBeginRenderPass");
   const QString transcriptBackend =
@@ -1431,7 +1500,7 @@ void TestDirectVulkanHandoffPipelineContract::
                "evaluateEffectiveVisualEffectsAtPosition(effectiveClip")) &&
                transcriptBackend.contains(QStringLiteral(
                    "prepared.opacityMultiplier")) &&
-               backend.contains(QStringLiteral(
+               backendImpl.contains(QStringLiteral(
                    "transcript.opacityMultiplier")),
            "direct Vulkan preview transcript fades must use the same effective "
            "visual-effects opacity evaluator as the rest of the render "
@@ -1470,9 +1539,9 @@ void TestDirectVulkanHandoffPipelineContract::
 void TestDirectVulkanHandoffPipelineContract::
     directPreviewDrawsAudioOnlyTranscriptOverlaysAfterVideoLoop() {
   const QString backend =
-      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+      readSourceFile(QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"));
   QVERIFY2(!backend.isEmpty(),
-           "direct_vulkan_preview_window.cpp must be readable");
+           "direct_vulkan_preview_renderer_recording.cpp must be readable");
 
   const QString transcriptBackend =
       readSourceFile(QStringLiteral("direct_vulkan_preview_transcript.cpp"));
@@ -2039,6 +2108,14 @@ void TestDirectVulkanHandoffPipelineContract::
       QStringLiteral("preview_updates_discarded_not_exposed"),
       QStringLiteral("stale_preview_update_recoveries"),
       QStringLiteral("last_stale_preview_update_age_ms"),
+      QStringLiteral("last_preview_update_request_ms"),
+      QStringLiteral("last_preview_update_event_ms"),
+      QStringLiteral("last_preview_update_delivered_ms"),
+      QStringLiteral("last_presented_ms"),
+      QStringLiteral("preview_update_posted"),
+      QStringLiteral("preview_frame_in_progress"),
+      QStringLiteral("preview_update_dirty"),
+      QStringLiteral("preview_window_exposed"),
       QStringLiteral("last_preview_update_latency_ms"),
       QStringLiteral("max_preview_update_latency_ms"),
       QStringLiteral("unique_presentation_misses")};
@@ -2057,7 +2134,15 @@ void TestDirectVulkanHandoffPipelineContract::
       QStringLiteral("presented_frames"),
       QStringLiteral("preview_update_requests"),
       QStringLiteral("preview_update_events_delivered"),
-      QStringLiteral("preview_updates_delivered")};
+      QStringLiteral("preview_updates_delivered"),
+      QStringLiteral("last_preview_update_request_ms"),
+      QStringLiteral("last_preview_update_event_ms"),
+      QStringLiteral("last_preview_update_delivered_ms"),
+      QStringLiteral("last_presented_ms"),
+      QStringLiteral("preview_update_posted"),
+      QStringLiteral("preview_frame_in_progress"),
+      QStringLiteral("preview_update_dirty"),
+      QStringLiteral("preview_window_exposed")};
   for (const QString &field : liveCadenceFields) {
     QVERIFY2(
         routes.contains(field),
@@ -2267,6 +2352,14 @@ void TestDirectVulkanHandoffPipelineContract::
       QStringLiteral("preview_update_requests"),
       QStringLiteral("preview_update_events_delivered"),
       QStringLiteral("preview_updates_delivered"),
+      QStringLiteral("last_preview_update_request_ms"),
+      QStringLiteral("last_preview_update_event_ms"),
+      QStringLiteral("last_preview_update_delivered_ms"),
+      QStringLiteral("last_presented_ms"),
+      QStringLiteral("preview_update_posted"),
+      QStringLiteral("preview_frame_in_progress"),
+      QStringLiteral("preview_update_dirty"),
+      QStringLiteral("preview_window_exposed"),
       QStringLiteral("active_requested_source_frame"),
       QStringLiteral("active_presented_source_frame")};
   for (const QString &field : requiredRouteFields) {
@@ -2282,6 +2375,28 @@ void TestDirectVulkanHandoffPipelineContract::
           setup.contains(QStringLiteral("revisionBefore == revisionAfter")),
       "sample-domain A/V telemetry must be read from one revision-bracketed "
       "playback tick");
+
+  const QString profiling =
+      readSourceFile(QStringLiteral("editor_profiling.cpp"));
+  QVERIFY2(!profiling.isEmpty(),
+           "editor_profiling.cpp must be readable");
+  const qsizetype readinessStart = profiling.indexOf(
+      QStringLiteral("QJsonObject EditorWindow::startupReadinessSnapshot() const"));
+  const qsizetype profilingStart = profiling.indexOf(
+      QStringLiteral("QJsonObject EditorWindow::profilingSnapshot() const"),
+      readinessStart);
+  const QString readinessMethod =
+      readinessStart >= 0 && profilingStart > readinessStart
+          ? profiling.mid(readinessStart, profilingStart - readinessStart)
+          : QString();
+  QVERIFY2(readinessMethod.contains(QStringLiteral("m_startupReadinessMutex")) &&
+               readinessMethod.contains(QStringLiteral("return m_startupReadinessSnapshot;")) &&
+               !readinessMethod.contains(QStringLiteral("m_startupProfileTimer")) &&
+               !readinessMethod.contains(QStringLiteral("m_startupProfileCompleted")),
+           "startup readiness is used by REST fast snapshots from the control "
+           "server worker, so it must only copy the mutex-protected published "
+           "readiness JSON and must not read UI-thread timers or completion "
+           "fields directly");
 
   const QString playback =
       readSourceFile(QStringLiteral("editor_playback.cpp"));
@@ -2893,25 +3008,25 @@ void TestDirectVulkanHandoffPipelineContract::
 void TestDirectVulkanHandoffPipelineContract::
     rendererConsumesLatchedPreviewSnapshot() {
   const QString backend =
-      readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
+      readSourceFile(QStringLiteral("direct_vulkan_preview_renderer_recording.cpp"));
   QVERIFY2(!backend.isEmpty(),
-           "direct_vulkan_preview_window.cpp must be readable");
+           "direct_vulkan_preview_renderer_recording.cpp must be readable");
 
   const qsizetype liveStateIndex = backend.indexOf(QStringLiteral(
-      "const PreviewInteractionState* liveState = m_owner->state();"));
+      "const PreviewRenderSnapshot* liveState = m_owner->state();"));
   const qsizetype snapshotIndex =
-      backend.indexOf(QStringLiteral("PreviewInteractionState renderSnapshot;"),
+      backend.indexOf(QStringLiteral("PreviewRenderSnapshot renderSnapshot;"),
                       liveStateIndex);
   const qsizetype copyIndex = backend.indexOf(
       QStringLiteral("renderSnapshot = *liveState;"), snapshotIndex);
   const qsizetype stateAliasIndex =
-      backend.indexOf(QStringLiteral("const PreviewInteractionState* state = "
+      backend.indexOf(QStringLiteral("const PreviewRenderSnapshot* state = "
                                      "liveState ? &renderSnapshot : nullptr;"),
                       copyIndex);
   QVERIFY2(liveStateIndex >= 0 && snapshotIndex > liveStateIndex &&
                copyIndex > snapshotIndex && stateAliasIndex > copyIndex,
            "direct Vulkan command recording must consume a stack-latched "
-           "PreviewInteractionState snapshot");
+           "PreviewRenderSnapshot without carrying window-thread UI scratch");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -4693,6 +4808,8 @@ void TestDirectVulkanHandoffPipelineContract::
     exportCompositionNeverPublishesPartialLayers() {
   const QString backend =
       readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  const QString composition =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_composition.h"));
   const QString decode = readSourceFile(QStringLiteral("render_decode.cpp"));
   const QString exportSource = readSourceFile(QStringLiteral("render_export.cpp"));
   const QString effects =
@@ -4714,11 +4831,11 @@ void TestDirectVulkanHandoffPipelineContract::
                    "renderedFrame.failureReason.trimmed()")) &&
                exportSource.contains(QStringLiteral(
                    "Failed to render Vulkan timeline frame %1: %2")) &&
-               backend.contains(QStringLiteral(
+               composition.contains(QStringLiteral(
                    "activeTextFrameSlot")) &&
-               backend.contains(QStringLiteral(
+               composition.contains(QStringLiteral(
                    "m_transcriptTextRenderer->beginFrameUploads(activeTextFrameSlot")) &&
-               backend.contains(QStringLiteral(
+               composition.contains(QStringLiteral(
                    "m_speakerTextRenderer->beginFrameUploads(activeTextFrameSlot")) &&
                textRenderer.contains(QStringLiteral(
                    "resources->lastError().trimmed()")) &&
@@ -4778,22 +4895,18 @@ void TestDirectVulkanHandoffPipelineContract::
                backend.contains(QStringLiteral("&subtitleFailures")) &&
                backend.contains(QStringLiteral(
                    "Vulkan export refused to drop subtitle overlay(s)")) &&
-               backend.contains(QStringLiteral(
+               composition.contains(QStringLiteral(
                    "transcript text renderer is unavailable")) &&
-               backend.contains(QStringLiteral(
+               composition.contains(QStringLiteral(
                    "m_transcriptTextRenderer->lastFailureReason()")) &&
-               backend.contains(QStringLiteral(
+               composition.contains(QStringLiteral(
                    "const bool transcriptDrawn")) &&
                backend.contains(QStringLiteral(
-                   "clip %1 has transcript overlay enabled but no active transcript path")) &&
-               backend.contains(QStringLiteral(
                    "evaluateEffectiveVisualEffectsAtPosition(\n"
-                   "                    clip")) &&
-               backend.contains(QStringLiteral(
+                   "                  visualEffectsClip")) &&
+               composition.contains(QStringLiteral(
                    "text.opacityMultiplier")) &&
-               backend.contains(QStringLiteral(
-                   "has no readable sections")) &&
-               !backend.contains(QStringLiteral(
+               !composition.contains(QStringLiteral(
                    "prepareTranscriptOverlayAtlas(\n"
                    "                m_commandBuffer, m_outputSize, text.clip, text.layout,\n"
                    "                text.outputRect, text.speakerTitle)) {\n"
@@ -4801,6 +4914,40 @@ void TestDirectVulkanHandoffPipelineContract::
            "export subtitles must be definitive: an expected subtitle overlay "
            "must be drawn or fail the frame with a diagnostic, never silently "
            "continued past");
+  QVERIFY2(composition.contains(QStringLiteral(
+               "Vulkan export refused to drop title overlay")) &&
+               composition.contains(QStringLiteral(
+                   "const bool titleDrawn")) &&
+               composition.contains(QStringLiteral(
+                   "title_prepare_failed")) &&
+               composition.contains(QStringLiteral(
+                   "title_draw_failed")) &&
+               !composition.contains(QStringLiteral(
+                   "prepareTitleOverlayAtlas(\n"
+                   "                m_commandBuffer, m_outputSize, title)) {\n"
+                   "          continue;")),
+           "export title overlays must be definitive: an expected generated "
+           "speaker title must be drawn or fail the frame with a diagnostic");
+  QVERIFY2(composition.contains(QStringLiteral(
+               "Vulkan export refused to drop speaker label overlay")) &&
+               composition.indexOf(QStringLiteral(
+                   "prepareSpeakerLabelAtlas(")) >= 0 &&
+               composition.indexOf(QStringLiteral(
+                   "const bool speakerDrawn")) >
+                   composition.indexOf(QStringLiteral(
+                       "prepareSpeakerLabelAtlas(")) &&
+               composition.contains(QStringLiteral(
+                   "const bool speakerDrawn")) &&
+               composition.contains(QStringLiteral(
+                   "speaker_prepare_failed")) &&
+               composition.contains(QStringLiteral(
+                   "speaker_draw_failed")) &&
+               !composition.contains(QStringLiteral(
+                   "finishTextDrawBeforeAtlasMutation")) &&
+               !composition.contains(QStringLiteral(
+                   "textRendererDrawRecorded")),
+           "export speaker labels must be definitive and text atlas preparation "
+           "must complete before any text draw is recorded");
   QVERIFY2(backend.contains(QStringLiteral(
                "Vulkan export refused an incomplete composition")) &&
                backend.contains(QStringLiteral(
