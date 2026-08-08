@@ -53,8 +53,6 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("playback_sample_active_set_check_max_ms"), m_maxPlaybackActiveSetCheckMs);
     snapshot.insert(QStringLiteral("playback_sample_frame_request_last_ms"), m_lastPlaybackFrameRequestMs);
     snapshot.insert(QStringLiteral("playback_sample_frame_request_max_ms"), m_maxPlaybackFrameRequestMs);
-    snapshot.insert(QStringLiteral("playback_sample_native_update_last_ms"), m_lastPlaybackNativeUpdateMs);
-    snapshot.insert(QStringLiteral("playback_sample_native_update_max_ms"), m_maxPlaybackNativeUpdateMs);
     snapshot.insert(QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName);
     snapshot.insert(QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization);
     snapshot.insert(QStringLiteral("current_speaker_name_text_scale"), m_interaction.currentSpeakerNameTextScale);
@@ -251,8 +249,14 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
                     static_cast<double>(m_frameStatusRefreshCount));
     snapshot.insert(QStringLiteral("frame_status_last_refresh_ms"), m_lastFrameStatusRefreshMs);
     snapshot.insert(QStringLiteral("frame_status_max_refresh_ms"), m_maxFrameStatusRefreshMs);
-    if (!m_interaction.vulkanFrameStatuses.isEmpty()) {
-        const VulkanPreviewClipFrameStatus& status = m_interaction.vulkanFrameStatuses.constFirst();
+    const auto activeDecodedStatus = std::find_if(
+        m_interaction.vulkanFrameStatuses.cbegin(),
+        m_interaction.vulkanFrameStatuses.cend(),
+        [](const VulkanPreviewClipFrameStatus& status) {
+            return status.active && status.requiresDecodedFrame();
+        });
+    if (activeDecodedStatus != m_interaction.vulkanFrameStatuses.cend()) {
+        const VulkanPreviewClipFrameStatus& status = *activeDecodedStatus;
         snapshot.insert(QStringLiteral("active_frame_selection"), status.frameSelection);
         snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
         snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
@@ -460,8 +464,14 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
                     static_cast<double>(m_frameStatusRefreshCount));
     snapshot.insert(QStringLiteral("frame_status_last_refresh_ms"), m_lastFrameStatusRefreshMs);
     snapshot.insert(QStringLiteral("frame_status_max_refresh_ms"), m_maxFrameStatusRefreshMs);
-    if (!m_interaction.vulkanFrameStatuses.isEmpty()) {
-        const VulkanPreviewClipFrameStatus& status = m_interaction.vulkanFrameStatuses.constFirst();
+    const auto activeDecodedStatus = std::find_if(
+        m_interaction.vulkanFrameStatuses.cbegin(),
+        m_interaction.vulkanFrameStatuses.cend(),
+        [](const VulkanPreviewClipFrameStatus& status) {
+            return status.active && status.requiresDecodedFrame();
+        });
+    if (activeDecodedStatus != m_interaction.vulkanFrameStatuses.cend()) {
+        const VulkanPreviewClipFrameStatus& status = *activeDecodedStatus;
         snapshot.insert(QStringLiteral("active_frame_selection"), status.frameSelection);
         snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
         snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
@@ -547,8 +557,6 @@ void VulkanPreviewSurface::resetProfilingStats()
     m_maxPlaybackActiveSetCheckMs = 0;
     m_lastPlaybackFrameRequestMs = 0;
     m_maxPlaybackFrameRequestMs = 0;
-    m_lastPlaybackNativeUpdateMs = 0;
-    m_maxPlaybackNativeUpdateMs = 0;
     m_adaptivePlaybackBoostLevel = 0;
     m_lastAdaptivePlaybackTuningAdjustMs = 0;
     m_adaptivePlaybackTuningAdjustCount = 0;

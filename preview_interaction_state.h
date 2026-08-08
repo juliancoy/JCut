@@ -113,6 +113,33 @@ struct VulkanPreviewClipFrameStatus
     VkImageLayout externalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat externalImageFormat = VK_FORMAT_UNDEFINED;
     int externalReadySemaphoreFd = -1;
+
+    bool requiresDecodedFrame() const
+    {
+        return payloadKind ==
+               render_detail::VulkanRenderLayerPayloadKind::DecodedFrame;
+    }
+
+    bool renderPayloadReady() const
+    {
+        if (!requiresDecodedFrame()) {
+            if (drawSuppressed) {
+                return false;
+            }
+            for (const EvaluatedTitle& title : textInputs.title3D) {
+                if (title.valid) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return hasFrame || externalVulkanFrame;
+    }
+
+    bool renderPayloadExact() const
+    {
+        return requiresDecodedFrame() ? exact : renderPayloadReady();
+    }
 };
 
 struct VulkanPreviewFacestreamOverlay {

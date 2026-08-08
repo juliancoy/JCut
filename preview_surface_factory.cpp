@@ -44,7 +44,7 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
     auto* surface = new VulkanPreviewSurface(parent);
     if (surface->asWidget() && surface->isNativePresentationActive()) {
         decision.effective = QStringLiteral("vulkan");
-        decision.reason = QStringLiteral("Using direct Vulkan swapchain preview presenter.");
+        decision.reason = QStringLiteral("Using bounded-wait native Vulkan preview presenter.");
         logDecision(decision);
         if (decisionOut) {
             *decisionOut = decision;

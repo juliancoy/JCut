@@ -48,6 +48,7 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
     std::function<void(const QString&)> createKeyframeRequested = {});
 bool directVulkanPreviewWindowUpdatePending(DirectVulkanPreviewWindow* window);
 bool directVulkanPreviewWindowIsValid(DirectVulkanPreviewWindow* window);
+bool directVulkanPreviewWindowIsExposed(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowResetProfilingAnchors(
     DirectVulkanPreviewWindow* window);

@@ -187,8 +187,30 @@ void ControlServerWorker::refreshBackgroundCaches() {
     const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
 
     const bool profileInDemand = (now - m_lastProfileDemandMs) <= m_profileDemandWindowMs;
-    if (playbackActive && !profileInDemand) {
+    if (playbackActive) {
         m_cacheRefreshPausedForPlayback = true;
+        if (profileInDemand &&
+            (now - m_lastProfileRefreshAttemptMs) >=
+                m_profilePlaybackRefreshIntervalMs) {
+            m_lastProfileRefreshAttemptMs = now;
+            QString error;
+            if (refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs,
+                                          &error)) {
+                m_lastProfileRefreshError.clear();
+            } else {
+                m_lastProfileRefreshError =
+                    uiResponsive ? error
+                                 : QStringLiteral("ui thread is unresponsive");
+                if (error.contains(QStringLiteral("timed out"),
+                                   Qt::CaseInsensitive)) {
+                    m_lastUiRefreshTimeoutMs = now;
+                }
+            }
+        }
+        // State/project/history snapshots serialize large mutable graphs on
+        // the GUI thread. Cached values remain authoritative during playback;
+        // refreshing them here starves the precise playback timer and native
+        // Vulkan presenter even when only live profile telemetry was asked for.
         return;
     }
     m_cacheRefreshPausedForPlayback = false;
@@ -209,10 +231,8 @@ void ControlServerWorker::refreshBackgroundCaches() {
     // mutable QJsonObject cache in the worker created a cross-request lifetime
     // hazard and provided little value for an explicitly diagnostic endpoint.
     const bool uiTreeInDemand = false;
-    const qint64 profileIntervalMs = uiResponsive
-        ? (playbackActive ? qMax(m_profileRefreshIntervalMs, m_profilePlaybackRefreshIntervalMs)
-                          : m_profileRefreshIntervalMs)
-        : 1000;
+    const qint64 profileIntervalMs =
+        uiResponsive ? m_profileRefreshIntervalMs : 1000;
     const qint64 stateIntervalMs = uiResponsive
         ? (stateInDemand ? m_stateRefreshIntervalMs : m_idleStateRefreshIntervalMs)
         : 1000;

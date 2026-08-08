@@ -194,11 +194,30 @@ struct VulkanRenderTextInputs {
     SpeakerLabelOverlaySpec speakerLabel;
 };
 
+enum class VulkanRenderLayerPayloadKind {
+    DecodedFrame,
+    GeneratedText,
+};
+
+inline QString vulkanRenderLayerPayloadKindName(
+    VulkanRenderLayerPayloadKind kind)
+{
+    switch (kind) {
+    case VulkanRenderLayerPayloadKind::GeneratedText:
+        return QStringLiteral("generated_text");
+    case VulkanRenderLayerPayloadKind::DecodedFrame:
+    default:
+        return QStringLiteral("decoded_frame");
+    }
+}
+
 // Canonical renderer-neutral description of one visual layer. Preview and
 // export inherit this packet and add only scheduling, diagnostics, or
 // backend-resource state. Keep semantic render inputs here so the two Vulkan
 // pathways cannot silently grow different ownership, mask, or effect rules.
 struct VulkanRenderLayerPacket {
+    VulkanRenderLayerPayloadKind payloadKind =
+        VulkanRenderLayerPayloadKind::DecodedFrame;
     QString clipId;
     QString mediaOwnerClipId;
     QString timingOwnerClipId;

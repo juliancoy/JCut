@@ -49,6 +49,7 @@
 #include <QMouseEvent>
 #include <QPointer>
 #include <QThread>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QTransform>
 #include <QVulkanFunctions>
@@ -80,7 +81,7 @@ namespace {
 constexpr qint64 kPipelineThumbnailReadbackMinIntervalMs = 250;
 constexpr qint64 kStalePreviewUpdateRecoveryMs = 500;
 constexpr bool kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false;
-constexpr std::uint64_t kPreviewGpuWaitTimeoutNs = 1'000'000'000ull;
+constexpr std::uint64_t kPreviewAcquireTimeoutNs = 2'000'000ull;
 
 using namespace jcut::direct_vulkan_preview;
 
@@ -477,13 +478,15 @@ public:
         schedulePreviewUpdate();
     }
 
-    void schedulePreviewUpdate()
+    void postPreviewUpdateEvent(bool markDirty)
     {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-        m_updateDirty = true;
+        if (markDirty) {
+            m_updateDirty = true;
+        }
         if (m_presentationTelemetry) {
             m_presentationTelemetry->previewUpdateDirty.store(
-                true, std::memory_order_relaxed);
+                m_updateDirty, std::memory_order_relaxed);
             m_presentationTelemetry->previewWindowExposed.store(
                 isExposed(), std::memory_order_relaxed);
             m_presentationTelemetry->previewFrameInProgress.store(
@@ -573,6 +576,43 @@ public:
         QCoreApplication::postEvent(this, new QEvent(QEvent::UpdateRequest));
     }
 
+    void schedulePreviewUpdate()
+    {
+        postPreviewUpdateEvent(true);
+    }
+
+    void schedulePreviewRetry()
+    {
+        // renderNow() has already entered the frame gate. A bounded fence or
+        // acquire miss did not submit work, so release that gate before the
+        // paced retry or subsequent requests would be suppressed until stale
+        // recovery fires.
+        m_frameInProgress = false;
+        m_frameRequestMs = -1;
+        if (m_presentationTelemetry) {
+            m_presentationTelemetry->previewFrameInProgress.store(
+                false, std::memory_order_relaxed);
+        }
+        if (m_gpuRetryQueued || m_failureLatched) {
+            return;
+        }
+        m_gpuRetryQueued = true;
+        QPointer<DirectVulkanPreviewWindow> guarded(this);
+        QTimer::singleShot(
+            16,
+            this,
+            [guarded]() {
+                if (!guarded) {
+                    return;
+                }
+                if (!guarded->m_gpuRetryQueued) {
+                    return;
+                }
+                guarded->m_gpuRetryQueued = false;
+                guarded->postPreviewUpdateEvent(false);
+            });
+    }
+
     bool updatePending() const
     {
         return m_updateRequestMs >= 0 ||
@@ -618,9 +658,13 @@ protected:
         }
         if (m_active) {
             *m_active = true;
-            if (!m_scheduledWhileExposed || size() != m_lastExposeScheduledSize) {
-                m_scheduledWhileExposed = true;
-                m_lastExposeScheduledSize = size();
+            const bool sizeChanged = size() != m_lastExposeScheduledSize;
+            const bool needsFrame =
+                m_lastPresentMs <= 0 || m_updateDirty ||
+                m_swapchainDirty || sizeChanged;
+            m_scheduledWhileExposed = true;
+            m_lastExposeScheduledSize = size();
+            if (needsFrame) {
                 markSwapchainDirty();
                 schedulePreviewUpdate();
             }
@@ -1298,7 +1342,6 @@ protected:
             }
             if (!isExposed()) {
                 m_updateRequestMs = -1;
-                schedulePreviewUpdate();
                 return true;
             }
 
@@ -1475,6 +1518,8 @@ public:
     void beginPreviewFrame()
     {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        // A newer explicit update supersedes any older paced retry timer.
+        m_gpuRetryQueued = false;
         m_frameInProgress = true;
         m_updateDirty = false;
         m_frameRequestMs =
@@ -1503,6 +1548,9 @@ public:
             samples.reserve(presentedState->vulkanFrameStatuses.size() * 2);
             for (const VulkanPreviewClipFrameStatus& status :
                  presentedState->vulkanFrameStatuses) {
+                if (!status.requiresDecodedFrame()) {
+                    continue;
+                }
                 if (!editor::presentationStatusRequiresDraw(
                         status.active,
                         status.drawSuppressed,
@@ -1717,6 +1765,7 @@ private:
     qint64 m_frameRequestMs = -1;
     qint64 m_lastPresentMs = 0;
     bool m_failureLatched = false;
+    bool m_gpuRetryQueued = false;
     bool m_rendererInitialized = false;
     bool m_swapchainDirty = true;
     bool m_frameSubmitted = false;

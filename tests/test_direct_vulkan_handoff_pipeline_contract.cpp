@@ -29,6 +29,7 @@ private slots:
   void directPreviewUsesPerClipHandoffDescriptors();
   void mediaOwnerPlanDeduplicatesHiddenParentChildren();
   void mediaOwnerPayloadReuseFailsClosed();
+  void generatedTitlePayloadReadinessDoesNotRequireFrame();
   void maskChildrenUseExplicitOwners();
   void maskChildHitTestingSelectsMediaOwner();
   void descriptorUpdatesFollowAcquiredSwapchainOwnership();
@@ -238,10 +239,14 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
   const QString surface =
       readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  const QString presenter =
+      readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
   QVERIFY2(!source.isEmpty(),
            "direct_vulkan_preview_window.cpp must be readable");
   QVERIFY2(!surface.isEmpty(),
            "vulkan_preview_surface.cpp must be readable");
+  QVERIFY2(!presenter.isEmpty(),
+           "direct_vulkan_preview_presenter.cpp must be readable");
   const qsizetype frameReady = source.lastIndexOf(QStringLiteral("m_window->frameReady();"));
   const qsizetype rendererEnd = source.indexOf(
       QStringLiteral("\n}\n\nvoid DirectVulkanPreviewRenderer::physicalDeviceLost"), frameReady);
@@ -278,10 +283,13 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
                !source.contains(QStringLiteral("qint64 m_acceptedUpdateRequestMs = -1;")) &&
                source.contains(QStringLiteral("QVulkanInstance::surfaceForWindow(this)")) &&
                source.contains(QStringLiteral("vkCreateSwapchainKHR")) &&
+               source.contains(QStringLiteral("VK_PRESENT_MODE_MAILBOX_KHR")) &&
+               source.contains(QStringLiteral("capabilities.minImageCount + 1u")) &&
+               source.contains(QStringLiteral("constexpr int kFramesInFlight = 3")) &&
                source.contains(QStringLiteral("vkAcquireNextImageKHR")) &&
                source.contains(QStringLiteral("vkQueuePresentKHR")) &&
-               source.contains(QStringLiteral("presentAboutToBeQueued(this)")) &&
-               source.contains(QStringLiteral("presentQueued(this)")) &&
+               !source.contains(QStringLiteral("vkWaitForFences")) &&
+               source.contains(QStringLiteral("vkGetFenceStatus")) &&
                source.contains(QStringLiteral("renderNow();")) &&
                source.contains(QStringLiteral("m_owner->beginPreviewFrame()")) &&
                source.contains(QStringLiteral("m_updateDirty = false")) &&
@@ -308,23 +316,53 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
                eventBody.contains(QStringLiteral("previewUpdateEventsDelivered.fetch_add(")) &&
                eventBody.contains(QStringLiteral("if (m_frameInProgress)")) &&
                eventBody.contains(QStringLiteral("if (!isExposed())")) &&
-               eventBody.contains(QStringLiteral("if (!m_updateRequestPosted)")) &&
                eventBody.contains(QStringLiteral("m_updateRequestMs = -1;")) &&
-               eventBody.contains(QStringLiteral("if (m_updateDirty && !m_failureLatched)")) &&
-               !eventBody.contains(QStringLiteral("m_updateDirty = false")) &&
+               !eventBody.contains(QStringLiteral(
+                   "m_updateRequestMs = -1;\n                schedulePreviewUpdate();")) &&
                eventBody.contains(QStringLiteral("QWindow::event(event)")) &&
-               !eventBody.contains(QStringLiteral("if (m_updatePending)")) &&
+               eventBody.contains(QStringLiteral("QEvent::UpdateRequest")) &&
                frameReady >= 0 && rendererEnd > frameReady &&
                !afterFrameReady.contains(QStringLiteral("schedulePreviewUpdate")) &&
                surface.contains(QStringLiteral("setCurrentPlaybackSample")) &&
                surface.contains(QStringLiteral("requestNativeUpdate();")),
-           "preview rendering must use a native Vulkan swapchain presenter on "
-           "a plain QWindow host, with timeline playback ticks driving direct "
-           "render/present work instead of QVulkanWindow frame callbacks");
+           "preview rendering must use the reliable native QWindow swapchain "
+           "without blocking the GUI thread on frame ownership or acquisition");
   QVERIFY2(source.contains(QStringLiteral("m_frameRequestMs < 0 ||")) &&
                source.contains(QStringLiteral("m_updateRequestMs < 0 ||")),
            "preview scheduling stale recovery must clear invalid in-flight "
            "latches as well as old timestamped latches");
+  const qsizetype renderNowStart =
+      source.indexOf(QStringLiteral("void DirectVulkanPreviewWindow::renderNow()"));
+  const qsizetype frameReadyFunctionStart =
+      source.indexOf(QStringLiteral("bool DirectVulkanPreviewWindow::frameReady()"),
+                     renderNowStart);
+  const qsizetype frameReadyFunctionEnd = source.indexOf(
+      QStringLiteral("QWidget* createDirectVulkanPreviewWindowContainer"),
+      frameReadyFunctionStart);
+  const QString renderNowBody =
+      renderNowStart >= 0 && frameReadyFunctionStart > renderNowStart
+          ? source.mid(renderNowStart, frameReadyFunctionStart - renderNowStart)
+          : QString();
+  QVERIFY2(renderNowBody.contains(QStringLiteral("m_renderer->startNextFrame();")) &&
+               renderNowBody.contains(QStringLiteral("if (m_frameInProgress)")) &&
+               renderNowBody.contains(QStringLiteral("markPreviewUpdateDelivered();")) &&
+               !renderNowBody.contains(QStringLiteral("vkResetFences")) &&
+               renderNowBody.indexOf(QStringLiteral("markPreviewUpdateDelivered();")) >
+                   renderNowBody.indexOf(QStringLiteral("m_renderer->startNextFrame();")),
+           "native preview renderNow must release the frame-in-progress gate "
+           "if renderer command recording returns without completing the "
+           "frame contract");
+  const QString frameReadyBody =
+      frameReadyFunctionStart >= 0 &&
+              frameReadyFunctionEnd > frameReadyFunctionStart
+          ? source.mid(frameReadyFunctionStart,
+                       frameReadyFunctionEnd - frameReadyFunctionStart)
+          : QString();
+  QVERIFY2(frameReadyBody.indexOf(QStringLiteral("vkResetFences")) >= 0 &&
+               frameReadyBody.indexOf(QStringLiteral("vkQueueSubmit")) >
+                   frameReadyBody.indexOf(QStringLiteral("vkResetFences")),
+           "the frame fence must remain signaled across bounded swapchain "
+           "acquisition retries and reset only at the submission boundary");
   const qsizetype resetAnchorsStart =
       source.indexOf(QStringLiteral("void resetProfilingAnchors()"));
   const qsizetype resetAnchorsEnd =
@@ -341,6 +379,94 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesNativePresentCont
            "profiling reset must not rewrite live preview scheduler timestamps; "
            "otherwise diagnostics can postpone stale-latch recovery while "
            "playback advances");
+  const qsizetype requestUpdateStart = presenter.indexOf(
+      QStringLiteral("void DirectVulkanPreviewPresenter::requestUpdate()"));
+  const qsizetype requestUpdateEnd = presenter.indexOf(
+      QStringLiteral("void DirectVulkanPreviewPresenter::requestFrameUpdate()"),
+      requestUpdateStart);
+  const QString requestUpdateBody =
+      requestUpdateStart >= 0 && requestUpdateEnd > requestUpdateStart
+          ? presenter.mid(requestUpdateStart, requestUpdateEnd - requestUpdateStart)
+          : QString();
+  const qsizetype requestFrameUpdateStart = presenter.indexOf(
+      QStringLiteral("void DirectVulkanPreviewPresenter::requestFrameUpdate()"));
+  const qsizetype requestFrameUpdateEnd = presenter.indexOf(
+      QStringLiteral("void DirectVulkanPreviewPresenter::requestPipelineTapReadback()"),
+      requestFrameUpdateStart);
+  const QString requestFrameUpdateBody =
+      requestFrameUpdateStart >= 0 && requestFrameUpdateEnd > requestFrameUpdateStart
+          ? presenter.mid(requestFrameUpdateStart, requestFrameUpdateEnd - requestFrameUpdateStart)
+          : QString();
+  QVERIFY2(requestUpdateBody.contains(QStringLiteral("m_stack->currentWidget() != m_windowContainer")) &&
+               requestUpdateBody.contains(QStringLiteral("presentationSuppressedReason().isEmpty()")) &&
+               presenter.contains(QStringLiteral("m_placeholder->isVisible()")) &&
+               presenter.contains(QStringLiteral("m_windowContainer->isVisible()")) &&
+               presenter.contains(QStringLiteral("directVulkanPreviewWindowIsExposed(m_window)")) &&
+               !requestUpdateBody.contains(QStringLiteral("directVulkanPreviewWindowShow")) &&
+               !requestUpdateBody.contains(QStringLiteral("m_windowContainer->raise()")),
+           "a presenter update must let QWindowContainer own native child "
+           "visibility and avoid scheduling hidden or unexposed surfaces");
+  QVERIFY2(requestFrameUpdateBody.contains(QStringLiteral("presentationSuppressedReason().isEmpty()")) &&
+               !requestFrameUpdateBody.contains(QStringLiteral("requestUpdate();")),
+           "frame-only playback updates must be discarded while the native "
+           "surface cannot present; exposeEvent schedules the latest state");
+  QVERIFY2(source.contains(QStringLiteral(
+               "m_lastPresentMs <= 0 || m_updateDirty ||")) &&
+               source.contains(QStringLiteral(
+                   "m_swapchainDirty || sizeChanged")),
+           "Wayland re-exposure must render the latest state whenever the "
+           "surface swapchain was invalidated while hidden");
+  QVERIFY2(source.contains(QStringLiteral(
+               "if (!status.requiresDecodedFrame())")) &&
+               source.contains(QStringLiteral("continue;")),
+           "generated title draws must not be recorded as missing decoded "
+           "video frames by presentation-miss telemetry");
+  const qsizetype prepareSampleStart = surface.indexOf(QStringLiteral(
+      "bool VulkanPreviewSurface::preparePlaybackAdvanceSample"));
+  const qsizetype prepareSampleEnd = surface.indexOf(QStringLiteral(
+      "bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered"),
+      prepareSampleStart + 1);
+  const QString prepareSampleBody =
+      prepareSampleStart >= 0 && prepareSampleEnd > prepareSampleStart
+          ? surface.mid(prepareSampleStart,
+                        prepareSampleEnd - prepareSampleStart)
+          : QString();
+  QVERIFY2(!prepareSampleBody.isEmpty() &&
+               !prepareSampleBody.contains(QStringLiteral("requestNativeUpdate()")),
+           "decode preflight must not present stale state; canonical frame "
+           "status publication owns the native update request");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    generatedTitlePayloadReadinessDoesNotRequireFrame()
+{
+  PreviewSurface::PlaybackTuning defaultTuning;
+  QVERIFY2(defaultTuning.decodeAutotuneEnabled,
+           "preview decode auto-tuning must be enabled by default; runtime and "
+           "project tuning may still disable it explicitly");
+
+  VulkanPreviewClipFrameStatus title;
+  title.active = true;
+  title.payloadKind =
+      render_detail::VulkanRenderLayerPayloadKind::GeneratedText;
+
+  QVERIFY(!title.requiresDecodedFrame());
+  QVERIFY(!title.renderPayloadReady());
+  QVERIFY(!title.hasFrame);
+
+  EvaluatedTitle generatedTitle;
+  generatedTitle.valid = true;
+  title.textInputs.title3D.push_back(generatedTitle);
+  QVERIFY(title.renderPayloadReady());
+  QVERIFY(title.renderPayloadExact());
+  QVERIFY(!title.hasFrame);
+
+  title.drawSuppressed = true;
+  QVERIFY(!title.renderPayloadReady());
+
+  VulkanPreviewClipFrameStatus decoded;
+  QVERIFY(decoded.requiresDecodedFrame());
+  QVERIFY(!decoded.renderPayloadReady());
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -569,6 +695,14 @@ void TestDirectVulkanHandoffPipelineContract::
                    "markerStatus.frameCrossfadeFrame")),
            "masked speech-boundary crossfades must resolve the matte for the "
            "secondary actual presented FrameHandle");
+  const QString exportBackend =
+      readSourceFile(QStringLiteral("offscreen_vulkan_renderer_backend.cpp"));
+  QVERIFY2(previewSurface.contains(QStringLiteral("status.setGrading(effects.grading)")) &&
+               exportBackend.contains(QStringLiteral("layer.setGrading(grade)")) &&
+               source.contains(QStringLiteral("status.gradePayload")) &&
+               source.contains(QStringLiteral("gradePayload.effects")),
+           "preview and export must build and consume the same canonical grade "
+           "payload; presenter selection must not introduce a second grading path");
   QVERIFY2(source.contains(QStringLiteral(
                "frameCrossfadeMaskUploadResults.insert")) &&
                source.contains(QStringLiteral(
@@ -1694,6 +1828,9 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!prepareBody.contains(QStringLiteral("requestFramesForSample")),
            "preparePlaybackAdvanceSample must only check readiness; "
            "requestFramesForCurrentPosition is the single active scheduler");
+  QVERIFY2(!prepareBody.contains(QStringLiteral("requestNativeUpdate();")),
+           "preparePlaybackAdvanceSample is decode preflight and must not "
+           "duplicate the committed playback sample's presentation request");
   const int warmupStart = surface.indexOf(
       QStringLiteral("bool VulkanPreviewSurface::warmPlaybackLookahead"));
   QVERIFY2(
@@ -1736,9 +1873,20 @@ void TestDirectVulkanHandoffPipelineContract::
           playbackPipeline.contains(QStringLiteral(
               "pendingVisibleCount >= qMax(1, debugMaxVisibleBacklog())")) &&
           playbackPipeline.contains(QStringLiteral("latencyLeadFrames + 2")) &&
-          playbackPipeline.contains(QStringLiteral("firstOffset")),
+          playbackPipeline.contains(QStringLiteral("lastOffset")) &&
+          playbackPipeline.contains(QStringLiteral(
+              "for (int offset = 0; offset <= lastOffset; ++offset)")) &&
+          !playbackPipeline.contains(QStringLiteral("firstOffset")),
       "playback prefetch must become latency-sized future buffering when "
-      "current visible decode is late or already pending");
+      "current visible decode is late or already pending without skipping "
+      "the current visible frame");
+  QVERIFY2(surface.contains(QStringLiteral("m_playbackPipeline->requestFramesForSample(\n"
+                                           "            visualSample,")) &&
+               surface.contains(QStringLiteral("playback_pipeline_window")) &&
+               !surface.contains(QStringLiteral("playback_pipeline_displayable_backlog")),
+           "active direct-Vulkan playback must dispatch through "
+           "PlaybackFramePipeline instead of doing a second preview-side "
+           "per-clip displayability scan on every transport tick");
   QVERIFY2(
       playbackPipeline.contains(
           QStringLiteral("kind == DecodeRequestKind::Visible")) &&
@@ -1911,6 +2059,42 @@ void TestDirectVulkanHandoffPipelineContract::
           vulkanSurface.contains(QStringLiteral("queueFrameStatusRefresh(true)")),
       "paused direct-Vulkan preview must retry visible decode when frame-status "
       "refresh discovers an active clip has no drawable frame");
+  QVERIFY2(
+      vulkanSurface.contains(QStringLiteral("kPlaybackFrameStatusRefreshIntervalMs = 33")) &&
+          vulkanSurface.contains(QStringLiteral("m_frameStatusRefreshCoalesceQueued")) &&
+          vulkanSurface.contains(QStringLiteral("QTimer::singleShot")) &&
+          vulkanSurface.contains(QStringLiteral("queueFrameStatusRefresh(false)")),
+      "active playback must coalesce frame-status recomputation to preview "
+      "presentation cadence instead of reevaluating all layer, grading, text, "
+      "and mask state for every decode callback or transport tick");
+  const qsizetype refreshStart = vulkanSurface.indexOf(
+      QStringLiteral("void VulkanPreviewSurface::queueFrameStatusRefresh"));
+  const qsizetype refreshEnd = vulkanSurface.indexOf(
+      QStringLiteral("void VulkanPreviewSurface::refreshVulkanFrameStatuses"),
+      refreshStart);
+  const QString refreshBody =
+      refreshStart >= 0 && refreshEnd > refreshStart
+          ? vulkanSurface.mid(refreshStart, refreshEnd - refreshStart)
+          : QString();
+  QVERIFY2(refreshBody.contains(QStringLiteral(
+               "m_frameStatusPresentationChanged")) &&
+               vulkanSurface.contains(QStringLiteral(
+                   "presentationKey != m_lastFrameStatusPresentationKey")),
+           "canonical prepared status must schedule each distinct playback "
+           "state once while still presenting an exact decoder improvement");
+  const qsizetype playbackSampleStart = vulkanSurface.indexOf(
+      QStringLiteral("void VulkanPreviewSurface::setCurrentPlaybackSample"));
+  const qsizetype playbackSampleEnd = vulkanSurface.indexOf(
+      QStringLiteral("void VulkanPreviewSurface::setClipCount"),
+      playbackSampleStart);
+  const QString playbackSampleBody =
+      playbackSampleStart >= 0 && playbackSampleEnd > playbackSampleStart
+          ? vulkanSurface.mid(playbackSampleStart,
+                              playbackSampleEnd - playbackSampleStart)
+          : QString();
+  QVERIFY2(!playbackSampleBody.contains(QStringLiteral("requestNativeUpdate();")),
+           "transport sample mutation must not render the previous prepared "
+           "layer packet before status publication completes");
   QVERIFY2(
       vulkanSurface.contains(
           QStringLiteral("debugTemporalDebugOverlayEnabled()")) &&
@@ -2415,8 +2599,11 @@ void TestDirectVulkanHandoffPipelineContract::
     transportControlDoesNotCollectUiProfiles() {
   const QString routes =
       readSourceFile(QStringLiteral("control_server_worker_routes_ui.cpp"));
+  const QString worker =
+      readSourceFile(QStringLiteral("control_server_worker.cpp"));
   QVERIFY2(!routes.isEmpty(),
            "control_server_worker_routes_ui.cpp must be readable");
+  QVERIFY2(!worker.isEmpty(), "control_server_worker.cpp must be readable");
   QVERIFY2(
       routes.contains(QStringLiteral("const bool transportControlRequest =")) &&
           routes.contains(QStringLiteral("if (transportControlRequest)")),
@@ -2446,6 +2633,22 @@ void TestDirectVulkanHandoffPipelineContract::
               QStringLiteral("\"state_changed\"), false")),
       "transport.pause must be idempotent instead of toggling an already-paused "
       "transport back into playback");
+  const qsizetype playbackGuard = worker.indexOf(
+      QStringLiteral("if (playbackActive)"));
+  const qsizetype stateDemand = worker.indexOf(
+      QStringLiteral("const bool stateInDemand"), playbackGuard);
+  const QString playbackRefreshPath =
+      playbackGuard >= 0 && stateDemand > playbackGuard
+          ? worker.mid(playbackGuard, stateDemand - playbackGuard)
+          : QString();
+  QVERIFY2(
+      playbackRefreshPath.contains(
+          QStringLiteral("refreshProfileCacheFromUi")) &&
+          playbackRefreshPath.contains(QStringLiteral("return;")) &&
+          !playbackRefreshPath.contains(
+              QStringLiteral("refreshStateCacheFromUi")),
+      "live profiling may refresh lightweight telemetry during playback, but "
+      "must not serialize state/project/history graphs on the GUI thread");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -4192,9 +4395,8 @@ void TestDirectVulkanHandoffPipelineContract::
           : QString();
   QVERIFY2(hideEventBody.contains(QStringLiteral("m_swapchainDirty = true")) &&
                !hideEventBody.contains(QStringLiteral("cleanupSwapchain()")),
-           "embedded Vulkan export preview windows must not destroy the "
-           "swapchain from Qt hide events; QWindowContainer can hide the "
-           "native surface while the platform window is already tearing down");
+           "embedded Vulkan preview windows must not destroy the swapchain "
+           "from Qt hide events");
   const QString frameImportContract =
       readSourceFile(QStringLiteral("core/offscreen_vulkan_frame.h"));
   const QString importer =
@@ -4447,14 +4649,26 @@ void TestDirectVulkanHandoffPipelineContract::
            "renderFrame substage timings must be exposed through the compositor "
            "contract, collected by export, and published in worst-frame "
            "diagnostics instead of remaining backend-only counters");
-  QVERIFY2(preview.contains(QStringLiteral(
-               "kPreviewGpuWaitTimeoutNs")) &&
+  QVERIFY2(preview.contains(QStringLiteral("vkGetFenceStatus")) &&
                preview.contains(QStringLiteral(
-                   "stage=preview_swapchain_acquire")) &&
-               !preview.contains(QStringLiteral(
-                   "vkWaitForFences(m_device, 1, &frame.inFlightFence, "
-                   "VK_TRUE, UINT64_MAX)")),
-           "visible presentation waits must time out with an actionable stage");
+                   "vkAcquireNextImageKHR(\n        m_device,\n        m_swapchain,\n        kPreviewAcquireTimeoutNs,")) &&
+               preview.contains(QStringLiteral(
+                   "kPreviewAcquireTimeoutNs = 2'000'000ull")) &&
+               preview.contains(QStringLiteral("schedulePreviewRetry()")) &&
+               preview.contains(QStringLiteral("m_frameInProgress = false")) &&
+               preview.contains(QStringLiteral("m_frameRequestMs = -1")) &&
+               preview.contains(QStringLiteral("postPreviewUpdateEvent(false)")) &&
+               preview.contains(QStringLiteral("postPreviewUpdateEvent(true)")) &&
+               preview.contains(QStringLiteral(
+                   "if (markDirty) {\n            m_updateDirty = true;\n        }")) &&
+               !preview.contains(QStringLiteral("m_updateDirty = false;\n        if (m_gpuRetryQueued")) &&
+               preview.contains(QStringLiteral("QTimer::singleShot(")) &&
+               preview.contains(QStringLiteral("            16,")) &&
+               !preview.contains(QStringLiteral("vkWaitForFences")),
+           "visible presentation must poll frame ownership and bound image "
+           "acquisition to 2 ms, with one paced retry that does not mark "
+           "unchanged content dirty instead of a GUI-thread busy loop or a "
+           "frame-long wait");
   QVERIFY2(neutral.contains(QStringLiteral(
                "kHeadlessCompositorWaitTimeoutNs")) &&
                !neutral.contains(QStringLiteral(
@@ -5006,6 +5220,12 @@ void TestDirectVulkanHandoffPipelineContract::
                    "status.textInputs.title3D.push_back(title)")) &&
                surface.contains(QStringLiteral("gpu-title-draw")) &&
                surface.contains(QStringLiteral(
+                   "VulkanRenderLayerPayloadKind::GeneratedText")) &&
+               surface.contains(QStringLiteral("status.decodePath.clear()")) &&
+               surface.contains(QStringLiteral(
+                   "const qint64 decodedStatusCount = exactCount + approxCount + missingCount")) &&
+               surface.contains(QStringLiteral("02 Generated Draw Input")) &&
+               surface.contains(QStringLiteral(
                    "status.targetRect = titleRenderBounds")) &&
                !surface.contains(QStringLiteral("renderTitleOverlay(")) &&
                previewRenderer.contains(QStringLiteral(
@@ -5022,8 +5242,9 @@ void TestDirectVulkanHandoffPipelineContract::
                    "static_cast<qreal>(timelineFrame)")),
            "preview and output must evaluate standalone titles at the same "
            "timeline frame, submit reusable Vulkan text draw packets without "
-           "full-resolution CPU rasterization, and retain content-sized "
-           "interaction bounds");
+           "full-resolution CPU rasterization, retain content-sized interaction "
+           "bounds, and keep generated titles out of decode-health and "
+           "presentation-miss telemetry");
 }
 
 QTEST_MAIN(TestDirectVulkanHandoffPipelineContract)

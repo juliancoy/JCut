@@ -161,6 +161,7 @@ public:
 
 private:
     void showFailure(const QString& reason);
+    QString presentationSuppressedReason() const;
     void updateDiagnosticChrome();
     void updateAudioOverlay();
 

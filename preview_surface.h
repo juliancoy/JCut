@@ -60,7 +60,7 @@ public:
         int prefetchMaxPerTick = 1;
         int visibleQueueReserve = 4;
         int playbackWindowAhead = 2;
-        bool decodeAutotuneEnabled = false;
+        bool decodeAutotuneEnabled = true;
         int decodeAutotuneMaxBoostLevel = 3;
         int decodeAutotuneMinAdjustIntervalMs = 1200;
         int decodeAutotuneWindowMs = 5000;

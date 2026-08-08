@@ -270,6 +270,8 @@ private:
     int m_frameStatusMissingCount = 0;
     int m_frameStatusHardwareCount = 0;
     int m_frameStatusCpuCount = 0;
+    QString m_lastFrameStatusPresentationKey;
+    bool m_frameStatusPresentationChanged = false;
     QHash<QString, editor::FrameHandle> m_lastPresentedFrameByClip;
     QSet<QString> m_maskPrefetchWindowKeys;
     int64_t m_lastVisibleRequestFrame = -1;
@@ -292,8 +294,6 @@ private:
     qint64 m_maxPlaybackActiveSetCheckMs = 0;
     qint64 m_lastPlaybackFrameRequestMs = 0;
     qint64 m_maxPlaybackFrameRequestMs = 0;
-    qint64 m_lastPlaybackNativeUpdateMs = 0;
-    qint64 m_maxPlaybackNativeUpdateMs = 0;
     editor::PlaybackStageMetric m_timelineInputStageMetric;
     editor::PlaybackStageMetric m_sourceMappingStageMetric;
     editor::PlaybackStageMetric m_visibleRequestStageMetric;
@@ -333,8 +333,10 @@ private:
     int m_lastFacedetectionsOverlayMatchCount = 0;
     int m_lastFacedetectionsRawDetectionMatchCount = 0;
     bool m_frameStatusRefreshQueued = false;
+    bool m_frameStatusRefreshCoalesceQueued = false;
     bool m_frameStatusRefreshNeedsVisibleRequest = false;
     bool m_frameStatusRefreshInProgress = false;
+    qint64 m_lastFrameStatusRefreshQueuedAtMs = 0;
     qint64 m_lastFrameStatusTrimMs = 0;
     qint64 m_frameStatusRefreshCount = 0;
     qint64 m_lastFrameStatusRefreshMs = 0;

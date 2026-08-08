@@ -364,7 +364,7 @@ bool DirectVulkanPreviewWindow::ensureVulkanReady()
         return false;
     }
 
-    constexpr int kFramesInFlight = 2;
+    constexpr int kFramesInFlight = 3;
     m_frames.resize(kFramesInFlight);
     for (FrameResources& frame : m_frames) {
         VkCommandPoolCreateInfo poolInfo{};
@@ -512,7 +512,8 @@ bool DirectVulkanPreviewWindow::ensureSwapchain()
             static_cast<int>(capabilities.maxImageExtent.height)));
     }
 
-    uint32_t imageCount = std::max<uint32_t>(2u, capabilities.minImageCount);
+    uint32_t imageCount =
+        std::max<uint32_t>(3u, capabilities.minImageCount + 1u);
     if (capabilities.maxImageCount > 0) {
         imageCount = std::min(imageCount, capabilities.maxImageCount);
     }
@@ -682,25 +683,22 @@ void DirectVulkanPreviewWindow::renderNow()
     FrameResources& frame =
         m_frames[static_cast<size_t>(
             m_currentFrameSlot % static_cast<int>(m_frames.size()))];
-    const VkResult frameWaitResult = vkWaitForFences(
-        m_device,
-        1,
-        &frame.inFlightFence,
-        VK_TRUE,
-        kPreviewGpuWaitTimeoutNs);
-    if (frameWaitResult != VK_SUCCESS) {
-        markFailure(QStringLiteral(
-            "Timed out after 1000 ms waiting for direct preview frame "
-            "ownership (VkResult %1).")
-                        .arg(static_cast<int>(frameWaitResult)));
+    const VkResult frameOwnership =
+        vkGetFenceStatus(m_device, frame.inFlightFence);
+    if (frameOwnership == VK_NOT_READY) {
+        schedulePreviewRetry();
         return;
     }
-    vkResetFences(m_device, 1, &frame.inFlightFence);
-
+    if (frameOwnership != VK_SUCCESS) {
+        markFailure(QStringLiteral(
+            "Failed to query direct preview frame ownership (VkResult %1).")
+                        .arg(static_cast<int>(frameOwnership)));
+        return;
+    }
     VkResult acquireResult = vkAcquireNextImageKHR(
         m_device,
         m_swapchain,
-        kPreviewGpuWaitTimeoutNs,
+        kPreviewAcquireTimeoutNs,
         frame.imageAcquiredSemaphore,
         VK_NULL_HANDLE,
         reinterpret_cast<uint32_t*>(&m_currentSwapchainImageIndex));
@@ -708,15 +706,11 @@ void DirectVulkanPreviewWindow::renderNow()
         acquireResult == VK_SUBOPTIMAL_KHR ||
         acquireResult == VK_ERROR_SURFACE_LOST_KHR) {
         markSwapchainDirty();
-        m_updateDirty = true;
+        schedulePreviewRetry();
         return;
     }
-    if (acquireResult == VK_TIMEOUT) {
-        m_updateDirty = true;
-        qWarning().noquote()
-            << QStringLiteral(
-                   "[vulkan-sync-timeout] stage=preview_swapchain_acquire "
-                   "timeout_ms=1000");
+    if (acquireResult == VK_NOT_READY || acquireResult == VK_TIMEOUT) {
+        schedulePreviewRetry();
         return;
     }
     if (acquireResult != VK_SUCCESS) {
@@ -740,6 +734,9 @@ void DirectVulkanPreviewWindow::renderNow()
     m_currentCommandBuffer = frame.commandBuffer;
     m_frameSubmitted = false;
     m_renderer->startNextFrame();
+    if (m_frameInProgress) {
+        markPreviewUpdateDelivered();
+    }
     if (!m_frameSubmitted && !m_failureLatched) {
         markFailure(QStringLiteral(
             "Direct preview renderer returned without presenting the current frame."));
@@ -785,6 +782,12 @@ bool DirectVulkanPreviewWindow::frameReady()
     submitInfo.pSignalSemaphores = signalSemaphores.data();
     if (QVulkanInstance* instance = vulkanInstance()) {
         instance->presentAboutToBeQueued(this);
+    }
+    if (vkResetFences(m_device, 1, &frame.inFlightFence) != VK_SUCCESS) {
+        m_frameCompletionSemaphore = VK_NULL_HANDLE;
+        markFailure(QStringLiteral(
+            "Failed to reset direct preview frame ownership fence."));
+        return false;
     }
     if (vkQueueSubmit(
             m_graphicsQueue, 1, &submitInfo, frame.inFlightFence) != VK_SUCCESS) {
@@ -939,6 +942,11 @@ bool directVulkanPreviewWindowUpdatePending(DirectVulkanPreviewWindow* window)
 bool directVulkanPreviewWindowIsValid(DirectVulkanPreviewWindow* window)
 {
     return window && window->isValid();
+}
+
+bool directVulkanPreviewWindowIsExposed(DirectVulkanPreviewWindow* window)
+{
+    return window && window->isExposed();
 }
 
 void directVulkanPreviewWindowSchedulePreviewUpdate(DirectVulkanPreviewWindow* window)

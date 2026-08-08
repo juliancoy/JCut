@@ -719,20 +719,40 @@ void DirectVulkanPreviewPresenter::showFailure(const QString& reason)
     updateDiagnosticChrome();
 }
 
+QString DirectVulkanPreviewPresenter::presentationSuppressedReason() const
+{
+    if (!m_failureReason.trimmed().isEmpty()) {
+        return QStringLiteral("renderer_failure");
+    }
+    if (!m_placeholder || !m_placeholder->isVisible()) {
+        return QStringLiteral("preview_host_hidden");
+    }
+    if (!m_windowContainer || !m_windowContainer->isVisible()) {
+        return QStringLiteral("window_container_hidden");
+    }
+    if (!m_window) {
+        return QStringLiteral("native_window_missing");
+    }
+    if (!directVulkanPreviewWindowIsExposed(m_window)) {
+        return QStringLiteral("native_window_not_exposed");
+    }
+    return QString();
+}
+
 void DirectVulkanPreviewPresenter::requestUpdate()
 {
     updateDiagnosticChrome();
     if (m_stack) {
         if (!m_failureReason.trimmed().isEmpty() && m_errorLabel) {
-            m_stack->setCurrentWidget(m_errorLabel);
-        } else if (m_windowContainer) {
+            if (m_stack->currentWidget() != m_errorLabel) {
+                m_stack->setCurrentWidget(m_errorLabel);
+            }
+        } else if (m_windowContainer &&
+                   m_stack->currentWidget() != m_windowContainer) {
             m_stack->setCurrentWidget(m_windowContainer);
         }
     }
-    if (m_windowContainer) {
-        m_windowContainer->raise();
-    }
-    if (m_window) {
+    if (presentationSuppressedReason().isEmpty()) {
         directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
     }
     if (m_overlayWidget && kAllowQtPainterOverlayInDirectVulkanPreview) {
@@ -754,7 +774,7 @@ void DirectVulkanPreviewPresenter::requestUpdate()
 
 void DirectVulkanPreviewPresenter::requestFrameUpdate()
 {
-    if (m_window) {
+    if (presentationSuppressedReason().isEmpty()) {
         directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
     }
 }
@@ -798,10 +818,16 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
 
     const bool waitingForDecode = m_active &&
         m_failureReason.trimmed().isEmpty() &&
-        m_stats.textureDraws <= 0 &&
-        m_stats.explicitFailureDraws <= 0 &&
         m_state &&
-        !m_state->vulkanFrameStatuses.isEmpty();
+        std::any_of(
+            m_state->vulkanFrameStatuses.cbegin(),
+            m_state->vulkanFrameStatuses.cend(),
+            [](const VulkanPreviewClipFrameStatus& status) {
+                return status.active &&
+                       !status.drawSuppressed &&
+                       status.requiresDecodedFrame() &&
+                       !status.renderPayloadReady();
+            });
     const bool showOverlayLabel = !m_failureReason.trimmed().isEmpty() || waitingForDecode;
     if (!jcut::direct_vulkan_preview::vulkanPreviewDebugChromeEnabled() && !showOverlayLabel) {
         const QString style = QStringLiteral("background:#05080d; border:0;");
@@ -879,12 +905,12 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
             if (!status.active) {
                 continue;
             }
-            ready += status.hasFrame ? 1 : 0;
-            exact += status.exact ? 1 : 0;
+            ready += status.renderPayloadReady() ? 1 : 0;
+            exact += status.renderPayloadExact() ? 1 : 0;
             cpu += status.cpuImage ? 1 : 0;
             hardwareFrame += status.hardwareFrame ? 1 : 0;
             gpuTexture += status.gpuTexture ? 1 : 0;
-            missing += status.hasFrame ? 0 : 1;
+            missing += status.renderPayloadReady() || status.drawSuppressed ? 0 : 1;
             if (requestedFrame < 0) {
                 requestedFrame = status.requestedSourceFrame;
                 presentedFrame = status.presentedSourceFrame;
@@ -1029,9 +1055,11 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         return object;
     };
 
-    int activeStatuses = 0;
-    int readyStatuses = 0;
-    int exactStatuses = 0;
+    int activeDecodeStatuses = 0;
+    int readyDecodeStatuses = 0;
+    int exactDecodeStatuses = 0;
+    int activeGeneratedStatuses = 0;
+    int readyGeneratedStatuses = 0;
     int hardwareStatuses = 0;
     int cpuStatuses = 0;
     bool hasTimelineFrameGeometry = false;
@@ -1050,11 +1078,17 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
             if (!status.active) {
                 continue;
             }
-            ++activeStatuses;
-            readyStatuses += status.hasFrame ? 1 : 0;
-            exactStatuses += status.exact ? 1 : 0;
-            hardwareStatuses += (status.hardwareFrame || status.gpuTexture) ? 1 : 0;
-            cpuStatuses += status.cpuImage ? 1 : 0;
+            if (status.requiresDecodedFrame()) {
+                ++activeDecodeStatuses;
+                readyDecodeStatuses += status.renderPayloadReady() ? 1 : 0;
+                exactDecodeStatuses += status.renderPayloadExact() ? 1 : 0;
+                hardwareStatuses +=
+                    (status.hardwareFrame || status.gpuTexture) ? 1 : 0;
+                cpuStatuses += status.cpuImage ? 1 : 0;
+            } else if (!status.drawSuppressed) {
+                ++activeGeneratedStatuses;
+                readyGeneratedStatuses += status.renderPayloadReady() ? 1 : 0;
+            }
             hasTimelineFrameGeometry = hasTimelineFrameGeometry || status.frameSize.isValid();
             correctionsSupported = correctionsSupported || status.correctionsSupported;
             correctionsApplied = correctionsApplied || status.correctionsApplied;
@@ -1067,6 +1101,13 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                 {QStringLiteral("effects_owner_clip_id"), status.effectsOwnerClipId},
                 {QStringLiteral("matte_owner_clip_id"), status.matteOwnerClipId},
                 {QStringLiteral("label"), status.label},
+                {QStringLiteral("payload_kind"),
+                 render_detail::vulkanRenderLayerPayloadKindName(
+                     status.payloadKind)},
+                {QStringLiteral("render_payload_ready"),
+                 status.renderPayloadReady()},
+                {QStringLiteral("generated_draw_count"),
+                 status.textInputs.title3D.size()},
                 {QStringLiteral("decode_path"), status.decodePath},
                 {QStringLiteral("requested_source_frame"), static_cast<double>(status.requestedSourceFrame)},
                 {QStringLiteral("presented_source_frame"), static_cast<double>(status.presentedSourceFrame)},
@@ -1157,16 +1198,25 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     };
     return QJsonObject{
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
-        {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
-        {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
+        {QStringLiteral("presenter"), QStringLiteral("native_qwindow_swapchain")},
+        {QStringLiteral("composition_path"), QStringLiteral("native_swapchain_frame_status_composition")},
         {QStringLiteral("visible_path"), jcut::direct_vulkan_preview::vulkanPreviewVisiblePathLabel()},
         {QStringLiteral("preview_cursor"), directVulkanPreviewWindowCursorShape(m_window)},
         {QStringLiteral("optimal_present_requested"), jcut::direct_vulkan_preview::vulkanPreviewOptimalPresentEnabled()},
         {QStringLiteral("readback_mirror_enabled"), false},
         {QStringLiteral("swapchain_readback_enabled"), false},
         {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
-        {QStringLiteral("qvulkanwindow_valid"), windowValid},
+        {QStringLiteral("native_window_valid"), windowValid},
         {QStringLiteral("native_window_visible"), directVulkanPreviewWindowIsVisible(m_window)},
+        {QStringLiteral("preview_host_visible"),
+         m_placeholder && m_placeholder->isVisible()},
+        {QStringLiteral("window_container_visible"),
+         m_windowContainer && m_windowContainer->isVisible()},
+        {QStringLiteral("window_container_size"), QJsonObject{
+             {QStringLiteral("width"), m_windowContainer ? m_windowContainer->width() : 0},
+             {QStringLiteral("height"), m_windowContainer ? m_windowContainer->height() : 0}}},
+        {QStringLiteral("presentation_suppressed_reason"),
+         presentationSuppressedReason()},
         {QStringLiteral("native_active"), m_active},
         {QStringLiteral("qimage_bridge"), false},
         {QStringLiteral("qimage_materialized"), cpuUploadPath},
@@ -1203,9 +1253,11 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                    .arg(m_stats.lastDecoderDiagnosticReadbackSize.height())
              : QString()},
         {QStringLiteral("decoder_diagnostic_readback_format"), m_stats.lastDecoderDiagnosticReadbackFormat},
-        {QStringLiteral("active_decode_status_clips"), activeStatuses},
-        {QStringLiteral("ready_decode_status_clips"), readyStatuses},
-        {QStringLiteral("exact_decode_status_clips"), exactStatuses},
+        {QStringLiteral("active_decode_status_clips"), activeDecodeStatuses},
+        {QStringLiteral("ready_decode_status_clips"), readyDecodeStatuses},
+        {QStringLiteral("exact_decode_status_clips"), exactDecodeStatuses},
+        {QStringLiteral("active_generated_status_clips"), activeGeneratedStatuses},
+        {QStringLiteral("ready_generated_status_clips"), readyGeneratedStatuses},
         {QStringLiteral("hardware_decode_status_clips"), hardwareStatuses},
         {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
         {QStringLiteral("decode_status_details"), statusDetails},
@@ -1216,7 +1268,9 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("visible_face_track_ids"), visibleFaceTrackIds},
         {QStringLiteral("raw_detection_overlay_boxes"), m_state ? m_state->rawDetectionOverlays.size() : 0},
         {QStringLiteral("raw_detection_overlays"), rawDetectionOverlays},
-        {QStringLiteral("timeline_texture_composition"), hasTimelineFrameGeometry && readyStatuses > 0},
+        {QStringLiteral("timeline_texture_composition"),
+         hasTimelineFrameGeometry &&
+             (readyDecodeStatuses + readyGeneratedStatuses) > 0},
         {QStringLiteral("timeline_texture_draw_pipeline"), texturePipelineReady},
         {QStringLiteral("vulkan_grading_scalars_supported"), true},
         {QStringLiteral("vulkan_transform_geometry_supported"), true},
@@ -1335,9 +1389,11 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
 {
     const PreviewSurface::PresentationTelemetrySnapshot presentationTelemetry =
         presentationTelemetrySnapshot();
-    int activeStatuses = 0;
-    int readyStatuses = 0;
-    int exactStatuses = 0;
+    int activeDecodeStatuses = 0;
+    int readyDecodeStatuses = 0;
+    int exactDecodeStatuses = 0;
+    int activeGeneratedStatuses = 0;
+    int readyGeneratedStatuses = 0;
     int hardwareStatuses = 0;
     int cpuStatuses = 0;
     int64_t requestedSourceFrame = -1;
@@ -1350,10 +1406,18 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
             if (!status.active) {
                 continue;
             }
-            ++activeStatuses;
-            readyStatuses += status.hasFrame ? 1 : 0;
-            exactStatuses += status.exact ? 1 : 0;
-            hardwareStatuses += (status.hardwareFrame || status.gpuTexture) ? 1 : 0;
+            if (!status.requiresDecodedFrame()) {
+                if (!status.drawSuppressed) {
+                    ++activeGeneratedStatuses;
+                    readyGeneratedStatuses += status.renderPayloadReady() ? 1 : 0;
+                }
+                continue;
+            }
+            ++activeDecodeStatuses;
+            readyDecodeStatuses += status.renderPayloadReady() ? 1 : 0;
+            exactDecodeStatuses += status.renderPayloadExact() ? 1 : 0;
+            hardwareStatuses +=
+                (status.hardwareFrame || status.gpuTexture) ? 1 : 0;
             cpuStatuses += status.cpuImage ? 1 : 0;
             requestedSourceFrame = status.requestedSourceFrame;
             presentedSourceFrame = status.presentedSourceFrame;
@@ -1381,12 +1445,21 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
     };
     return QJsonObject{
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
-        {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
-        {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
+        {QStringLiteral("presenter"), QStringLiteral("native_qwindow_swapchain")},
+        {QStringLiteral("composition_path"), QStringLiteral("native_swapchain_frame_status_composition")},
         {QStringLiteral("visible_path"), jcut::direct_vulkan_preview::vulkanPreviewVisiblePathLabel()},
         {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
-        {QStringLiteral("qvulkanwindow_valid"), directVulkanPreviewWindowIsValid(m_window)},
+        {QStringLiteral("native_window_valid"), directVulkanPreviewWindowIsValid(m_window)},
         {QStringLiteral("native_window_visible"), directVulkanPreviewWindowIsVisible(m_window)},
+        {QStringLiteral("preview_host_visible"),
+         m_placeholder && m_placeholder->isVisible()},
+        {QStringLiteral("window_container_visible"),
+         m_windowContainer && m_windowContainer->isVisible()},
+        {QStringLiteral("window_container_size"), QJsonObject{
+             {QStringLiteral("width"), m_windowContainer ? m_windowContainer->width() : 0},
+             {QStringLiteral("height"), m_windowContainer ? m_windowContainer->height() : 0}}},
+        {QStringLiteral("presentation_suppressed_reason"),
+         presentationSuppressedReason()},
         {QStringLiteral("native_active"), m_active},
         {QStringLiteral("qimage_bridge"), false},
         {QStringLiteral("qimage_materialized"), cpuUploadPath},
@@ -1394,9 +1467,11 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("vulkan_cpu_upload_path"), cpuUploadPath},
         {QStringLiteral("current_frame"), m_state ? static_cast<qint64>(m_state->currentFrame) : 0},
         {QStringLiteral("clip_count"), m_state ? m_state->clipCount : 0},
-        {QStringLiteral("active_decode_status_clips"), activeStatuses},
-        {QStringLiteral("ready_decode_status_clips"), readyStatuses},
-        {QStringLiteral("exact_decode_status_clips"), exactStatuses},
+        {QStringLiteral("active_decode_status_clips"), activeDecodeStatuses},
+        {QStringLiteral("ready_decode_status_clips"), readyDecodeStatuses},
+        {QStringLiteral("exact_decode_status_clips"), exactDecodeStatuses},
+        {QStringLiteral("active_generated_status_clips"), activeGeneratedStatuses},
+        {QStringLiteral("ready_generated_status_clips"), readyGeneratedStatuses},
         {QStringLiteral("hardware_decode_status_clips"), hardwareStatuses},
         {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
         {QStringLiteral("requested_source_frame"), static_cast<qint64>(requestedSourceFrame)},

@@ -982,13 +982,13 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
         }
     }
 
-    const int firstOffset =
+    const int lastOffset =
         (!discontinuityPrefetch &&
          !isSequenceClip &&
          pendingVisibleCount >= qMax(1, debugMaxVisibleBacklog()))
-            ? 1
-            : 0;
-    for (int offset = firstOffset; offset <= playbackWindowAhead; ++offset) {
+            ? 0
+            : playbackWindowAhead;
+    for (int offset = 0; offset <= lastOffset; ++offset) {
         const int64_t targetFrame = offset == 0
                                         ? canonicalFrame
                                         : (isSequenceClip

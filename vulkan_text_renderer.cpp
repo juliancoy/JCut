@@ -12,6 +12,7 @@
 #include <QMatrix4x4>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QSet>
 #include <QVulkanFunctions>
 #include <QVector3D>
 
@@ -243,28 +244,71 @@ QString transcriptOverlayLayoutKey(const QSize& outputSize,
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
+struct TranscriptAtlasCodepoints {
+    QVector<uint> body;
+    QVector<uint> title;
+};
+
+TranscriptAtlasCodepoints transcriptAtlasCodepoints(
+    const TranscriptOverlayLayout& layout,
+    const QString& speakerTitle)
+{
+    QSet<uint> body;
+    QSet<uint> title;
+    // Transcript copy and speaker titles overwhelmingly use printable ASCII.
+    // Keeping that repertoire resident makes the atlas a font/style resource,
+    // rather than allocating a new Vulkan image for every spoken phrase.
+    for (uint codepoint = 32; codepoint <= 126; ++codepoint) {
+        body.insert(codepoint);
+        title.insert(codepoint);
+    }
+    for (const TranscriptOverlayLine& line : layout.lines) {
+        for (const QString& word : line.words) {
+            for (uint codepoint : word.toUcs4()) {
+                if (codepoint < 32 || codepoint > 126) {
+                    body.insert(codepoint);
+                }
+            }
+        }
+    }
+    for (uint codepoint : speakerTitle.toUcs4()) {
+        if (codepoint < 32 || codepoint > 126) {
+            title.insert(codepoint);
+        }
+    }
+    TranscriptAtlasCodepoints result{body.values(), title.values()};
+    std::sort(result.body.begin(), result.body.end());
+    std::sort(result.title.begin(), result.title.end());
+    return result;
+}
+
 QString transcriptOverlayAtlasKey(const TimelineClip& clip,
                                   const TranscriptOverlayLayout& layout,
                                   const QString& speakerTitle)
 {
-    QString glyphMaterial;
-    for (const TranscriptOverlayLine& line : layout.lines) {
-        glyphMaterial += line.words.join(QLatin1Char(' '));
-        glyphMaterial += QLatin1Char('|');
-    }
+    const TranscriptAtlasCodepoints codepoints =
+        transcriptAtlasCodepoints(layout, speakerTitle);
+    auto codepointMaterial = [](const QVector<uint>& values) {
+        QStringList parts;
+        parts.reserve(values.size());
+        for (uint value : values) {
+            parts.push_back(QString::number(value));
+        }
+        return parts.join(QLatin1Char(','));
+    };
     const auto& overlay = clip.transcriptOverlay;
     const int bodyPixelSize = qMax(1, static_cast<int>(std::round(overlay.fontPointSize)));
     const int titlePixelSize = qMax(1, static_cast<int>(std::round(overlay.fontPointSize * 0.62)));
     const QString material =
-        QStringLiteral("transcript-atlas-v1|") +
+        QStringLiteral("transcript-atlas-v2|") +
         overlay.fontFamily + QLatin1Char('|') +
         QString::number(bodyPixelSize) + QLatin1Char('|') +
         QString::number(titlePixelSize) + QLatin1Char('|') +
         QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +
         QString::number(static_cast<int>(overlay.textExtrudeMode)) + QLatin1Char('|') +
         QString::number(overlay.textExtrudeBevelScale, 'f', 3) + QLatin1Char('|') +
-        speakerTitle.trimmed() + QLatin1Char('|') +
-        glyphMaterial;
+        codepointMaterial(codepoints.body) + QLatin1Char('|') +
+        codepointMaterial(codepoints.title);
     return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
@@ -1696,8 +1740,12 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
         return fail(QStringLiteral("transcript_font_load_failed"));
     }
     FaceGuard titleFace;
-    const bool hasTitle = !speakerTitle.trimmed().isEmpty() &&
-        loadFace(clip.transcriptOverlay.fontFamily, true, titlePixelSize, &titleFace);
+    if (!loadFace(clip.transcriptOverlay.fontFamily,
+                  true,
+                  titlePixelSize,
+                  &titleFace)) {
+        return fail(QStringLiteral("transcript_title_font_load_failed"));
+    }
 
     atlas->image.width = kAtlasSize;
     atlas->image.height = kAtlasSize;
@@ -1769,24 +1817,23 @@ bool VulkanTextRenderer::buildTranscriptAtlas(const TimelineClip& clip,
         return true;
     };
 
-    if (hasTitle) {
-        for (uint codepoint : speakerTitle.toUcs4()) {
-            if (!addGlyph(titleFace.face, codepoint, true, titlePixelSize)) {
-                return fail(m_lastFailureReason.isEmpty()
-                                ? QStringLiteral("transcript_add_title_glyph_failed")
-                                : m_lastFailureReason);
-            }
+    const TranscriptAtlasCodepoints codepoints =
+        transcriptAtlasCodepoints(layout, speakerTitle);
+    for (uint codepoint : codepoints.title) {
+        if (!addGlyph(titleFace.face, codepoint, true, titlePixelSize)) {
+            return fail(m_lastFailureReason.isEmpty()
+                            ? QStringLiteral("transcript_add_title_glyph_failed")
+                            : m_lastFailureReason);
         }
     }
-    for (const TranscriptOverlayLine& line : layout.lines) {
-        for (const QString& word : line.words) {
-            for (uint codepoint : word.toUcs4()) {
-                if (!addGlyph(bodyFace.face, codepoint, clip.transcriptOverlay.bold, bodyPixelSize)) {
-                    return fail(m_lastFailureReason.isEmpty()
-                                    ? QStringLiteral("transcript_add_body_glyph_failed")
-                                    : m_lastFailureReason);
-                }
-            }
+    for (uint codepoint : codepoints.body) {
+        if (!addGlyph(bodyFace.face,
+                      codepoint,
+                      clip.transcriptOverlay.bold,
+                      bodyPixelSize)) {
+            return fail(m_lastFailureReason.isEmpty()
+                            ? QStringLiteral("transcript_add_body_glyph_failed")
+                            : m_lastFailureReason);
         }
     }
 

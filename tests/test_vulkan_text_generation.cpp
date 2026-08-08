@@ -196,8 +196,9 @@ void TestVulkanTextGeneration::transcriptOverlayGeneratesBackgroundHighlightAndG
     QCOMPARE(debug.atlasSize, QSize(2048, 2048));
     QCOMPARE(debug.backgroundCount, 1);
     QCOMPARE(debug.highlightCount, 1);
-    QVERIFY(debug.glyphAtlasEntryCount > 12);
-    QVERIFY(debug.glyphDrawCount > debug.glyphAtlasEntryCount);
+    QVERIFY2(debug.glyphAtlasEntryCount >= 190,
+             "transcript atlas must prewarm printable ASCII for body and title text");
+    QVERIFY(debug.glyphDrawCount > 12);
     QVERIFY(rectsContainedIn(debug.backgrounds, QRectF(QPointF(0, 0), QSizeF(outputSize))));
     QVERIFY(rectsContainedIn(debug.highlights, outputRect));
     QVERIFY(rectsContainedIn(debug.glyphRects, outputRect.adjusted(-8.0, -8.0, 8.0, 8.0)));
@@ -413,16 +414,21 @@ void TestVulkanTextGeneration::transcriptOverlaySeparatesAtlasKeyFromActiveWordL
         outputSize, clip, transcriptLayout(2), outputRect, QStringLiteral("Council District 2"));
     const VulkanTextLayoutDebug changedText = renderer.buildTranscriptOverlayLayoutForTesting(
         outputSize, clip, transcriptLayout(2, QStringLiteral("Council")), outputRect, QStringLiteral("Council District 2"));
+    const VulkanTextLayoutDebug changedRepertoire = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize, clip, transcriptLayout(2, QStringLiteral("Concejo")), outputRect, QStringLiteral("Distrito número 2"));
 
     QVERIFY(activeFirst.valid);
     QVERIFY(activeThird.valid);
     QVERIFY(changedText.valid);
+    QVERIFY(changedRepertoire.valid);
     QVERIFY2(activeFirst.layoutKey != activeThird.layoutKey,
              "active word changes must still invalidate transcript layout geometry");
     QVERIFY2(activeFirst.atlasKey == activeThird.atlasKey,
              "active word changes must reuse the transcript glyph atlas");
-    QVERIFY2(activeThird.atlasKey != changedText.atlasKey,
-             "word text changes must invalidate the transcript glyph atlas");
+    QVERIFY2(activeThird.atlasKey == changedText.atlasKey,
+             "ASCII transcript phrase changes must reuse the resident font atlas");
+    QVERIFY2(activeThird.atlasKey != changedRepertoire.atlasKey,
+             "new non-ASCII glyphs must invalidate the transcript glyph atlas");
 }
 
 void TestVulkanTextGeneration::transcriptOverlayKeepsFirstLineStableAcrossLineCounts()

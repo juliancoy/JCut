@@ -74,6 +74,7 @@ struct AsyncDecoder::LaneState {
     std::unique_ptr<std::thread> thread;
     bool shuttingDown = false;
     bool running = false;
+    bool trimRequested = false;
     int activeRequests = 0;
 
     // Keep decoder state bounded per lane. Retaining a dozen FFmpeg/CUDA
@@ -517,24 +518,8 @@ void AsyncDecoder::trimCaches() {
 
     for (const auto& lane : m_lanes) {
         std::unique_lock<std::mutex> lock(lane->mutex);
-
-        for (auto it = lane->fileStates.begin(); it != lane->fileStates.end();) {
-            const QString& path = it.key();
-
-            bool queuedForPath = false;
-            for (const DecodeRequest& req : lane->queue) {
-                if (req.filePath == path) {
-                    queuedForPath = true;
-                    break;
-                }
-            }
-
-            if (!queuedForPath && lane->activeRequests == 0) {
-                it = lane->fileStates.erase(it);
-            } else {
-                ++it;
-            }
-        }
+        lane->trimRequested = true;
+        lane->condition.notify_one();
     }
 }
 
@@ -646,15 +631,45 @@ void AsyncDecoder::runLane(LaneState* lane) {
     while (true) {
         DecodeRequest request;
         std::shared_ptr<LaneState::FileDecodeState> state;
+        QVector<std::shared_ptr<LaneState::FileDecodeState>> retiredStates;
 
         {
             std::unique_lock<std::mutex> lock(lane->mutex);
             lane->condition.wait(lock, [lane]() {
-                return lane->shuttingDown || !lane->queue.empty();
+                return lane->shuttingDown || lane->trimRequested ||
+                       !lane->queue.empty();
             });
 
             if (lane->shuttingDown) {
                 return;
+            }
+
+            if (lane->trimRequested) {
+                lane->trimRequested = false;
+                for (auto it = lane->fileStates.begin();
+                     it != lane->fileStates.end();) {
+                    const QString path = it.key();
+                    const bool queuedForPath = std::any_of(
+                        lane->queue.cbegin(),
+                        lane->queue.cend(),
+                        [&path](const DecodeRequest& queued) {
+                            return queued.filePath == path;
+                        });
+                    if (!queuedForPath) {
+                        retiredStates.push_back(it.value());
+                        it = lane->fileStates.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                if (lane->queue.empty()) {
+                    lock.unlock();
+                    // DecoderContext teardown can wait for NVDEC worker
+                    // threads. Always perform it on the decoder lane, never
+                    // on the Qt/UI thread that requested memory trimming.
+                    retiredStates.clear();
+                    continue;
+                }
             }
 
             request = std::move(lane->queue.front());
@@ -667,6 +682,7 @@ void AsyncDecoder::runLane(LaneState* lane) {
             }
             state = stateIt.value();
         }
+        retiredStates.clear();
 
         const qint64 startedAt = decodeTraceMs();
         const qint64 startedAtWallMs = QDateTime::currentMSecsSinceEpoch();
